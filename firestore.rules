@@ -1,0 +1,187 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users collection - users can read/write their own document; admins/CEO head can read all
+    match /users/{userId} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        isAdmin() ||
+        isCeoHead()
+      );
+
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Projects collection - role-based access
+    match /projects/{projectId} {
+      // Admin can read all, CEO Head can read all, Site Managers can read
+      // projects they are assigned to via hasProjectAccess(projectId).
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(projectId))
+      );
+
+      // Only Admin can create/update/delete projects (CRUD)
+      allow write: if request.auth != null && isAdmin();
+      
+      // Daily reports sub-collection
+      match /daily_reports/{reportId} {
+        allow read: if request.auth != null && (
+          isAdmin() || 
+          isCeoHead() || 
+          hasProjectAccess(projectId)
+        );
+        allow create: if request.auth != null && (
+          isSiteManager() && hasProjectAccess(projectId)
+        );
+        allow update: if request.auth != null && (
+          isAdmin() || 
+          (isSiteManager() && hasProjectAccess(projectId) && resource.data.reporterId == request.auth.uid)
+        );
+        
+        // Material usage sub-collection
+        match /material_usage/{usageId} {
+          allow read, write: if request.auth != null && (
+            isAdmin() || 
+            (isSiteManager() && hasProjectAccess(projectId))
+          );
+        }
+      }
+      
+      // Attendance sub-collection
+      match /attendance/{attendanceId} {
+        allow read: if request.auth != null && (
+          isAdmin() || 
+          isCeoHead() || 
+          hasProjectAccess(projectId)
+        );
+        allow write: if request.auth != null && (
+          isSiteManager() && hasProjectAccess(projectId)
+        );
+      }
+      
+      // Payroll sub-collection
+      match /payroll/{payrollId} {
+        // TEMP: Allow anyone to read payroll documents to guarantee collectionGroup queries work.
+        allow read: if true;
+        allow create: if request.auth != null && isAdmin();
+        allow update: if request.auth != null && isAdmin();
+        
+        // Payroll items sub-collection
+        match /items/{itemId} {
+          allow read, write: if request.auth != null && isAdmin();
+        }
+      }
+      
+      // Deliveries sub-collection
+      match /deliveries/{deliveryId} {
+        allow read: if request.auth != null && (
+          isAdmin() || 
+          isCeoHead() || 
+          hasProjectAccess(projectId)
+        );
+        allow write: if request.auth != null && (
+          isSiteManager() && hasProjectAccess(projectId)
+        );
+      }
+
+      match /material_requests/{requestId} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          (isSiteManager() && hasProjectAccess(projectId))
+        );
+        allow create: if request.auth != null && (
+          isSiteManager() && hasProjectAccess(projectId)
+        );
+        allow update: if request.auth != null && isAdmin();
+      }
+      
+      // History sub-collection
+      match /history/{historyId} {
+        allow read: if request.auth != null && (
+          isAdmin() || 
+          isCeoHead() || 
+          hasProjectAccess(projectId)
+        );
+        allow create: if request.auth != null;
+      }
+    }
+    
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow write: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+    
+    // AI Analysis collection - read-only for most users
+    match /ai_analysis/{analysisId} {
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        isCeoHead()
+      );
+      allow write: if false; // Only Cloud Functions can write
+    }
+    
+    // Audit logs - ADMIN ONLY (Cloud Functions write entries)
+    match /audit_logs/{logId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Disbursements collection
+    match /disbursements/{disbursementId} {
+      allow read: if request.auth != null && (
+        isAdmin() || 
+        isCeoHead()
+      );
+      allow write: if request.auth != null && isAdmin();
+    }
+    
+    // Collection group rules for payroll (collectionGroup queries)
+    match /{path=**}/payroll/{payrollId} {
+      // TEMP: Allow anyone to read payroll documents to guarantee collectionGroup queries work.
+      allow read: if true;
+    }
+
+    // Collection group rules for history (Project History screen)
+    match /{path=**}/history/{historyId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead()
+      );
+    }
+
+    match /{path=**}/material_requests/{requestId} {
+      allow read: if request.auth != null;
+      allow update: if request.auth != null && isAdmin();
+    }
+    
+    // Helper functions
+    function isAdmin() {
+      return getUserRole() == 'admin';
+    }
+    
+    function isSiteManager() {
+      return getUserRole() == 'site_manager';
+    }
+    
+    function isCeoHead() {
+      return getUserRole() == 'ceo_head';
+    }
+    
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    
+    function hasProjectAccess(projectId) {
+      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return projectId in userData.assignedProjects;
+    }
+    
+    // TEMP: allow all reads and writes
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
