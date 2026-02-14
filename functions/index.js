@@ -199,6 +199,11 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
       throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
     }
 
+    const isEmulator =
+      process.env.FUNCTIONS_EMULATOR === 'true' ||
+      process.env.FIREBASE_EMULATOR_HUB ||
+      process.env.FUNCTIONS_EMULATOR_HOST;
+
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl : null;
     const storagePath = typeof data?.storagePath === 'string' ? data.storagePath : null;
     const fileName = typeof data?.fileName === 'string' ? data.fileName : null;
@@ -215,6 +220,45 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     const bucketName = admin.storage().bucket().name;
     const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
     const imageSource = gcsUri || imageUrl;
+
+    if (isEmulator) {
+      const confidence = 0.82;
+      const pass = true;
+      const status = 'on_track';
+
+      const doc = {
+        userId: context.auth.uid,
+        projectId: projectId || null,
+        projectName: projectName || null,
+        imageUrl: imageUrl || null,
+        storagePath: storagePath || null,
+        fileName: fileName || null,
+        pass,
+        status,
+        confidence,
+        labels: ['construction site', 'building', 'scaffolding'],
+        objects: ['crane', 'worker'],
+        extractedText: '',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        raw: {
+          emulator: true,
+          imageSource,
+        },
+      };
+
+      const ref = await admin.firestore().collection('ai_verifications').add(doc);
+      return {
+        ok: true,
+        pass,
+        status,
+        confidence,
+        labels: doc.labels,
+        objects: doc.objects,
+        extractedText: doc.extractedText,
+        verificationId: ref.id,
+        emulator: true,
+      };
+    }
 
     const [result] = await visionClient.annotateImage({
       image: { source: { imageUri: imageSource } },
@@ -302,14 +346,153 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     const ref = await admin.firestore().collection('ai_verifications').add(doc);
 
     return {
-      id: ref.id,
-      ...doc,
-      createdAt: new Date().toISOString(),
+      ok: true,
+      pass,
+      status,
+      confidence,
+      labels: doc.labels,
+      objects: doc.objects,
+      extractedText: doc.extractedText,
+      verificationId: ref.id,
     };
   } catch (error) {
-    console.error('Error in verifyProgressImage:', error);
-    if (error instanceof functions.https.HttpsError) throw error;
-    throw new functions.https.HttpsError('internal', error?.message || 'Verification failed');
+    console.error('verifyProgressImage error:', error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+
+    const message = typeof error?.message === 'string' ? error.message : 'Verification failed';
+    throw new functions.https.HttpsError('internal', message);
+  }
+});
+
+// GovTrack AI Chat (MVP - no external LLM)
+exports.govtrackChat = functions.https.onCall(async (data, context) => {
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+    }
+
+    const message = typeof data?.message === 'string' ? data.message.trim() : '';
+    if (!message) {
+      throw new functions.https.HttpsError('invalid-argument', 'Message is required');
+    }
+
+    const openaiKey = functions.config()?.openai?.key;
+    if (typeof openaiKey === 'string' && openaiKey.trim()) {
+      try {
+        const systemPrompt =
+          'You are GovTrack AI, a professional government-grade infrastructure monitoring assistant. '
+          + 'Be concise. Provide actionable steps. If asked for data you do not have, say so and suggest where to find it.';
+
+        const payload = {
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message },
+          ],
+          temperature: 0.2,
+        };
+
+        const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${openaiKey}`,
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          console.error('OpenAI error:', resp.status, errText);
+          throw new Error(`OpenAI request failed (${resp.status})`);
+        }
+
+        const json = await resp.json();
+        const reply =
+          json && json.choices && json.choices[0] && json.choices[0].message && typeof json.choices[0].message.content === 'string'
+            ? json.choices[0].message.content.trim()
+            : '';
+
+        return {
+          ok: true,
+          intent: 'openai',
+          reply: reply || 'I was unable to generate a response. Please try again.',
+        };
+      } catch (e) {
+        console.error('OpenAI call failed; falling back to MVP chat:', e);
+      }
+    }
+
+    const q = message.toLowerCase();
+    const db = admin.firestore();
+
+    // Intent: active/ongoing projects
+    if (q.includes('active project') || q.includes('ongoing project') || q.includes('list projects')) {
+      const snap = await db
+        .collection('projects')
+        .where('status', '==', 'ongoing')
+        .limit(10)
+        .get();
+
+      const names = snap.docs
+        .map((d) => {
+          const v = d.data() || {};
+          return typeof v.name === 'string' ? v.name : null;
+        })
+        .filter(Boolean);
+
+      const reply = names.length
+        ? `Here are the top active projects (up to 10):\n\n- ${names.join('\n- ')}\n\nYou can ask: “show recent failed validations” or “analyze project risks”.`
+        : 'No ongoing projects were found in Firestore (status == ongoing).';
+
+      return { ok: true, reply, intent: 'active_projects', items: names };
+    }
+
+    // Intent: recent failed validations
+    if (q.includes('failed validation') || q.includes('fail validation') || q.includes('high risk') || q.includes('recent alerts')) {
+      const snap = await db
+        .collection('ai_verifications')
+        .orderBy('createdAt', 'desc')
+        .limit(20)
+        .get();
+
+      const rows = snap.docs
+        .map((d) => {
+          const v = d.data() || {};
+          return {
+            pass: v.pass === true,
+            projectName: typeof v.projectName === 'string' && v.projectName ? v.projectName : 'Unknown Project',
+            confidence: typeof v.confidence === 'number' ? v.confidence : 0,
+          };
+        })
+        .filter((r) => r.pass === false)
+        .slice(0, 5)
+        .map((r) => ({ projectName: r.projectName, confidence: r.confidence }));
+
+      const reply = rows.length
+        ? `Recent FAILED validations (top 5):\n\n- ${rows
+            .map((r) => `${r.projectName} — ${(r.confidence * 100).toFixed(0)}% confidence`)
+            .join('\n- ')}\n\nTip: open “Validation Reports” to review images and labels.`
+        : 'No failed validations found in the last records.';
+
+      return { ok: true, reply, intent: 'failed_validations', items: rows };
+    }
+
+    // Default response
+    return {
+      ok: true,
+      intent: 'default',
+      reply:
+        'I’m running in MVP mode (no external AI yet). Try asking:\n\n'
+        + '1) “List ongoing projects”\n'
+        + '2) “Show recent failed validations”\n\n'
+        + 'Or go to “AI Daily Progress” to upload a photo and generate a validation report.',
+    };
+  } catch (error) {
+    console.error('govtrackChat error:', error);
+    throw new functions.https.HttpsError('internal', error?.message || 'Chat failed');
   }
 });
 

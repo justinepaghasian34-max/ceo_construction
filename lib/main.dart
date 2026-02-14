@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'services/firebase_service.dart';
 import 'services/hive_service.dart';
@@ -6,12 +7,17 @@ import 'services/sync_service.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
 import 'core/routing/app_router.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  if (kDebugMode) {
+    FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
+  }
   // Initialize services
   await FirebaseService.initialize();
   await HiveService.initialize();

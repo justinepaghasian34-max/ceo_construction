@@ -681,8 +681,21 @@ class _AiDashboardState extends State<_AiDashboard> {
             .whereType<DropdownMenuItem<String>>()
             .toList();
 
+        if (_selectedProjectId == null && docs.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (_selectedProjectId != null) return;
+            final first = docs.first;
+            final data = (first.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+            setState(() {
+              _selectedProjectId = first.id;
+              _selectedProjectName = (data['name'] ?? '').toString();
+            });
+          });
+        }
+
         return DropdownButtonFormField<String>(
-          value: items.any((e) => e.value == _selectedProjectId) ? _selectedProjectId : null,
+          initialValue: items.any((e) => e.value == _selectedProjectId) ? _selectedProjectId : null,
           items: items,
           onChanged: (v) {
             if (v == null) return;
@@ -713,13 +726,46 @@ class _AiDashboardState extends State<_AiDashboard> {
     );
   }
 
-  void _sendChat() {
+  Future<void> _sendChat() async {
     final text = _chatController.text.trim();
     if (text.isEmpty) return;
+
     setState(() {
       _messages.add(_ChatMessage(isUser: true, text: text));
+      _messages.add(const _ChatMessage(isUser: false, text: 'Thinking…'));
       _chatController.clear();
     });
+
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable('govtrackChat');
+      final res = await callable
+          .call(<String, dynamic>{'message': text})
+          .timeout(const Duration(seconds: 45));
+      final data = (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      final reply = (data['reply'] ?? '').toString().trim();
+
+      if (!mounted) return;
+      setState(() {
+        if (_messages.isNotEmpty && _messages.last.isUser == false && _messages.last.text == 'Thinking…') {
+          _messages.removeLast();
+        }
+        _messages.add(_ChatMessage(
+          isUser: false,
+          text: reply.isEmpty ? 'No response received. Please try again.' : reply,
+        ));
+      });
+    } catch (e) {
+      final msg = e is FirebaseFunctionsException
+          ? 'Chat failed (${e.code}): ${e.message ?? e.details ?? 'Unknown error'}'
+          : 'Chat failed: $e';
+      if (!mounted) return;
+      setState(() {
+        if (_messages.isNotEmpty && _messages.last.isUser == false && _messages.last.text == 'Thinking…') {
+          _messages.removeLast();
+        }
+        _messages.add(_ChatMessage(isUser: false, text: msg));
+      });
+    }
   }
 
   Future<void> _pickDailyProgressImage() async {
@@ -735,9 +781,15 @@ class _AiDashboardState extends State<_AiDashboard> {
   }
 
   Future<void> _analyzeDailyProgress() async {
-    if (_selectedProjectId == null || _selectedImageBytes == null) {
+    if (_selectedProjectId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a project and upload a photo first.')),
+        const SnackBar(content: Text('Select a project first.')),
+      );
+      return;
+    }
+    if (_selectedImageBytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Upload a site photo first.')),
       );
       return;
     }
@@ -754,13 +806,15 @@ class _AiDashboardState extends State<_AiDashboard> {
       );
 
       final callable = FirebaseFunctions.instance.httpsCallable('verifyProgressImage');
-      final res = await callable.call(<String, dynamic>{
+      final res = await callable
+          .call(<String, dynamic>{
         'imageUrl': downloadUrl,
         'storagePath': storagePath,
         'fileName': fileName,
         'projectId': _selectedProjectId,
         'projectName': _selectedProjectName,
-      });
+      })
+          .timeout(const Duration(seconds: 90));
 
       final data = (res.data as Map?)?.cast<String, dynamic>();
       setState(() {
@@ -768,7 +822,10 @@ class _AiDashboardState extends State<_AiDashboard> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Analyze failed: $e')));
+      final msg = e is FirebaseFunctionsException
+          ? 'Analyze failed (${e.code}): ${e.message ?? e.details ?? 'Unknown error'}'
+          : 'Analyze failed: $e';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
     }
