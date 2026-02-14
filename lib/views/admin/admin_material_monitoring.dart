@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
@@ -7,6 +8,7 @@ import '../../services/hive_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
+import 'widgets/admin_glass_layout.dart';
 
 class AdminMaterialMonitoring extends StatefulWidget {
   const AdminMaterialMonitoring({super.key});
@@ -155,345 +157,283 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
 
     siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Material & Inventory Monitoring',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        actions: [
-          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: FirebaseService.instance.firestore
-                .collectionGroup('material_requests')
-                .where(
-                  'status',
-                  isEqualTo: AppConstants.materialRequestPending,
-                )
-                .snapshots(),
-            builder: (context, snapshot) {
-              final count = snapshot.data?.docs.length ?? 0;
+    return AdminGlassScaffold(
+      title: 'Material & Inventory Monitoring',
+      actions: [
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: FirebaseService.instance.firestore
+              .collectionGroup('material_requests')
+              .where(
+                'status',
+                isEqualTo: AppConstants.materialRequestPending,
+              )
+              .snapshots(),
+          builder: (context, snapshot) {
+            final count = snapshot.data?.docs.length ?? 0;
 
-              return IconButton(
-                icon: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    const Icon(Icons.notifications_none),
-                    if (count > 0)
-                      Positioned(
-                        right: -4,
-                        top: -4,
-                        child: Container(
-                          padding: const EdgeInsets.all(2),
-                          decoration: const BoxDecoration(
-                            color: Colors.red,
-                            shape: BoxShape.circle,
-                          ),
-                          constraints: const BoxConstraints(
-                            minWidth: 16,
-                            minHeight: 16,
-                          ),
-                          child: Center(
-                            child: Text(
-                              count > 99 ? '99+' : '$count',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
+            return IconButton(
+              icon: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Icon(Icons.notifications_none),
+                  if (count > 0)
+                    Positioned(
+                      right: -4,
+                      top: -4,
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 16,
+                          minHeight: 16,
+                        ),
+                        child: Center(
+                          child: Text(
+                            count > 99 ? '99+' : '$count',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
                       ),
-                  ],
-                ),
-                tooltip: 'Material requests',
-                onPressed: _showMaterialRequestsBottomSheet,
-              );
-            },
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final isNarrow = constraints.maxWidth < 700;
-
-                Widget buildStatCard({
-                  required IconData icon,
-                  required Color iconColor,
-                  required String label,
-                  required String value,
-                }) {
-                  return AppCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: iconColor.withAlpha(24),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Icon(
-                                icon,
-                                color: iconColor,
-                                size: 20,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                label,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(color: AppTheme.mediumGray),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          value,
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
-                              ?.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.primaryBlue,
-                              ),
-                        ),
-                      ],
                     ),
+                ],
+              ),
+              tooltip: 'Material requests',
+              onPressed: _showMaterialRequestsBottomSheet,
+            );
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => context.push(RouteNames.profile),
+        ),
+      ],
+      bottomNavigationBar: const AdminBottomNavBar(
+        current: AdminNavItem.materialInventory,
+      ),
+      child: GlassCard(
+        borderRadius: 18,
+        padding: const EdgeInsets.all(14),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SmartInsightCard(
+                title: 'Smart Insight',
+                message:
+                    'Keep material stock and monthly usage visible to prevent site delays.',
+              ),
+              const SizedBox(height: 16),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isNarrow = constraints.maxWidth < 700;
+
+                  Widget buildStatCard({
+                    required IconData icon,
+                    required Color iconColor,
+                    required String label,
+                    required String value,
+                  }) {
+                    return AppCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: iconColor.withAlpha(24),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  icon,
+                                  color: iconColor,
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: AppTheme.mediumGray),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            value,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: AppTheme.primaryBlue,
+                                ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  final totalStockCard = buildStatCard(
+                    icon: Icons.inventory_2_outlined,
+                    iconColor: AppTheme.deepBlue,
+                    label: 'Total material in stock',
+                    value: totalStock.toStringAsFixed(1),
                   );
-                }
 
-                final totalStockCard = buildStatCard(
-                  icon: Icons.inventory_2_outlined,
-                  iconColor: AppTheme.deepBlue,
-                  label: 'Total material in stock',
-                  value: totalStock.toStringAsFixed(1),
-                );
+                  final usedThisMonthCard = buildStatCard(
+                    icon: Icons.stacked_bar_chart,
+                    iconColor: AppTheme.accentYellow,
+                    label: 'Material used this month',
+                    value: monthQuantity.toStringAsFixed(1),
+                  );
 
-                final usedThisMonthCard = buildStatCard(
-                  icon: Icons.stacked_bar_chart,
-                  iconColor: AppTheme.accentYellow,
-                  label: 'Material used this month',
-                  value: monthQuantity.toStringAsFixed(1),
-                );
+                  if (isNarrow) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        totalStockCard,
+                        const SizedBox(height: 12),
+                        usedThisMonthCard,
+                      ],
+                    );
+                  }
 
-                if (isNarrow) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                  return Row(
                     children: [
-                      totalStockCard,
-                      const SizedBox(height: 12),
-                      usedThisMonthCard,
+                      Expanded(child: totalStockCard),
+                      const SizedBox(width: 12),
+                      Expanded(child: usedThisMonthCard),
                     ],
                   );
-                }
-
-                return Row(
-                  children: [
-                    Expanded(child: totalStockCard),
-                    const SizedBox(width: 12),
-                    Expanded(child: usedThisMonthCard),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Material inventory',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
-                onPressed: () => _showInventoryItemDialog(),
-                icon: const Icon(Icons.add),
-                label: const Text('Add material'),
+                },
               ),
-            ),
-            const SizedBox(height: 8),
-            if (inventoryItems.isEmpty)
+              const SizedBox(height: 16),
               Text(
-                'No inventory records yet. Use "Add material" to create one.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
+                'Distribution per site',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
                     ),
-              )
-            else
-              GestureDetector(
-                onTap: () => _showFullInventoryTable(
-                  context,
-                  inventoryItems,
-                ),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: DataTable(
-                    columnSpacing: 16,
-                    headingTextStyle: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(
-                          fontWeight: FontWeight.w600,
+              ),
+              const SizedBox(height: 8),
+              if (siteSummaries.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    'Top site by material usage: '
+                    '${siteSummaries.first.projectId} '
+                    '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: AppTheme.mediumGray,
                         ),
-                    columns: const [
-                      DataColumn(label: Text('Material ID')),
-                      DataColumn(label: Text('Material name')),
-                      DataColumn(label: Text('Stock')),
-                      DataColumn(label: Text('Unit')),
-                      DataColumn(label: Text('Price / unit')),
-                      DataColumn(label: Text('Location')),
-                      DataColumn(label: Text('Status')),
-                      DataColumn(label: Text('Actions')),
-                    ],
-                    rows: [
-                      for (final item in inventoryItems)
-                        _buildInventoryRow(context, item),
-                    ],
                   ),
                 ),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              'Distribution per site',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+              if (siteSummaries.isEmpty)
+                Text(
+                  'No material distribution recorded yet.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                )
+              else
+                GestureDetector(
+                  onTap: () => _showFullSiteDistributionTable(
+                    context,
+                    siteSummaries,
                   ),
-            ),
-            const SizedBox(height: 8),
-            if (siteSummaries.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  'Top site by material usage: '
-                  '${siteSummaries.first.projectId} '
-                  '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  child: GlassDataTableTheme(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        columnSpacing: 16,
+                        columns: const [
+                          DataColumn(label: Text('Site')),
+                          DataColumn(label: Text('Materials')),
+                          DataColumn(label: Text('Total qty used')),
+                          DataColumn(label: Text('Total cost')),
+                          DataColumn(label: Text('Last usage')),
+                        ],
+                        rows: [
+                          for (final summary in siteSummaries)
+                            _buildSiteDistributionRow(context, summary),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 16),
+              Text(
+                'Material usage details',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              if (usageByProject.isEmpty)
+                Text(
+                  'No material usage records yet.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppTheme.mediumGray,
                       ),
                 ),
-              ),
-            if (siteSummaries.isEmpty)
-              Text(
-                'No material distribution recorded yet.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
-              )
-            else
-              GestureDetector(
-                onTap: () => _showFullSiteDistributionTable(
-                  context,
-                  siteSummaries,
+              if (usageByProject.isNotEmpty) const SizedBox(height: 4),
+              for (final entry in usageByProject.entries) ...[
+                Text(
+                  'Site: ${entry.key}',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: DataTable(
-                    columnSpacing: 16,
-                    headingTextStyle: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.mediumGray,
-                        ),
-                    columns: const [
-                      DataColumn(label: Text('Site')),
-                      DataColumn(label: Text('Materials')),
-                      DataColumn(label: Text('Total qty used')),
-                      DataColumn(label: Text('Total cost')),
-                      DataColumn(label: Text('Last usage')),
-                    ],
-                    rows: [
-                      for (final summary in siteSummaries)
-                        _buildSiteDistributionRow(context, summary),
-                    ],
+                const SizedBox(height: 4),
+                GestureDetector(
+                  onTap: () => _showFullMaterialUsageTable(
+                    context,
+                    entry.key,
+                    entry.value,
+                  ),
+                  child: GlassDataTableTheme(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        columnSpacing: 16,
+                        columns: const [
+                          DataColumn(label: Text('Material')),
+                          DataColumn(label: Text('Qty')),
+                          DataColumn(label: Text('Unit')),
+                          DataColumn(label: Text('Unit price')),
+                          DataColumn(label: Text('Cost')),
+                          DataColumn(label: Text('Status')),
+                          DataColumn(label: Text('Report ID')),
+                          DataColumn(label: Text('Date')),
+                        ],
+                        rows: [
+                          for (final usage in entry.value)
+                            _buildMaterialUsageRow(context, usage),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            const SizedBox(height: 16),
-            Text(
-              'Material usage details',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            if (usageByProject.isEmpty)
-              Text(
-                'No material usage records yet.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
-              ),
-            if (usageByProject.isNotEmpty) const SizedBox(height: 4),
-            for (final entry in usageByProject.entries) ...[
-              Text(
-                'Site: ${entry.key}',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              GestureDetector(
-                onTap: () => _showFullMaterialUsageTable(
-                  context,
-                  entry.key,
-                  entry.value,
-                ),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: DataTable(
-                    columnSpacing: 16,
-                    headingTextStyle: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.mediumGray,
-                        ),
-                    columns: const [
-                      DataColumn(label: Text('Material')),
-                      DataColumn(label: Text('Qty')),
-                      DataColumn(label: Text('Unit')),
-                      DataColumn(label: Text('Unit price')),
-                      DataColumn(label: Text('Cost')),
-                      DataColumn(label: Text('Status')),
-                      DataColumn(label: Text('Report ID')),
-                      DataColumn(label: Text('Date')),
-                    ],
-                    rows: [
-                      for (final usage in entry.value)
-                        _buildMaterialUsageRow(context, usage),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
+                const SizedBox(height: 12),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
-      bottomNavigationBar: const AdminBottomNavBar(
-        current: AdminNavItem.materialInventory,
       ),
     );
   }
@@ -713,6 +653,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.25),
       builder: (sheetContext) {
         final pendingStream = FirebaseService.instance.firestore
             .collectionGroup('material_requests')
@@ -733,45 +675,100 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
         return DefaultTabController(
           length: 2,
           child: SafeArea(
-            child: SizedBox(
-              height: MediaQuery.of(sheetContext).size.height * 0.75,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(
-                      'Material requests',
-                      style: Theme.of(sheetContext)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  const TabBar(
-                    tabs: [
-                      Tab(text: 'Pending'),
-                      Tab(text: 'Released'),
-                    ],
-                  ),
-                  const Divider(height: 1),
-                  Expanded(
-                    child: TabBarView(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 820),
+                child: Material(
+                  color: Colors.white,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+                  child: SizedBox(
+                    height: MediaQuery.of(sheetContext).size.height * 0.82,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _buildMaterialRequestList(
-                          pendingStream,
-                          emptyMessage: 'No pending material requests.',
+                        const SizedBox(height: 10),
+                        Center(
+                          child: Container(
+                            width: 44,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
                         ),
-                        _buildMaterialRequestList(
-                          releasedStream,
-                          emptyMessage: 'No released material requests yet.',
-                          showReleasedLabel: true,
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Material requests',
+                                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () => Navigator.of(sheetContext).pop(),
+                                icon: const Icon(Icons.close),
+                                tooltip: 'Close',
+                              ),
+                            ],
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF3F4F6),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+                            ),
+                            child: TabBar(
+                              dividerHeight: 0,
+                              indicatorSize: TabBarIndicatorSize.tab,
+                              indicator: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.06),
+                                    blurRadius: 10,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              labelColor: AppTheme.deepBlue,
+                              unselectedLabelColor: AppTheme.mediumGray,
+                              labelStyle: const TextStyle(fontWeight: FontWeight.w700),
+                              tabs: const [
+                                Tab(text: 'Pending'),
+                                Tab(text: 'Released'),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              _buildMaterialRequestList(
+                                pendingStream,
+                                emptyMessage: 'No pending material requests.',
+                              ),
+                              _buildMaterialRequestList(
+                                releasedStream,
+                                emptyMessage: 'No released material requests yet.',
+                                showReleasedLabel: true,
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -826,8 +823,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
         }
 
         return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
           itemCount: docs.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final doc = docs[index];
             final data = doc.data();
@@ -843,188 +841,116 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
 
             final siteLabel = projectName.isNotEmpty ? projectName : projectId;
 
-            final inventoryItems = HiveService.instance.getAllMaterialInventory();
-            final commentController = TextEditingController();
-            final quantityController = TextEditingController();
-            String? selectedInventoryId;
-            Map<String, dynamic>? selectedInventory;
+            final managerText =
+                (createdByName.isNotEmpty ? createdByName : createdBy).trim();
 
-            return ListTile(
-              title: Text(subject),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (details.isNotEmpty) Text(details),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Site: $siteLabel',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: AppTheme.mediumGray),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Site manager: '
-                    '${(createdByName.isNotEmpty ? createdByName : createdBy).isEmpty ? 'Unknown' : (createdByName.isNotEmpty ? createdByName : createdBy)}',
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodySmall
-                        ?.copyWith(color: AppTheme.mediumGray),
-                  ),
-                  if (projectName.isNotEmpty && projectName != projectId)
-                    Text(
-                      'Project ID: $projectId',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: AppTheme.mediumGray),
-                    ),
-                  const SizedBox(height: 8),
-                  if (details.isNotEmpty) ...[
-                    Text(details),
-                    const SizedBox(height: 12),
-                  ],
-                  DropdownButtonFormField<String>(
-                    initialValue: selectedInventoryId,
-                    items: [
-                      for (final item in inventoryItems)
-                        () {
-                          final id = (item['id'] ?? '').toString();
-                          final name =
-                              (item['materialName'] ?? 'Material').toString();
-                          final unit = (item['unit'] ?? '').toString();
-                          final stockRaw = item['stock'];
-                          double stock;
-                          if (stockRaw is num) {
-                            stock = stockRaw.toDouble();
-                          } else {
-                            stock = double.tryParse(
-                                    stockRaw?.toString() ?? '0') ??
-                                0.0;
-                          }
-                          return DropdownMenuItem<String>(
-                            value: id,
-                            child: Text(
-                              '$name (Stock: ${stock.toStringAsFixed(1)} $unit)',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          );
-                        }(),
-                    ],
-                    decoration: const InputDecoration(
-                      labelText: 'Material to release',
-                    ),
-                    onChanged: (value) {
-                      setState(() {
-                        selectedInventoryId = value;
-                        selectedInventory = inventoryItems.firstWhere(
-                          (item) =>
-                              (item['id'] ?? '').toString() == value,
-                          orElse: () => <String, dynamic>{},
-                        );
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Builder(
-                    builder: (context) {
-                      double? availableStock;
-                      String unitLabel = '';
-                      double? unitPrice;
-
-                      if (selectedInventory != null && selectedInventory!.isNotEmpty) {
-                        final stockRaw = selectedInventory!['stock'];
-                        if (stockRaw is num) {
-                          availableStock = stockRaw.toDouble();
-                        } else {
-                          availableStock = double.tryParse(stockRaw?.toString() ?? '0');
-                        }
-
-                        unitLabel = (selectedInventory!['unit'] ?? '').toString();
-
-                        final priceRaw = selectedInventory!['unitPrice'];
-                        if (priceRaw is num) {
-                          unitPrice = priceRaw.toDouble();
-                        } else {
-                          unitPrice = double.tryParse(priceRaw?.toString() ?? '0');
-                        }
-                      }
-
-                      final qtyText = quantityController.text.trim();
-                      final double? quantity = qtyText.isEmpty
-                          ? null
-                          : double.tryParse(qtyText.replaceAll(',', ''));
-                      final double? calculatedAmount =
-                          (unitPrice != null && quantity != null)
-                              ? unitPrice * quantity
-                              : null;
-
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TextField(
-                            controller: quantityController,
-                            keyboardType: TextInputType.number,
-                            decoration: InputDecoration(
-                              labelText: 'Quantity to release',
-                              hintText: availableStock != null && unitLabel.isNotEmpty
-                                  ? 'Max ${availableStock.toStringAsFixed(1)} $unitLabel'
-                                  : null,
-                            ),
-                            onChanged: (_) {
-                              setState(() {});
-                            },
-                          ),
-                          if (availableStock != null && unitLabel.isNotEmpty) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'Available stock: ${availableStock.toStringAsFixed(1)} $unitLabel',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: AppTheme.mediumGray),
-                            ),
-                          ],
-                          if (unitPrice != null) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'Unit price: ₱${unitPrice.toStringAsFixed(2)}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: AppTheme.mediumGray),
-                            ),
-                          ],
-                          if (calculatedAmount != null &&
-                              quantity != null &&
-                              quantity > 0) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'This release cost: ₱${calculatedAmount.toStringAsFixed(2)}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: AppTheme.mediumGray),
-                            ),
-                          ],
-                        ],
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: commentController,
-                    decoration: const InputDecoration(
-                      labelText: 'Comment / reply to site manager',
-                      hintText:
-                          'Example: Approved 10 out of 20 bags of cement (remaining stock) or No stock today.',
-                    ),
-                    maxLines: 3,
-                  ),
-                ],
-              ),
+            return InkWell(
               onTap: () => _showMaterialRequestActionDialog(doc),
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 14,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            subject,
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                        if (showReleasedLabel)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppTheme.softGreen.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: AppTheme.softGreen.withValues(alpha: 0.35)),
+                            ),
+                            child: Text(
+                              'Released',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.softGreen,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    if (details.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        details,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppTheme.mediumGray),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Icon(Icons.location_on_outlined, size: 16, color: AppTheme.mediumGray),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            siteLabel,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(Icons.person_outline, size: 16, color: AppTheme.mediumGray),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Site manager: ${managerText.isEmpty ? 'Unknown' : managerText}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (projectName.isNotEmpty && projectName != projectId) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Project ID: $projectId',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Text(
+                          'Open to approve / reject',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppTheme.deepBlue,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                        const Spacer(),
+                        const Icon(Icons.arrow_forward_ios, size: 14, color: AppTheme.mediumGray),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
             );
           },
         );

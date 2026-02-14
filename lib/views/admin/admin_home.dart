@@ -8,6 +8,7 @@ import '../../services/firebase_service.dart';
 import '../../services/weather_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
+import 'widgets/admin_glass_layout.dart';
 
 class AdminHome extends StatelessWidget {
   const AdminHome({super.key});
@@ -16,70 +17,186 @@ class AdminHome extends StatelessWidget {
   Widget build(BuildContext context) {
     final hive = HiveService.instance;
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Executive Dashboard',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+    return AdminGlassScaffold(
+      title: 'Executive Dashboard',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.notifications_none),
+          onPressed: () => context.push(RouteNames.notifications),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.notifications_none),
-            onPressed: () {
-              context.push(RouteNames.notifications);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.verified_user),
-            onPressed: () {
-              context.push(RouteNames.adminAuditTrail);
-            },
-            tooltip: 'Audit Trail',
-          ),
-          IconButton(
-            icon: const Icon(Icons.person),
-            onPressed: () {
-              context.push(RouteNames.profile);
-            },
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final isNarrow = constraints.maxWidth < 800;
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (isNarrow) ...[
-                  _buildWeatherForecastCard(context, hive),
-                  const SizedBox(height: 16),
-                  _buildSummaryRow(context),
-                  const SizedBox(height: 16),
-                  _buildActivityProjectSummaryCard(context),
-                ] else
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildWeatherForecastCard(context, hive),
-                      const SizedBox(height: 16),
-                      _buildSummaryRow(context),
-                      const SizedBox(height: 16),
-                      _buildActivityProjectSummaryCard(context),
-                    ],
-                  ),
-              ],
-            ),
-          );
-        },
-      ),
+        IconButton(
+          icon: const Icon(Icons.help_outline),
+          onPressed: () {},
+        ),
+        IconButton(
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => context.push(RouteNames.profile),
+        ),
+      ],
       bottomNavigationBar: const AdminBottomNavBar(
         current: AdminNavItem.dashboard,
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSmartInsightCard(context),
+          const SizedBox(height: 14),
+          _buildKpiRow(context, hive),
+          const SizedBox(height: 14),
+          _buildProjectActivityCard(context),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSmartInsightCard(BuildContext context) {
+    return const SmartInsightCard(
+      title: 'Smart Insight',
+      message:
+          'Based on current SPI of 1.05, Project Alpha will complete 4 days ahead.\nReallocate 2 idle team members to Project Beta?',
+    );
+  }
+
+  Widget _buildKpiRow(BuildContext context, HiveService hive) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < 1000;
+
+        final List<Widget> cards = [
+          _KpiCard(
+            title: 'Net Margin',
+            value: '18.2%',
+            accent: const Color(0xFF2DD4BF),
+          ),
+          _KpiCard(
+            title: 'Cost Performance Index (CPI)',
+            value: '1.10',
+            badgeText: 'On Track',
+            badgeColor: const Color(0xFF22C55E),
+            accent: const Color(0xFF22C55E),
+          ),
+          _KpiCard(
+            title: 'Schedule Performance Index (SPI)',
+            value: '0.05',
+            accent: const Color(0xFFF97316),
+          ),
+        ];
+
+        final weatherCard = SizedBox(
+          width: isNarrow ? double.infinity : 220,
+          child: _buildWeatherRiskCard(context, hive),
+        );
+
+        if (isNarrow) {
+          return Column(
+            children: [
+              ...cards.map(
+                (c) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: c,
+                ),
+              ),
+              weatherCard,
+            ],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: cards[0]),
+            const SizedBox(width: 12),
+            Expanded(child: cards[1]),
+            const SizedBox(width: 12),
+            Expanded(child: cards[2]),
+            const SizedBox(width: 12),
+            weatherCard,
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildWeatherRiskCard(BuildContext context, HiveService hive) {
+    return GlassCard(
+      borderRadius: 16,
+      padding: const EdgeInsets.all(14),
+      child: FutureBuilder<WeatherNow>(
+        future: WeatherService.instance.getCurrentWeatherByCity('Manila,PH'),
+        builder: (context, snapshot) {
+          final temp = snapshot.data?.temperatureC;
+          final description = snapshot.data?.description ?? '';
+          final workHours = (temp == null)
+              ? 7
+              : (temp <= 26 ? 9 : (temp <= 30 ? 8 : 7));
+          final label = snapshot.connectionState == ConnectionState.waiting
+              ? 'Loading…'
+              : (description.isEmpty ? 'Weather Risk' : 'Weather Risk');
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(
+                    Icons.wb_sunny_outlined,
+                    color: Colors.black.withValues(alpha: 0.75),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      temp == null ? '—' : '${temp.toStringAsFixed(0)}°C',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Workable Hours:',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '$workHours / 10',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(999),
+                child: LinearProgressIndicator(
+                  value: (workHours / 10).clamp(0.0, 1.0),
+                  minHeight: 6,
+                  backgroundColor: Colors.black.withValues(alpha: 0.06),
+                  color: const Color(0xFF2DD4BF),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildProjectActivityCard(BuildContext context) {
+    return GlassCard(
+      borderRadius: 18,
+      padding: const EdgeInsets.all(16),
+      child: _buildActivityProjectSummaryCard(context),
     );
   }
 
@@ -144,8 +261,8 @@ class AdminHome extends StatelessWidget {
               return AppCard(
                 margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                 padding: const EdgeInsets.all(16),
-                backgroundColor: iconColor.withValues(alpha: 0.06),
-                elevation: 1.5,
+                backgroundColor: AppTheme.white,
+                elevation: 1,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -208,10 +325,22 @@ class AdminHome extends StatelessWidget {
               value: pending,
             );
 
-            const cardWidth = 160.0;
+            final isWide = constraints.maxWidth >= 900;
+            if (isWide) {
+              return Row(
+                children: [
+                  Expanded(child: totalCard),
+                  const SizedBox(width: 12),
+                  Expanded(child: ongoingCard),
+                  const SizedBox(width: 12),
+                  Expanded(child: pendingCard),
+                ],
+              );
+            }
 
+            const cardWidth = 180.0;
             return SizedBox(
-              height: 140,
+              height: 132,
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
@@ -311,19 +440,21 @@ class AdminHome extends StatelessWidget {
       future: _loadProjectActivitySummary(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return AppCard(
-            child: Row(
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Loading activity project summary…',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
+          return Row(
+            children: [
+              const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Loading activity project summary…',
+                  style: Theme.of(context).textTheme.bodyMedium,
                 ),
-              ],
-            ),
+              ),
+            ],
           );
         }
 
@@ -352,33 +483,33 @@ class AdminHome extends StatelessWidget {
 
         final visible = summaries.take(5).toList();
 
-        return AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Project Activity Summary',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 12),
-              GestureDetector(
-                onTap: () => _showFullProjectActivityTable(context, summaries),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Project Activity Summary',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => _showFullProjectActivityTable(context, summaries),
+              child: GlassDataTableTheme(
                 child: _buildProjectActivityDataTable(context, visible),
               ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  'Tap table to view all projects',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                'Tap table to view all projects',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                    ),
               ),
-            ],
-          ),
+            ),
+          ],
         );
       },
     );
@@ -391,13 +522,10 @@ class AdminHome extends StatelessWidget {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
+        dividerThickness: 0,
         columnSpacing: 16,
         dataRowMinHeight: 88,
         dataRowMaxHeight: 128,
-        headingTextStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-          fontWeight: FontWeight.w600,
-          color: AppTheme.mediumGray,
-        ),
         columns: const [
           DataColumn(label: Text('Project')),
           DataColumn(label: Text('Site manager')),
@@ -534,13 +662,13 @@ class AdminHome extends StatelessWidget {
                   width: 28,
                   height: 28,
                   decoration: BoxDecoration(
-                    color: AppTheme.deepBlue.withValues(alpha: 0.06),
+                    color: Colors.black.withValues(alpha: 0.04),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(
                     Icons.business,
                     size: 16,
-                    color: AppTheme.deepBlue,
+                    color: Colors.black.withValues(alpha: 0.75),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -568,14 +696,16 @@ class AdminHome extends StatelessWidget {
             siteManagerLabel,
             style: Theme.of(
               context,
-            ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+            ).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.mediumGray,
+                ),
           ),
         ),
         DataCell(
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: statusColor.withValues(alpha: 0.12),
+              color: statusColor.withValues(alpha: 0.22),
               borderRadius: BorderRadius.circular(999),
             ),
             child: Text(
@@ -588,9 +718,24 @@ class AdminHome extends StatelessWidget {
           ),
         ),
         DataCell(
-          Text(
-            '${progress.toStringAsFixed(0)}%',
-            style: Theme.of(context).textTheme.bodySmall,
+          Row(
+            children: [
+              Expanded(
+                child: LinearProgressIndicator(
+                  value: (progress / 100).clamp(0.0, 1.0),
+                  minHeight: 6,
+                  backgroundColor: Colors.black.withValues(alpha: 0.06),
+                  color: const Color(0xFF2DD4BF),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                '${progress.toStringAsFixed(0)}%',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.black.withValues(alpha: 0.75),
+                    ),
+              ),
+            ],
           ),
         ),
         DataCell(
@@ -604,24 +749,28 @@ class AdminHome extends StatelessWidget {
                   budget <= 0
                       ? 'Budget: —'
                       : 'Budget: ${budget.toStringAsFixed(0)}',
-                  style: Theme.of(context).textTheme.bodySmall,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.black.withValues(alpha: 0.75),
+                      ),
                 ),
                 const SizedBox(height: 4),
                 LinearProgressIndicator(
                   value: budget <= 0
                       ? 0.0
                       : (expenses / budget).clamp(0.0, 1.0),
-                  backgroundColor: AppTheme.lightGray,
-                  color: AppTheme.softGreen,
+                  backgroundColor: Colors.black.withValues(alpha: 0.06),
+                  color: const Color(0xFF2DD4BF),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   budget <= 0
-                      ? 'Expenses: —'
-                      : 'Expenses: ${utilizationPercent.toStringAsFixed(0)}% of budget',
+                      ? 'Expense: —'
+                      : 'Expense: ${expenses.toStringAsFixed(0)} (${utilizationPercent.toStringAsFixed(0)}%)',
                   style: Theme.of(
                     context,
-                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                  ).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
                 ),
               ],
             ),
@@ -987,6 +1136,93 @@ class AdminHome extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _KpiCard extends StatelessWidget {
+  const _KpiCard({
+    required this.title,
+    required this.value,
+    required this.accent,
+    this.badgeText,
+    this.badgeColor,
+  });
+
+  final String title;
+  final String value;
+  final Color accent;
+  final String? badgeText;
+  final Color? badgeColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      borderRadius: 16,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+              if (badgeText != null && badgeText!.isNotEmpty)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: (badgeColor ?? accent).withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: (badgeColor ?? accent).withValues(alpha: 0.30),
+                    ),
+                  ),
+                  child: Text(
+                    badgeText!,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: badgeColor ?? accent,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            height: 2,
+            width: 48,
+            decoration: BoxDecoration(
+              color: accent,
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            height: 48,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

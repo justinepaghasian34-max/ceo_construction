@@ -1,25 +1,34 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
+import 'widgets/admin_glass_layout.dart';
 
 class AdminFinancialMonitoring extends StatelessWidget {
   const AdminFinancialMonitoring({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Budget & Financial Monitoring',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+    return AdminGlassScaffold(
+      title: 'Budget & Financial Monitoring',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.notifications_none),
+          onPressed: () => context.push(RouteNames.notifications),
         ),
+        IconButton(
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => context.push(RouteNames.profile),
+        ),
+      ],
+      bottomNavigationBar: const AdminBottomNavBar(
+        current: AdminNavItem.budgetFinancial,
       ),
-      body: FutureBuilder<_FinancialOverviewData>(
+      child: FutureBuilder<_FinancialOverviewData>(
         future: _loadFinancialOverview(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -51,61 +60,72 @@ class AdminFinancialMonitoring extends StatelessWidget {
 
           final visibleSummaries = data.summaries.take(5).toList();
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final isNarrow = constraints.maxWidth < 700;
+          return GlassCard(
+            borderRadius: 18,
+            padding: const EdgeInsets.all(14),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 800;
+                final content = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SmartInsightCard(
+                      title: 'Smart Insight',
+                      message:
+                          'Monitor budget utilization per project and identify over-budget sites early.',
+                    ),
+                    SizedBox(height: isNarrow ? 14 : 18),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isCardsNarrow = constraints.maxWidth < 700;
 
-                    Widget buildStatCard({
-                      required IconData icon,
-                      required Color iconColor,
-                      required String label,
-                      required String value,
-                    }) {
-                      return AppCard(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: iconColor.withAlpha(24),
-                                    borderRadius: BorderRadius.circular(12),
+                      Widget buildStatCard({
+                        required IconData icon,
+                        required Color iconColor,
+                        required String label,
+                        required String value,
+                      }) {
+                        return AppCard(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: iconColor.withAlpha(24),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(icon, color: iconColor, size: 20),
                                   ),
-                                  child: Icon(icon, color: iconColor, size: 20),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.bodySmall
-                                        ?.copyWith(color: AppTheme.mediumGray),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: AppTheme.mediumGray),
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              value,
-                              style: Theme.of(context).textTheme.titleMedium
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.primaryBlue,
-                                  ),
-                            ),
-                          ],
-                        ),
-                      );
-                    }
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                value,
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.primaryBlue,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
 
                     final totalBudgetCard = buildStatCard(
                       icon: Icons.account_balance,
@@ -133,11 +153,11 @@ class AdminFinancialMonitoring extends StatelessWidget {
                       icon: Icons.pie_chart,
                       iconColor: AppTheme.softGreen,
                       label:
-                          'Overall utilization  ${data.overBudgetProjects} $overBudgetLabel over budget',
+                          'Overall utilization  ${data.overBudgetProjects} $overBudgetLabel over budget',
                       value: utilizationText,
                     );
 
-                    if (isNarrow) {
+                    if (isCardsNarrow) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -160,7 +180,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
                           ],
                         ),
                         const SizedBox(height: 12),
-                        Row(children: [Expanded(child: utilizationCard)]),
+                        utilizationCard,
                       ],
                     );
                   },
@@ -169,32 +189,40 @@ class AdminFinancialMonitoring extends StatelessWidget {
                 Text(
                   'Budget vs expenses per project',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
                 const SizedBox(height: 8),
                 GestureDetector(
-                  onTap: () =>
-                      _showFullBudgetVsExpensesTable(context, data.summaries),
-                  child: _buildBudgetVsExpensesTable(context, visibleSummaries),
+                  onTap: () => _showFullBudgetVsExpensesTable(
+                    context,
+                    data.summaries,
+                  ),
+                  child: GlassDataTableTheme(
+                    child: _buildBudgetVsExpensesTable(
+                      context,
+                      visibleSummaries,
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Align(
                   alignment: Alignment.centerRight,
                   child: Text(
                     'Tap table to view all projects',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                        ),
                   ),
                 ),
               ],
-            ),
-          );
+            );
+
+            return content;
+          },
+        ),
+      );
         },
-      ),
-      bottomNavigationBar: const AdminBottomNavBar(
-        current: AdminNavItem.budgetFinancial,
       ),
     );
   }
@@ -207,10 +235,6 @@ class AdminFinancialMonitoring extends StatelessWidget {
       scrollDirection: Axis.horizontal,
       child: DataTable(
         columnSpacing: 16,
-        headingTextStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-          fontWeight: FontWeight.w600,
-          color: AppTheme.mediumGray,
-        ),
         columns: const [
           DataColumn(label: Text('Project')),
           DataColumn(label: Text('Status')),

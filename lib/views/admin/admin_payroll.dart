@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:go_router/go_router.dart';
+import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/payroll_model.dart';
 import '../../models/attendance_model.dart';
@@ -8,6 +10,7 @@ import '../../services/hive_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
+import 'widgets/admin_glass_layout.dart';
 
 String formatCurrency(double value) {
   // Simple peso currency formatting: ₱1,234,567.89
@@ -58,16 +61,22 @@ class _AdminPayrollState extends State<AdminPayroll> {
   Widget build(BuildContext context) {
     final query = FirebaseFirestore.instance.collectionGroup('payroll');
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        title: const Text(
-          'Payroll Monitoring',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+    return AdminGlassScaffold(
+      title: 'Payroll Monitoring',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.notifications_none),
+          onPressed: () => context.push(RouteNames.notifications),
         ),
+        IconButton(
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => context.push(RouteNames.profile),
+        ),
+      ],
+      bottomNavigationBar: const AdminBottomNavBar(
+        current: AdminNavItem.payroll,
       ),
-      body: StreamBuilder<QuerySnapshot>(
+      child: StreamBuilder<QuerySnapshot>(
         stream: query.snapshots(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -231,208 +240,262 @@ class _AdminPayrollState extends State<AdminPayroll> {
           final List<AttendanceModel> attendanceForPayroll =
               monthAttendance.isNotEmpty ? monthAttendance : allAttendance;
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Summary',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+          return GlassCard(
+            borderRadius: 18,
+            padding: const EdgeInsets.all(14),
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SmartInsightCard(
+                    title: 'Smart Insight',
+                    message:
+                        'Track pending payouts and overtime hours to avoid payroll delays.',
                   ),
-                ),
-                const SizedBox(height: 8),
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    Widget buildStatCard({
-                      required IconData icon,
-                      required Color iconColor,
-                      required String label,
-                      required String value,
-                    }) {
-                      return AppCard(
-                        padding: const EdgeInsets.all(16),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Summary',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      Widget buildStatCard({
+                        required IconData icon,
+                        required Color iconColor,
+                        required String label,
+                        required String value,
+                      }) {
+                        return AppCard(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: iconColor.withAlpha(24),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(
+                                      icon,
+                                      color: iconColor,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: AppTheme.mediumGray),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                value,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.primaryBlue,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      final totalCard = buildStatCard(
+                        icon: Icons.payments,
+                        iconColor: AppTheme.softGreen,
+                        label: 'Total payroll cost',
+                        value: formatCurrency(totalPayroll),
+                      );
+
+                      final workersCard = buildStatCard(
+                        icon: Icons.groups,
+                        iconColor: AppTheme.primaryBlue,
+                        label: 'Active workers',
+                        value: activeWorkerIds.length.toString(),
+                      );
+
+                      final pendingCard = buildStatCard(
+                        icon: Icons.pending_actions,
+                        iconColor: AppTheme.warningOrange,
+                        label: 'Pending payouts',
+                        value: formatCurrency(pendingPayoutTotal),
+                      );
+
+                      final overtimeCard = buildStatCard(
+                        icon: Icons.access_time,
+                        iconColor: AppTheme.accentYellow,
+                        label: 'Overtime hours',
+                        value: '${formatHours(totalOvertimeHours)} hrs',
+                      );
+
+                      final isNarrow = constraints.maxWidth < 700;
+                      if (isNarrow) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            totalCard,
+                            const SizedBox(height: 12),
+                            workersCard,
+                            const SizedBox(height: 12),
+                            pendingCard,
+                            const SizedBox(height: 12),
+                            overtimeCard,
+                          ],
+                        );
+                      }
+
+                      return Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(child: totalCard),
+                              const SizedBox(width: 12),
+                              Expanded(child: workersCard),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(child: pendingCard),
+                              const SizedBox(width: 12),
+                              Expanded(child: overtimeCard),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Worker payroll details',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (itemsByProject.isEmpty)
+                    Text(
+                      'No payroll data available yet.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppTheme.mediumGray,
+                          ),
+                    ),
+                  if (itemsByProject.isNotEmpty) const SizedBox(height: 4),
+                  if (itemsByProject.isNotEmpty)
+                    for (final entry in itemsByProject.entries) ...[
+                      GlassCard(
+                        borderRadius: 16,
+                        padding: const EdgeInsets.all(12),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Row(
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: iconColor.withAlpha(24),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(icon, color: iconColor, size: 20),
-                                ),
-                                const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    label,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.bodySmall
-                                        ?.copyWith(color: AppTheme.mediumGray),
+                                    'Site: ${shortProjectId(entry.key)}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                   ),
                                 ),
+                                if (validationStatusByProject[entry.key] !=
+                                        null &&
+                                    validationStatusByProject[entry.key]!
+                                        .isNotEmpty)
+                                  _buildValidationChip(
+                                    context,
+                                    validationStatusByProject[entry.key]!,
+                                  ),
                               ],
                             ),
+                            const SizedBox(height: 10),
+                            GestureDetector(
+                              onTap: () => _showFullWorkerPayrollTable(
+                                context,
+                                entry.key,
+                                entry.value,
+                              ),
+                              child: GlassDataTableTheme(
+                                child: _buildWorkerPayrollDataTable(
+                                  context,
+                                  entry.value,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: Text(
+                                'Tap table to view full payroll for this site',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppTheme.mediumGray,
+                                    ),
+                              ),
+                            ),
                             const SizedBox(height: 8),
-                            Text(
-                              value,
-                              style: Theme.of(context).textTheme.headlineSmall
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.primaryBlue,
-                                  ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: ElevatedButton.icon(
+                                onPressed: () => _submitProjectPayroll(entry.key),
+                                icon: const Icon(Icons.check_circle_outline),
+                                label: const Text('Submit payroll for this site'),
+                              ),
                             ),
                           ],
                         ),
-                      );
-                    }
-
-                    final totalCard = buildStatCard(
-                      icon: Icons.payments,
-                      iconColor: AppTheme.softGreen,
-                      label: 'Total payroll cost',
-                      value: formatCurrency(totalPayroll),
-                    );
-
-                    final workersCard = buildStatCard(
-                      icon: Icons.groups,
-                      iconColor: AppTheme.primaryBlue,
-                      label: 'Active workers',
-                      value: activeWorkerIds.length.toString(),
-                    );
-
-                    final pendingCard = buildStatCard(
-                      icon: Icons.pending_actions,
-                      iconColor: AppTheme.warningOrange,
-                      label: 'Pending payouts',
-                      value: formatCurrency(pendingPayoutTotal),
-                    );
-
-                    final overtimeCard = buildStatCard(
-                      icon: Icons.access_time,
-                      iconColor: AppTheme.accentYellow,
-                      label: 'Overtime hours',
-                      value: '${formatHours(totalOvertimeHours)} hrs',
-                    );
-                    return Column(
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(child: totalCard),
-                            const SizedBox(width: 12),
-                            Expanded(child: workersCard),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(child: pendingCard),
-                            const SizedBox(width: 12),
-                            Expanded(child: overtimeCard),
-                          ],
-                        ),
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Worker payroll details',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (itemsByProject.isEmpty)
-                  Text(
-                    'No payroll data available yet.',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
-                  ),
-                if (itemsByProject.isNotEmpty) const SizedBox(height: 4),
-                for (final entry in itemsByProject.entries) ...[
-                  Row(
-                    children: [
-                      Text(
-                        'Site: ${shortProjectId(entry.key)}',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
                       ),
-                      const SizedBox(width: 8),
-                      if (validationStatusByProject[entry.key] != null &&
-                          validationStatusByProject[entry.key]!.isNotEmpty)
-                        _buildValidationChip(
-                          context,
-                          validationStatusByProject[entry.key]!,
-                        ),
+                      const SizedBox(height: 12),
                     ],
-                  ),
-                  const SizedBox(height: 4),
-                  GestureDetector(
-                    onTap: () => _showFullWorkerPayrollTable(
-                      context,
-                      entry.key,
-                      entry.value,
-                    ),
-                    child: _buildWorkerPayrollDataTable(context, entry.value),
-                  ),
-                  const SizedBox(height: 4),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      'Tap table to view full payroll for this site',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.mediumGray,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  if (entry.value.any((e) => e.payrollStatus != 'paid'))
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: ElevatedButton.icon(
-                        onPressed: () => _submitProjectPayroll(entry.key),
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: const Text('Submit payroll for this site'),
-                      ),
-                    ),
                   const SizedBox(height: 12),
-                ],
-                const SizedBox(height: 16),
-                if (attendanceForPayroll.isNotEmpty)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: ElevatedButton.icon(
-                      onPressed: () =>
-                          _generatePayrollFromAttendance(attendanceForPayroll),
-                      icon: const Icon(Icons.playlist_add_check),
-                      label: const Text('Generate payroll from attendance'),
+                  if (attendanceForPayroll.isNotEmpty)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: ElevatedButton.icon(
+                        onPressed: () =>
+                            _generatePayrollFromAttendance(attendanceForPayroll),
+                        icon: const Icon(Icons.playlist_add_check),
+                        label: const Text('Generate payroll from attendance'),
+                      ),
                     ),
-                  ),
-                if (attendanceForPayroll.isEmpty)
-                  Text(
-                    'No attendance data available to generate payroll.',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                  ),
-                const SizedBox(height: 16),
-                _buildRecentPayrollPayoutsSection(context, visiblePayouts),
-              ],
+                  if (attendanceForPayroll.isEmpty)
+                    Text(
+                      'No attendance data available to generate payroll.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.mediumGray,
+                          ),
+                    ),
+                  const SizedBox(height: 16),
+                  _buildRecentPayrollPayoutsSection(context, visiblePayouts),
+                ],
+              ),
             ),
           );
         },
-      ),
-      bottomNavigationBar: const AdminBottomNavBar(
-        current: AdminNavItem.payroll,
       ),
     );
   }

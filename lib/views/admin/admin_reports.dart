@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/daily_report_model.dart';
 import '../../services/firebase_service.dart';
+import '../../services/govtrack_ai_service.dart';
 import '../../widgets/common/status_chip.dart';
 import 'widgets/admin_bottom_nav.dart';
 
@@ -278,17 +279,14 @@ class _AiDashboard extends StatefulWidget {
 }
 
 class _AiDashboardState extends State<_AiDashboard> {
-  static const Color _navBgTop = Color(0xFF0B1220);
-  static const Color _navBgBottom = Color(0xFF0A1325);
-  static const Color _navBorder = Color(0xFF16233A);
-  static const Color _navText = Color(0xFFCBD5E1);
-  static const Color _navMuted = Color(0xFF94A3B8);
-  static const Color _navActiveBg = Color(0xFF111C33);
+  static const Color _navBorder = Color(0xFFE2E8F0);
+  static const Color _navMuted = Color(0xFF64748B);
+  static const Color _navActiveBg = Color(0xFFF1F5F9);
   static const Color _navActiveAccent = Color(0xFF2563EB);
 
-  static const Color _pageBg = Color(0xFFF6F8FB);
+  static const Color _pageBg = Color(0xFFF3F4F6);
   static const Color _cardBg = Color(0xFFFFFFFF);
-  static const Color _border = Color(0xFFE2E8F0);
+  static const Color _border = Color(0xFFE5E7EB);
   static const Color _title = Color(0xFF0F172A);
   static const Color _subtitle = Color(0xFF64748B);
   static const Color _blue = Color(0xFF2563EB);
@@ -306,6 +304,7 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   bool _isVerifying = false;
   bool _isAnalyzing = false;
+  bool _isGeneratingReport = false;
 
   String? _selectedProjectId;
   String? _selectedProjectName;
@@ -314,6 +313,8 @@ class _AiDashboardState extends State<_AiDashboard> {
   String? _selectedImageName;
 
   Map<String, dynamic>? _lastAnalysis;
+
+  final GovTrackAiService _govTrackAiService = GovTrackAiService();
 
   final TextEditingController _chatController = TextEditingController();
   final List<_ChatMessage> _messages = <_ChatMessage>[
@@ -381,6 +382,65 @@ class _AiDashboardState extends State<_AiDashboard> {
         return _buildValidationReportsPanel(context);
       case _AiNavItem.auditLogs:
         return _buildPlaceholder(context, 'Audit Logs', 'Audit log view placeholder.');
+    }
+  }
+
+  Future<void> _generateGovTrackReport() async {
+    final projectId = _selectedProjectId;
+    if (projectId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a project first.')),
+      );
+      return;
+    }
+
+    try {
+      setState(() => _isGeneratingReport = true);
+
+      final projectDoc = await FirebaseService.instance.projectsCollection.doc(projectId).get();
+      final projectData = (projectDoc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      final projectName = _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
+
+      final recentDailyReportsQuery = await FirebaseService.instance
+          .dailyReportsCollection(projectId)
+          .orderBy('reportDate', descending: true)
+          .limit(5)
+          .get();
+
+      final recentDailyReports = recentDailyReportsQuery.docs
+          .map((d) => ((d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{}))
+          .toList();
+
+      final analysis = await _govTrackAiService.generateGovTrackReport(
+        projectId: projectId,
+        projectName: projectName,
+        projectData: projectData,
+        recentDailyReports: recentDailyReports,
+      );
+
+      await FirebaseService.instance.projectsCollection.doc(projectId).collection('govtrack_reports').add(
+        <String, dynamic>{
+          'projectId': projectId,
+          'projectName': projectName,
+          'analysis': analysis,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _lastAnalysis = analysis;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('GovTrack report generated and saved.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Generate report failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _isGeneratingReport = false);
     }
   }
 
@@ -527,6 +587,52 @@ class _AiDashboardState extends State<_AiDashboard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                Text(
+                  'GOVTRACK REPORT',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: _subtitle,
+                      ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 46,
+                  child: FilledButton.icon(
+                    onPressed: _isGeneratingReport ? null : _generateGovTrackReport,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    icon: _isGeneratingReport
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.auto_awesome, size: 18),
+                    label: Text(
+                      _isGeneratingReport ? 'Generating...' : 'Generate GovTrack Report (Free / Local)',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Runs on this PC via Ollama (127.0.0.1:11434). Generated reports are saved to Firestore.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _subtitle),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 _UploadDropzone(
                   bytes: _selectedImageBytes,
                   onPick: _pickDailyProgressImage,
@@ -554,7 +660,10 @@ class _AiDashboardState extends State<_AiDashboard> {
             ),
           ),
         ),
-        if (_lastAnalysis != null) ...[
+        if (_selectedProjectId != null) ...[
+          const SizedBox(height: 18),
+          _buildLatestGovTrackReport(context),
+        ] else if (_lastAnalysis != null) ...[
           const SizedBox(height: 18),
           _GovTrackReportCard(
             projectName: _selectedProjectName ?? 'Selected Project',
@@ -562,6 +671,51 @@ class _AiDashboardState extends State<_AiDashboard> {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _buildLatestGovTrackReport(BuildContext context) {
+    final projectId = _selectedProjectId;
+    if (projectId == null) {
+      return const SizedBox.shrink();
+    }
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseService.instance.projectsCollection
+          .doc(projectId)
+          .collection('govtrack_reports')
+          .orderBy('createdAt', descending: true)
+          .limit(1)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          if (_lastAnalysis == null) {
+            return const SizedBox.shrink();
+          }
+          return _GovTrackReportCard(
+            projectName: _selectedProjectName ?? 'Selected Project',
+            analysis: _lastAnalysis!,
+          );
+        }
+
+        final docs = snapshot.data?.docs ?? const [];
+        if (docs.isEmpty) {
+          if (_lastAnalysis == null) {
+            return const _EmptyHint(text: 'No GovTrack reports generated yet.');
+          }
+          return _GovTrackReportCard(
+            projectName: _selectedProjectName ?? 'Selected Project',
+            analysis: _lastAnalysis!,
+          );
+        }
+
+        final data = (docs.first.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        final analysis = (data['analysis'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        return _GovTrackReportCard(
+          projectName: _selectedProjectName ?? 'Selected Project',
+          analysis: analysis,
+        );
+      },
     );
   }
 
@@ -886,11 +1040,7 @@ class _GovSidebar extends StatelessWidget {
     return Container(
       width: 300,
       decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [_AiDashboardState._navBgTop, _AiDashboardState._navBgBottom],
-        ),
+        color: Colors.white,
         border: Border(right: BorderSide(color: _AiDashboardState._navBorder)),
       ),
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
@@ -917,7 +1067,7 @@ class _GovSidebar extends StatelessWidget {
                     Text(
                       'GovTrack AI',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
+                            color: _AiDashboardState._title,
                             fontWeight: FontWeight.w900,
                           ),
                     ),
@@ -1000,11 +1150,11 @@ class _GovSidebar extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 16,
-                  backgroundColor: _AiDashboardState._navActiveBg,
+                  backgroundColor: Colors.black.withValues(alpha: 0.04),
                   child: Text(
                     'JD',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: _AiDashboardState._navText,
+                          color: _AiDashboardState._title,
                           fontWeight: FontWeight.w900,
                         ),
                   ),
@@ -1017,7 +1167,7 @@ class _GovSidebar extends StatelessWidget {
                       Text(
                         'Juan Dela Cruz',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Colors.white,
+                              color: _AiDashboardState._title,
                               fontWeight: FontWeight.w900,
                             ),
                       ),
@@ -1094,14 +1244,14 @@ class _GovNavItem extends StatelessWidget {
                 Icon(
                   icon,
                   size: 18,
-                  color: active ? Colors.white : _AiDashboardState._navText,
+                  color: active ? _AiDashboardState._navActiveAccent : Colors.black.withValues(alpha: 0.75),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     title,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: active ? Colors.white : _AiDashboardState._navText,
+                          color: active ? _AiDashboardState._title : Colors.black.withValues(alpha: 0.78),
                           fontWeight: FontWeight.w800,
                         ),
                   ),
@@ -1557,7 +1707,7 @@ class _GovTrackReportCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: const BoxDecoration(
-              color: Color(0xFF0B1220),
+              color: _AiDashboardState._blue,
               borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(20),
                 topRight: Radius.circular(20),
@@ -1566,7 +1716,7 @@ class _GovTrackReportCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.description_outlined, color: Colors.white70),
+                const Icon(Icons.description_outlined, color: Colors.white),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -1575,7 +1725,7 @@ class _GovTrackReportCard extends StatelessWidget {
                       Text(
                         'GOVTRACK AI REPORT',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.white70,
+                              color: Colors.white.withValues(alpha: 0.85),
                               fontWeight: FontWeight.w900,
                               letterSpacing: 0.8,
                             ),
@@ -1591,7 +1741,13 @@ class _GovTrackReportCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Text(dateText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70)),
+                Text(
+                  dateText,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: Colors.white.withValues(alpha: 0.85)),
+                ),
               ],
             ),
           ),

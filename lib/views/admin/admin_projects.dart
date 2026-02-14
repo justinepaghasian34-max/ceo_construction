@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
 import '../../services/audit_log_service.dart';
-import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
+import 'widgets/admin_glass_layout.dart';
 
 class AdminProjects extends StatelessWidget {
   const AdminProjects({super.key});
@@ -15,261 +16,286 @@ class AdminProjects extends StatelessWidget {
   Widget build(BuildContext context) {
     final projectsRef = FirebaseService.instance.projectsCollection;
 
-    return Scaffold(
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        centerTitle: true,
-        title: const Text(
-          'Construction Projects',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.center,
+    return AdminGlassScaffold(
+      title: 'Construction Projects',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.notifications_none),
+          onPressed: () => context.push(RouteNames.notifications),
         ),
-      ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: projectsRef.snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (snapshot.hasError) {
-            return Center(
-              child: Text(
-                'Failed to load projects',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(color: AppTheme.errorRed),
-              ),
-            );
-          }
-
-          final docs = snapshot.data?.docs ?? [];
-
-          if (docs.isEmpty) {
-            return Center(
-              child: Text(
-                'No projects found',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(color: AppTheme.mediumGray),
-              ),
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: docs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final doc = docs[index];
-              final data = doc.data() as Map<String, dynamic>;
-              final name = (data['name'] ?? 'Untitled Project').toString();
-              final status = (data['status'] ?? 'unknown').toString();
-              final progress = (data['progressPercentage'] ?? 0).toDouble();
-              final projectId = doc.id;
-              final String displayProjectId = (data['projectCode'] ?? projectId)
-                  .toString();
-              const String projectIdLabel = 'Project ID';
-              final siteManagerName = (data['siteManagerName'] ?? '')
-                  .toString();
-              final location = (data['location'] ?? '').toString();
-
-              final normalizedStatus = status.toLowerCase();
-              Color statusColor;
-              if (normalizedStatus == 'ongoing') {
-                statusColor = AppTheme.softGreen;
-              } else if (normalizedStatus == 'completed') {
-                statusColor = AppTheme.primaryBlue;
-              } else if (normalizedStatus == 'pending') {
-                statusColor = AppTheme.warningOrange;
-              } else {
-                statusColor = AppTheme.mediumGray;
-              }
-
-              String formattedStatus;
-              if (status.isEmpty) {
-                formattedStatus = '—';
-              } else {
-                formattedStatus = status[0].toUpperCase() + status.substring(1);
-              }
-
-              String siteManagerLabel;
-              if (siteManagerName.isEmpty) {
-                siteManagerLabel = 'Unassigned';
-              } else {
-                siteManagerLabel = siteManagerName;
-              }
-
-              return AppCard(
-                onTap: () {
-                  _openProjectDetails(
-                    context,
-                    projectId,
-                    projectIdLabel,
-                    name,
-                    status,
-                    progress,
-                    location,
-                    siteManagerLabel,
-                    data,
-                  );
-                },
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: 32,
-                          height: 32,
-                          decoration: BoxDecoration(
-                            color: AppTheme.deepBlue.withValues(alpha: 0.06),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(
-                            Icons.business,
-                            size: 18,
-                            color: AppTheme.deepBlue,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                name,
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              const SizedBox(height: 4),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      '$projectIdLabel: $displayProjectId',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            color: AppTheme.mediumGray,
-                                          ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  if (location.isNotEmpty) ...[
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Text(
-                                        location,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall
-                                            ?.copyWith(
-                                              color: AppTheme.mediumGray,
-                                            ),
-                                        overflow: TextOverflow.ellipsis,
-                                        textAlign: TextAlign.right,
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: statusColor.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            formattedStatus,
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  color: statusColor,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Site manager: $siteManagerLabel',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: AppTheme.mediumGray),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          '${progress.toStringAsFixed(0)}% complete',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    LinearProgressIndicator(
-                      value: (progress.clamp(0, 100)) / 100,
-                      backgroundColor: AppTheme.lightGray,
-                      color: AppTheme.softGreen,
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton.icon(
-                          onPressed: () {
-                            _showEditProjectDialog(context, projectId, data);
-                          },
-                          icon: const Icon(Icons.edit_outlined),
-                          label: const Text('Edit'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: () {
-                            _openProjectDetails(
-                              context,
-                              projectId,
-                              projectIdLabel,
-                              name,
-                              status,
-                              progress,
-                              location,
-                              siteManagerLabel,
-                              data,
-                            );
-                          },
-                          icon: const Icon(Icons.visibility_outlined),
-                          label: const Text('View details'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
+        IconButton(
+          icon: const Icon(Icons.person_outline),
+          onPressed: () => context.push(RouteNames.profile),
+        ),
+      ],
       bottomNavigationBar: const AdminBottomNavBar(
         current: AdminNavItem.constructionProjects,
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddProjectDialog(context),
-        backgroundColor: AppTheme.softGreen,
-        child: const Icon(Icons.add),
+        backgroundColor: const Color(0xFF2DD4BF),
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
+      child: GlassCard(
+        borderRadius: 18,
+        padding: const EdgeInsets.all(14),
+        child: StreamBuilder<QuerySnapshot>(
+          stream: projectsRef.snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            if (snapshot.hasError) {
+              return Center(
+                child: Text(
+                  'Failed to load projects',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.errorRed,
+                      ),
+                ),
+              );
+            }
+
+            final docs = snapshot.data?.docs ?? [];
+
+            if (docs.isEmpty) {
+              return Center(
+                child: Text(
+                  'No projects found',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              );
+            }
+
+            return ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: docs.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (context, index) {
+                final doc = docs[index];
+                final data = doc.data() as Map<String, dynamic>;
+                final name = (data['name'] ?? 'Untitled Project').toString();
+                final status = (data['status'] ?? 'unknown').toString();
+                final progress = (data['progressPercentage'] ?? 0).toDouble();
+                final projectId = doc.id;
+                final String displayProjectId =
+                    (data['projectCode'] ?? projectId).toString();
+                const String projectIdLabel = 'Project ID';
+                final siteManagerName =
+                    (data['siteManagerName'] ?? '').toString();
+                final location = (data['location'] ?? '').toString();
+
+                final normalizedStatus = status.toLowerCase();
+                Color statusColor;
+                if (normalizedStatus == 'ongoing') {
+                  statusColor = AppTheme.softGreen;
+                } else if (normalizedStatus == 'completed') {
+                  statusColor = AppTheme.primaryBlue;
+                } else if (normalizedStatus == 'pending') {
+                  statusColor = AppTheme.warningOrange;
+                } else {
+                  statusColor = AppTheme.mediumGray;
+                }
+
+                String formattedStatus;
+                if (status.isEmpty) {
+                  formattedStatus = '—';
+                } else {
+                  formattedStatus = status[0].toUpperCase() + status.substring(1);
+                }
+
+                String siteManagerLabel;
+                if (siteManagerName.isEmpty) {
+                  siteManagerLabel = 'Unassigned';
+                } else {
+                  siteManagerLabel = siteManagerName;
+                }
+
+                return GlassCard(
+                  borderRadius: 16,
+                  padding: const EdgeInsets.all(14),
+                  child: InkWell(
+                    onTap: () {
+                      _openProjectDetails(
+                        context,
+                        projectId,
+                        projectIdLabel,
+                        name,
+                        status,
+                        progress,
+                        location,
+                        siteManagerLabel,
+                        data,
+                      );
+                    },
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: 32,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.04),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Icon(
+                                Icons.business,
+                                size: 18,
+                                color: Colors.black.withValues(alpha: 0.75),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          '$projectIdLabel: $displayProjectId',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: AppTheme.mediumGray,
+                                              ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (location.isNotEmpty) ...[
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Text(
+                                            location,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color: AppTheme.mediumGray,
+                                                ),
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.right,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: statusColor.withValues(alpha: 0.22),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                formattedStatus,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: statusColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Site manager: $siteManagerLabel',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppTheme.mediumGray,
+                                    ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              '${progress.toStringAsFixed(0)}% complete',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Colors.black.withValues(alpha: 0.75),
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          value: (progress.clamp(0, 100)) / 100,
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          color: const Color(0xFF2DD4BF),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton.icon(
+                              onPressed: () {
+                                _showEditProjectDialog(context, projectId, data);
+                              },
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Edit'),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              onPressed: () {
+                                _openProjectDetails(
+                                  context,
+                                  projectId,
+                                  projectIdLabel,
+                                  name,
+                                  status,
+                                  progress,
+                                  location,
+                                  siteManagerLabel,
+                                  data,
+                                );
+                              },
+                              icon: const Icon(Icons.visibility_outlined),
+                              label: const Text('View details'),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }
@@ -522,7 +548,7 @@ class AdminProjects extends StatelessWidget {
             }
 
             return AlertDialog(
-              backgroundColor: AppTheme.lightGray,
+              backgroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(24),
               ),
@@ -1272,7 +1298,7 @@ class AdminProjects extends StatelessWidget {
             }
 
             return AlertDialog(
-              backgroundColor: AppTheme.lightGray,
+              backgroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(24),
               ),
