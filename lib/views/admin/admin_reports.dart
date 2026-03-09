@@ -13,12 +13,18 @@ import '../../widgets/common/status_chip.dart';
 import 'widgets/admin_bottom_nav.dart';
 
 class AdminReports extends StatelessWidget {
-  const AdminReports({super.key});
+  const AdminReports({
+    super.key,
+    this.showBottomNav = true,
+  });
+
+  final bool showBottomNav;
 
   @override
   Widget build(BuildContext context) {
     return _AiDashboard(
       onOpenDailyReport: (report) => _showReportDetailsDialog(context, report),
+      showBottomNav: showBottomNav,
     );
   }
 
@@ -261,18 +267,18 @@ class AdminReports extends StatelessWidget {
 }
 
 enum _AiNavItem {
-  commandCenter,
   intelligenceChat,
-  aiDailyProgress,
-  activeAlerts,
-  validationReports,
-  auditLogs,
+  imageGenerate,
 }
 
 class _AiDashboard extends StatefulWidget {
-  const _AiDashboard({required this.onOpenDailyReport});
+  const _AiDashboard({
+    required this.onOpenDailyReport,
+    required this.showBottomNav,
+  });
 
   final ValueChanged<DailyReportModel> onOpenDailyReport;
+  final bool showBottomNav;
 
   @override
   State<_AiDashboard> createState() => _AiDashboardState();
@@ -299,7 +305,7 @@ class _AiDashboardState extends State<_AiDashboard> {
     ),
   ];
 
-  _AiNavItem _selected = _AiNavItem.commandCenter;
+  _AiNavItem _selected = _AiNavItem.intelligenceChat;
   int _topTabIndex = 0;
 
   bool _isVerifying = false;
@@ -336,52 +342,90 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   @override
   Widget build(BuildContext context) {
+    final isNarrow = MediaQuery.of(context).size.width < 980;
     return Scaffold(
       backgroundColor: _pageBg,
-      body: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _GovSidebar(
-            selected: _selected,
-            onSelect: (v) => setState(() => _selected = v),
-          ),
-          Expanded(
-            child: Column(
+      drawer: isNarrow
+          ? Drawer(
+              child: SafeArea(
+                child: _GovSidebar(
+                  selected: _selected,
+                  onSelect: (v) {
+                    Navigator.of(context).pop();
+                    setState(() {
+                      _selected = v;
+                      _topTabIndex = v == _AiNavItem.intelligenceChat ? 0 : 1;
+                    });
+                  },
+                ),
+              ),
+            )
+          : null,
+      body: isNarrow
+          ? Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _TopHeader(
                   tabIndex: _topTabIndex,
-                  onTabChange: (i) => setState(() => _topTabIndex = i),
+                  onTabChange: (i) => setState(() {
+                    _topTabIndex = i;
+                    _selected = i == 0 ? _AiNavItem.intelligenceChat : _AiNavItem.imageGenerate;
+                  }),
+                  showMenu: true,
                 ),
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.all(24),
+                    padding: const EdgeInsets.all(16),
                     child: _buildBody(context),
                   ),
                 ),
               ],
+            )
+          : Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _GovSidebar(
+                  selected: _selected,
+                  onSelect: (v) => setState(() {
+                    _selected = v;
+                    _topTabIndex = v == _AiNavItem.intelligenceChat ? 0 : 1;
+                  }),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _TopHeader(
+                        tabIndex: _topTabIndex,
+                        onTabChange: (i) => setState(() {
+                          _topTabIndex = i;
+                          _selected = i == 0 ? _AiNavItem.intelligenceChat : _AiNavItem.imageGenerate;
+                        }),
+                        showMenu: false,
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: _buildBody(context),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: const AdminBottomNavBar(current: AdminNavItem.aiReports),
+      bottomNavigationBar: widget.showBottomNav
+          ? const AdminBottomNavBar(current: AdminNavItem.aiReports)
+          : null,
     );
   }
 
   Widget _buildBody(BuildContext context) {
     switch (_selected) {
-      case _AiNavItem.commandCenter:
-        return _buildCommandCenter(context);
       case _AiNavItem.intelligenceChat:
         return _buildChat(context);
-      case _AiNavItem.aiDailyProgress:
+      case _AiNavItem.imageGenerate:
         return _buildAiDailyProgress(context);
-      case _AiNavItem.activeAlerts:
-        return _buildPlaceholder(context, 'Active Alerts', 'No active alerts at this time.');
-      case _AiNavItem.validationReports:
-        return _buildValidationReportsPanel(context);
-      case _AiNavItem.auditLogs:
-        return _buildPlaceholder(context, 'Audit Logs', 'Audit log view placeholder.');
     }
   }
 
@@ -445,71 +489,111 @@ class _AiDashboardState extends State<_AiDashboard> {
   }
 
   Widget _buildCommandCenter(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _PageTitle(
-          title: 'Executive Command Center',
-          subtitle: 'Real-time Infrastructure Monitoring • Province of Batangas',
-        ),
-        const SizedBox(height: 18),
-        Row(
-          children: [
-            _PillTabs(
-              index: _topTabIndex,
-              onChange: (i) => setState(() => _topTabIndex = i),
-            ),
-            const Spacer(),
-            _IconCircleButton(icon: Icons.search, onTap: () {}),
-            const SizedBox(width: 10),
-            _IconCircleButton(icon: Icons.notifications_none, onTap: () {}),
-          ],
-        ),
-        const SizedBox(height: 18),
-        Expanded(
-          child: GridView.count(
-            crossAxisCount: MediaQuery.of(context).size.width >= 1200 ? 2 : 1,
-            mainAxisSpacing: 16,
-            crossAxisSpacing: 16,
-            childAspectRatio: 2.4,
-            children: const [
-              _MetricCard(
-                icon: Icons.monitor_heart_outlined,
-                title: 'TOTAL ACTIVE PROJECTS',
-                value: '24',
-                subtitle: '3 Completed this month',
-                deltaText: '5.2%',
-                deltaUp: true,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 720;
+
+        final metrics = const [
+          _MetricCard(
+            icon: Icons.monitor_heart_outlined,
+            title: 'TOTAL ACTIVE PROJECTS',
+            value: '24',
+            subtitle: '3 Completed this month',
+            deltaText: '5.2%',
+            deltaUp: true,
+          ),
+          _MetricCard(
+            icon: Icons.attach_money,
+            title: 'BUDGET UTILIZATION',
+            value: '₱ 142.5M',
+            subtitle: '85% of allocated funds',
+            deltaText: '2.1%',
+            deltaUp: true,
+          ),
+          _MetricCard(
+            icon: Icons.warning_amber_rounded,
+            title: 'PROJECTS AT RISK',
+            value: '3',
+            subtitle: 'Requires immediate attention',
+            deltaText: '12%',
+            deltaUp: false,
+            tone: _MetricTone.risk,
+          ),
+          _MetricCard(
+            icon: Icons.trending_up,
+            title: 'AVG. COMPLETION RATE',
+            value: '68%',
+            subtitle: 'Across all active sites',
+            deltaText: '8.4%',
+            deltaUp: true,
+          ),
+        ];
+
+        if (isMobile) {
+          return ListView(
+            children: [
+              const _PageTitle(
+                title: 'Executive Command Center',
+                subtitle: 'Real-time Infrastructure Monitoring • Province of Batangas',
               ),
-              _MetricCard(
-                icon: Icons.attach_money,
-                title: 'BUDGET UTILIZATION',
-                value: '₱ 142.5M',
-                subtitle: '85% of allocated funds',
-                deltaText: '2.1%',
-                deltaUp: true,
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _PillTabs(
+                    index: _topTabIndex,
+                    onChange: (i) => setState(() => _topTabIndex = i),
+                  ),
+                  _IconCircleButton(icon: Icons.search, onTap: () {}),
+                  _IconCircleButton(icon: Icons.notifications_none, onTap: () {}),
+                ],
               ),
-              _MetricCard(
-                icon: Icons.warning_amber_rounded,
-                title: 'PROJECTS AT RISK',
-                value: '3',
-                subtitle: 'Requires immediate attention',
-                deltaText: '12%',
-                deltaUp: false,
-                tone: _MetricTone.risk,
-              ),
-              _MetricCard(
-                icon: Icons.trending_up,
-                title: 'AVG. COMPLETION RATE',
-                value: '68%',
-                subtitle: 'Across all active sites',
-                deltaText: '8.4%',
-                deltaUp: true,
+              const SizedBox(height: 12),
+              ...metrics.map(
+                (m) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: m,
+                ),
               ),
             ],
-          ),
-        ),
-      ],
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _PageTitle(
+              title: 'Executive Command Center',
+              subtitle: 'Real-time Infrastructure Monitoring • Province of Batangas',
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                _PillTabs(
+                  index: _topTabIndex,
+                  onChange: (i) => setState(() => _topTabIndex = i),
+                ),
+                const Spacer(),
+                _IconCircleButton(icon: Icons.search, onTap: () {}),
+                const SizedBox(width: 10),
+                _IconCircleButton(icon: Icons.notifications_none, onTap: () {}),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Expanded(
+              child: GridView.count(
+                crossAxisCount: MediaQuery.of(context).size.width >= 1200 ? 2 : 1,
+                mainAxisSpacing: 16,
+                crossAxisSpacing: 16,
+                childAspectRatio: 2.4,
+                children: metrics,
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1093,51 +1177,16 @@ class _GovSidebar extends StatelessWidget {
                     const _NavSectionTitle(text: 'MODULES'),
                     const SizedBox(height: 10),
                     _GovNavItem(
-                      title: 'Command Center',
-                      icon: Icons.dashboard_outlined,
-                      active: selected == _AiNavItem.commandCenter,
-                      onTap: () => onSelect(_AiNavItem.commandCenter),
-                    ),
-                    _GovNavItem(
                       title: 'Intelligence Chat',
                       icon: Icons.forum_outlined,
                       active: selected == _AiNavItem.intelligenceChat,
                       onTap: () => onSelect(_AiNavItem.intelligenceChat),
                     ),
                     _GovNavItem(
-                      title: 'AI Daily Progress',
-                      icon: Icons.document_scanner_outlined,
-                      active: selected == _AiNavItem.aiDailyProgress,
-                      onTap: () => onSelect(_AiNavItem.aiDailyProgress),
-                    ),
-                    const SizedBox(height: 18),
-                    const _NavSectionTitle(text: 'MONITORING'),
-                    const SizedBox(height: 10),
-                    _GovNavItem(
-                      title: 'Active Alerts',
-                      icon: Icons.warning_amber_outlined,
-                      showDot: true,
-                      active: selected == _AiNavItem.activeAlerts,
-                      onTap: () => onSelect(_AiNavItem.activeAlerts),
-                    ),
-                    _GovNavItem(
-                      title: 'Validation Reports',
-                      icon: Icons.fact_check_outlined,
-                      active: selected == _AiNavItem.validationReports,
-                      onTap: () => onSelect(_AiNavItem.validationReports),
-                    ),
-                    _GovNavItem(
-                      title: 'Audit Logs',
-                      icon: Icons.shield_outlined,
-                      active: selected == _AiNavItem.auditLogs,
-                      onTap: () => onSelect(_AiNavItem.auditLogs),
-                    ),
-                    const SizedBox(height: 18),
-                    _GovNavItem(
-                      title: 'System Settings',
-                      icon: Icons.settings_outlined,
-                      active: false,
-                      onTap: () {},
+                      title: 'Image Generate',
+                      icon: Icons.auto_awesome_outlined,
+                      active: selected == _AiNavItem.imageGenerate,
+                      onTap: () => onSelect(_AiNavItem.imageGenerate),
                     ),
                   ],
                 ),
@@ -1272,30 +1321,55 @@ class _GovNavItem extends StatelessWidget {
 }
 
 class _TopHeader extends StatelessWidget {
-  const _TopHeader({required this.tabIndex, required this.onTabChange});
+  const _TopHeader({
+    required this.tabIndex,
+    required this.onTabChange,
+    required this.showMenu,
+  });
   final int tabIndex;
   final ValueChanged<int> onTabChange;
+  final bool showMenu;
 
   @override
   Widget build(BuildContext context) {
+    final isNarrow = MediaQuery.of(context).size.width < 720;
     return Container(
       height: 72,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: EdgeInsets.symmetric(horizontal: isNarrow ? 12 : 24),
       decoration: const BoxDecoration(
         color: Colors.white,
         border: Border(bottom: BorderSide(color: _AiDashboardState._border)),
       ),
       child: Row(
         children: [
-          Text(
-            'AI Progress Validation Engine',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: _AiDashboardState._title,
+          if (showMenu) ...[
+            Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () => Scaffold.of(context).openDrawer(),
+                tooltip: 'Menu',
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              runSpacing: 8,
+              children: [
+                Text(
+                  'GovTrack AI',
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: _AiDashboardState._title,
+                      ),
                 ),
+                _PillTabs(index: tabIndex, onChange: onTabChange),
+              ],
+            ),
           ),
-          const Spacer(),
-          _PillTabs(index: tabIndex, onChange: onTabChange),
         ],
       ),
     );
@@ -1318,9 +1392,8 @@ class _PillTabs extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _PillTab(text: 'Overview', active: index == 0, onTap: () => onChange(0)),
-          _PillTab(text: 'Financials', active: index == 1, onTap: () => onChange(1)),
-          _PillTab(text: 'Contractors', active: index == 2, onTap: () => onChange(2)),
+          _PillTab(text: 'Chat', active: index == 0, onTap: () => onChange(0)),
+          _PillTab(text: 'Image Generate', active: index == 1, onTap: () => onChange(1)),
         ],
       ),
     );

@@ -93,6 +93,10 @@ class AppRouter {
           builder: (context, state) => const SiteManagerHome(),
           routes: [
             GoRoute(
+              path: 'govtrack-ai',
+              builder: (context, state) => const AdminReports(showBottomNav: false),
+            ),
+            GoRoute(
               path: 'daily-report',
               builder: (context, state) => const DailyReportScreen(),
             ),

@@ -41,62 +41,84 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+              return;
+            }
+            context.go(RouteNames.login);
+          },
+        ),
         title: const Text(
           'Create Account',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
+        backgroundColor: AppTheme.deepBlue,
+        foregroundColor: AppTheme.white,
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Register for CEO Construction Monitoring',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1100),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Register for CEO Construction Monitoring',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Only the Site Manager role can self-register. Admin accounts are created by the system administrator.',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(
+                            color: AppTheme.mediumGray,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'After registering, a verification link will be sent to your email. You must verify before you can sign in.',
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.mediumGray,
+                          ),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildFormFields(context),
+                    const SizedBox(height: 24),
+                    AppButton(
+                      text: 'Register',
+                      onPressed: _isLoading ? null : _handleRegister,
+                      isLoading: _isLoading,
+                      width: double.infinity,
+                      icon: Icons.person_add,
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              if (!mounted) return;
+                              context.go(RouteNames.login);
+                            },
+                      child: const Text('Already have an account? Sign in'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Only the Site Manager role can self-register. Admin accounts are created by the system administrator.',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(color: AppTheme.mediumGray),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'After registering, a verification link will be sent to your email. You must verify before you can sign in.',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                ),
-                const SizedBox(height: 24),
-                _buildFormFields(context),
-                const SizedBox(height: 24),
-                AppButton(
-                  text: 'Register',
-                  onPressed: _isLoading ? null : _handleRegister,
-                  isLoading: _isLoading,
-                  width: double.infinity,
-                  icon: Icons.person_add,
-                ),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: _isLoading
-                      ? null
-                      : () {
-                          if (!mounted) return;
-                          context.go(RouteNames.login);
-                        },
-                  child: const Text('Already have an account? Sign in'),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -112,34 +134,48 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: _firstNameController,
-                    decoration: const InputDecoration(labelText: 'First Name'),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter first name';
-                      }
-                      return null;
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: _lastNameController,
-                    decoration: const InputDecoration(labelText: 'Last Name'),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter last name';
-                      }
-                      return null;
-                    },
-                  ),
-                ),
-              ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final isNarrow = constraints.maxWidth < 720;
+
+                final firstNameField = TextFormField(
+                  controller: _firstNameController,
+                  decoration: const InputDecoration(labelText: 'First Name'),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Please enter first name';
+                    }
+                    return null;
+                  },
+                );
+
+                final lastNameField = TextFormField(
+                  controller: _lastNameController,
+                  decoration: const InputDecoration(labelText: 'Last Name'),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Please enter last name';
+                    }
+                    return null;
+                  },
+                );
+
+                return isNarrow
+                    ? Column(
+                        children: [
+                          firstNameField,
+                          const SizedBox(height: 16),
+                          lastNameField,
+                        ],
+                      )
+                    : Row(
+                        children: [
+                          Expanded(child: firstNameField),
+                          const SizedBox(width: 12),
+                          Expanded(child: lastNameField),
+                        ],
+                      );
+              },
             ),
             const SizedBox(height: 16),
             TextFormField(

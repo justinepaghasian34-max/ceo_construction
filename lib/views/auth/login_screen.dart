@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import 'dart:ui';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/common/app_button.dart';
-import '../../widgets/common/app_card.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -24,30 +24,64 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.white,
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _buildHeader(),
-                  const SizedBox(height: 48),
-                  _buildLoginForm(),
-                  const SizedBox(height: 24),
-                  _buildLoginButton(),
-                  const SizedBox(height: 16),
-                  _buildForgotPassword(),
-                  const SizedBox(height: 8),
-                  _buildRegisterLink(),
-                ],
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset(
+              'assets/images/panthera-employees-construction-site_opt.jpg',
+              fit: BoxFit.cover,
+            ),
+          ),
+          Positioned.fill(
+            child: Container(
+              color: Colors.black.withValues(alpha: 0.25),
+            ),
+          ),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 980),
+                  child: Form(
+                    key: _formKey,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isNarrow = constraints.maxWidth < 760;
+
+                        final content = [
+                          Expanded(child: _buildBrandPanel()),
+                          const SizedBox(width: 24, height: 24),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 420),
+                            child: _buildLoginCard(),
+                          ),
+                        ];
+
+                        return isNarrow
+                            ? Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  ConstrainedBox(
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 460),
+                                    child: _buildLoginCard(showLogo: true),
+                                  ),
+                                ],
+                              )
+                            : Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: content,
+                              );
+                      },
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -65,14 +99,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         text: TextSpan(
           style: Theme.of(
             context,
-          ).textTheme.bodyMedium?.copyWith(color: AppTheme.mediumGray),
+          ).textTheme.bodyMedium?.copyWith(
+                color: AppTheme.deepBlue,
+                fontWeight: FontWeight.w600,
+              ),
           children: [
-            const TextSpan(text: 'Don\'t have an account? '),
+            const TextSpan(text: 'New user? Create an account '),
             TextSpan(
               text: 'Register',
               style: TextStyle(
                 color: AppTheme.deepBlue,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w800,
               ),
             ),
           ],
@@ -81,116 +118,268 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     );
   }
 
-  Widget _buildHeader() {
-    return Column(
-      children: [
-        Image.asset('assets/images/ceo_logo.png', height: 180),
-        const SizedBox(height: 32),
-      ],
+  Widget _buildBrandPanel({bool compact = false}) {
+    const glassRadius = 20.0;
+    final panel = ClipRRect(
+      borderRadius: BorderRadius.circular(glassRadius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: AppTheme.white.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(glassRadius),
+            border: Border.all(
+              color: AppTheme.white.withValues(alpha: 0.45),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.14),
+                blurRadius: 22,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Image.asset(
+                'assets/images/image.png',
+                height: compact ? 72 : 96,
+                fit: BoxFit.contain,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'CEO Construction Monitoring',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: AppTheme.white,
+                      fontSize: compact ? 22 : 28,
+                      fontWeight: FontWeight.w900,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Sign in to access dashboards, project monitoring, payroll, materials, and GovTrack AI reports.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.white.withValues(alpha: 0.88),
+                      height: 1.35,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
+
+    return compact
+        ? panel
+        : Align(
+            alignment: Alignment.centerLeft,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: panel,
+            ),
+          );
   }
 
-  Widget _buildLoginForm() {
-    return AppCard(
-      margin: EdgeInsets.zero,
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Sign In',
-            style: Theme.of(
-              context,
-            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
-            textAlign: TextAlign.center,
+  Widget _buildLoginCard({bool showLogo = false}) {
+    const glassRadius = 20.0;
+    final fieldFill = AppTheme.white.withValues(alpha: 0.38);
+    final borderColor = AppTheme.white.withValues(alpha: 0.45);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(glassRadius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(glassRadius),
+            color: AppTheme.white.withValues(alpha: 0.16),
+            border: Border.all(color: borderColor),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.18),
+                blurRadius: 24,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-          const SizedBox(height: 24),
-          TextFormField(
-            controller: _emailController,
-            keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: 'Email Address',
-              prefixIcon: Icon(Icons.email_outlined),
-              hintText: 'Enter your email',
-            ),
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter your email';
-              }
-              if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}').hasMatch(value)) {
-                return 'Please enter a valid email';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-          TextFormField(
-            controller: _passwordController,
-            obscureText: _obscurePassword,
-            decoration: InputDecoration(
-              labelText: 'Password',
-              prefixIcon: const Icon(Icons.lock_outlined),
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _obscurePassword ? Icons.visibility_off : Icons.visibility,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (showLogo) ...[
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.white.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.14),
+                          blurRadius: 14,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: Image.asset(
+                      'assets/images/image.png',
+                      height: 104,
+                      width: 104,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
                 ),
-                onPressed: () {
-                  setState(() {
-                    _obscurePassword = !_obscurePassword;
-                  });
+                const SizedBox(height: 12),
+              ],
+              Text(
+                'Sign In',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.white,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _emailController,
+                keyboardType: TextInputType.emailAddress,
+                style: const TextStyle(color: AppTheme.white),
+                decoration: InputDecoration(
+                  labelText: 'Email Address',
+                  labelStyle: TextStyle(
+                    color: AppTheme.white.withValues(alpha: 0.9),
+                  ),
+                  prefixIcon: Icon(
+                    Icons.email_outlined,
+                    color: AppTheme.white.withValues(alpha: 0.9),
+                  ),
+                  filled: true,
+                  fillColor: fieldFill,
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: AppTheme.white.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: AppTheme.white,
+                      width: 1.4,
+                    ),
+                  ),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter your email';
+                  }
+                  if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}')
+                      .hasMatch(value)) {
+                    return 'Please enter a valid email';
+                  }
+                  return null;
                 },
               ),
-              hintText: 'Enter your password',
-            ),
-            validator: (value) {
-              if (value == null || value.isEmpty) {
-                return 'Please enter your password';
-              }
-              if (value.length < 6) {
-                return 'Password must be at least 6 characters';
-              }
-              return null;
-            },
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _passwordController,
+                obscureText: _obscurePassword,
+                style: const TextStyle(color: AppTheme.white),
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  labelStyle: TextStyle(
+                    color: AppTheme.white.withValues(alpha: 0.9),
+                  ),
+                  prefixIcon: Icon(
+                    Icons.lock_outlined,
+                    color: AppTheme.white.withValues(alpha: 0.9),
+                  ),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                      color: AppTheme.white.withValues(alpha: 0.9),
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        _obscurePassword = !_obscurePassword;
+                      });
+                    },
+                  ),
+                  filled: true,
+                  fillColor: fieldFill,
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: AppTheme.white.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: AppTheme.white,
+                      width: 1.4,
+                    ),
+                  ),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return 'Please enter your password';
+                  }
+                  if (value.length < 6) {
+                    return 'Password must be at least 6 characters';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              _buildLoginButton(),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: _isLoading ? null : _handleForgotPassword,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppTheme.white,
+                ),
+                child: const Text('Forgot Password?'),
+              ),
+              TextButton(
+                onPressed: _isLoading ? null : _handleResendVerification,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppTheme.white,
+                ),
+                child: const Text('Didn\'t receive verification email?'),
+              ),
+              const SizedBox(height: 4),
+              DefaultTextStyle(
+                style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(
+                          color: AppTheme.white.withValues(alpha: 0.92),
+                        ) ??
+                    TextStyle(
+                      color: AppTheme.white.withValues(alpha: 0.92),
+                    ),
+                child: _buildRegisterLink(),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
   Widget _buildLoginButton() {
     return AppButton(
-      text: 'Sign In',
+      text: 'Log In',
       onPressed: _isLoading ? null : _handleLogin,
       isLoading: _isLoading,
       width: double.infinity,
       icon: Icons.login,
-    );
-  }
-
-  Widget _buildForgotPassword() {
-    return Column(
-      children: [
-        TextButton(
-          onPressed: _handleForgotPassword,
-          child: Text(
-            'Forgot Password?',
-            style: TextStyle(
-              color: AppTheme.deepBlue,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        TextButton(
-          onPressed: _isLoading ? null : _handleResendVerification,
-          child: Text(
-            'Didn\'t receive verification email?',
-            style: TextStyle(
-              color: AppTheme.deepBlue,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ],
     );
   }
 

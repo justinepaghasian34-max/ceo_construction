@@ -35,9 +35,22 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
     final syncStats = SyncService.instance.getSyncStats();
     final hasProject = user != null && user.assignedProjects.isNotEmpty;
 
+    final isNarrow = MediaQuery.of(context).size.width < 980;
+    final hasDrawer = isNarrow;
+
     return Scaffold(
+      drawer: hasDrawer ? _SiteManagerDrawer() : null,
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        leading: hasDrawer
+            ? Builder(
+                builder: (context) => IconButton(
+                  icon: const Icon(Icons.menu),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                  tooltip: 'Menu',
+                ),
+              )
+            : null,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -137,6 +150,11 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
         ],
       ),
     );
+  }
+
+  void _navigateFromDrawer(BuildContext context, String route) {
+    Navigator.of(context).pop();
+    context.push(route);
   }
 
   Widget _buildCurrentProjectCard(UserModel? user) {
@@ -465,6 +483,15 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
           childAspectRatio: 1.2,
           children: [
             _buildActionTile(
+              title: 'GovTrack AI',
+              subtitle: 'AI project insights',
+              icon: Icons.auto_awesome,
+              color: AppTheme.deepBlue,
+              onTap: () => _handleProjectDependentAction(hasProject, () {
+                context.push(RouteNames.govTrackAi);
+              }),
+            ),
+            _buildActionTile(
               title: 'Daily Report',
               subtitle: 'Create new report',
               icon: Icons.description,
@@ -758,6 +785,73 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
           'No project assigned. Please contact your administrator to be assigned to a project before using this feature.',
         ),
         backgroundColor: AppTheme.errorRed,
+      ),
+    );
+  }
+}
+
+class _SiteManagerDrawer extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final state = context.findAncestorStateOfType<_SiteManagerHomeState>();
+
+    return Drawer(
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          children: [
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: const Text('Home'),
+              onTap: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.auto_awesome),
+              title: const Text('GovTrack AI'),
+              onTap: () {
+                state?._navigateFromDrawer(context, RouteNames.govTrackAi);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: const Text('Reports'),
+              onTap: () {
+                state?._navigateFromDrawer(context, '/site-manager/reports');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.sync),
+              title: const Text('Sync Queue'),
+              onTap: () {
+                state?._navigateFromDrawer(context, RouteNames.syncQueue);
+              },
+            ),
+            const Divider(height: 24),
+            ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: const Text('Profile'),
+              onTap: () {
+                state?._navigateFromDrawer(context, RouteNames.profile);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.notifications_none),
+              title: const Text('Notifications'),
+              onTap: () {
+                state?._navigateFromDrawer(context, RouteNames.notifications);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('Settings'),
+              onTap: () {
+                state?._navigateFromDrawer(context, RouteNames.settings);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

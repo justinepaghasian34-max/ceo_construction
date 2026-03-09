@@ -91,14 +91,14 @@ class AttendanceRecordAdapter extends TypeAdapter<AttendanceRecord> {
       amTimeOut: fields[10] as DateTime?,
       pmTimeIn: fields[11] as DateTime?,
       pmTimeOut: fields[12] as DateTime?,
-      workerType: (fields[13] as String?) ?? 'labor',
-      rate: (fields[14] as double?) ?? 0.0,
-      monPresent: (fields[15] as bool?) ?? false,
-      tuePresent: (fields[16] as bool?) ?? false,
-      wedPresent: (fields[17] as bool?) ?? false,
-      thuPresent: (fields[18] as bool?) ?? false,
-      friPresent: (fields[19] as bool?) ?? false,
-      satPresent: (fields[20] as bool?) ?? false,
+      workerType: fields[13] as String,
+      rate: fields[14] as double,
+      monPresent: fields[15] as bool,
+      tuePresent: fields[16] as bool,
+      wedPresent: fields[17] as bool,
+      thuPresent: fields[18] as bool,
+      friPresent: fields[19] as bool,
+      satPresent: fields[20] as bool,
     );
   }
 

@@ -1662,7 +1662,7 @@ class AdminProjects extends StatelessWidget {
                                     final budgetValue = double.parse(
                                       budgetController.text
                                           .replaceAll(',', '')
-                                          .replaceAll(' ', '')
+                                          .replaceAll('\\u0000', '')
                                           .trim(),
                                     );
 

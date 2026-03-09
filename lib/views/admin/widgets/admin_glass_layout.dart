@@ -26,8 +26,11 @@ class AdminGlassScaffold extends StatelessWidget {
     final maxWidth = MediaQuery.of(context).size.width >= 1400 ? 1200.0 : 1100.0;
     final isNarrow = MediaQuery.of(context).size.width < 980;
 
+    final hasDrawer = showSidebar && isNarrow;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF3F4F6),
+      drawer: hasDrawer ? _AdminDrawer() : null,
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -47,6 +50,7 @@ class AdminGlassScaffold extends StatelessWidget {
                       _AdminGlassHeader(
                         title: title,
                         actions: actions,
+                        showMenu: showSidebar && isNarrow,
                       ),
                       const SizedBox(height: 16),
                       Expanded(
@@ -95,10 +99,12 @@ class _AdminGlassHeader extends StatelessWidget {
   const _AdminGlassHeader({
     required this.title,
     this.actions,
+    required this.showMenu,
   });
 
   final String title;
   final List<Widget>? actions;
+  final bool showMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -107,6 +113,16 @@ class _AdminGlassHeader extends StatelessWidget {
       borderRadius: 16,
       child: Row(
         children: [
+          if (showMenu) ...[
+            Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: () => Scaffold.of(context).openDrawer(),
+                tooltip: 'Menu',
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           Text(
             title,
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -186,6 +202,53 @@ class GlassCard extends StatelessWidget {
         ],
       ),
       child: child,
+    );
+  }
+}
+
+class _AdminDrawer extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: AdminGlassSidebar(
+            onDashboard: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminDashboard);
+            },
+            onProjects: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminProjects);
+            },
+            onAiReports: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminReports);
+            },
+            onPayroll: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminPayroll);
+            },
+            onBudget: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminFinancialMonitoring);
+            },
+            onMaterials: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminMaterialMonitoring);
+            },
+            onHistory: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.adminHistory);
+            },
+            onProfile: () {
+              Navigator.of(context).pop();
+              context.push(RouteNames.profile);
+            },
+          ),
+        ),
+      ),
     );
   }
 }

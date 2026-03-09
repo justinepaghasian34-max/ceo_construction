@@ -112,6 +112,7 @@ class RouteNames {
   static const String projectProgressUpdate =
       '/site-manager/project-progress-update';
   static const String syncQueue = '/site-manager/sync-queue';
+  static const String govTrackAi = '/site-manager/govtrack-ai';
 
   // Admin Routes
   static const String adminHome = '/admin';
