@@ -489,7 +489,6 @@ class _AdminPayrollState extends State<AdminPayroll> {
                             color: AppTheme.mediumGray,
                           ),
                     ),
-                  const SizedBox(height: 16),
                   _buildRecentPayrollPayoutsSection(context, visiblePayouts),
                 ],
               ),
@@ -497,6 +496,79 @@ class _AdminPayrollState extends State<AdminPayroll> {
           );
         },
       ),
+    );
+  }
+
+  DataRow _buildWorkerPayrollRow(
+    BuildContext context,
+    PayrollItem item,
+    String payrollStatus,
+  ) {
+    final status = payrollStatus.toLowerCase();
+    final statusLabel = status.isEmpty ? 'pending' : status;
+
+    Color statusColor;
+    Color statusBackground;
+    if (statusLabel == 'paid') {
+      statusColor = AppTheme.softGreen;
+      statusBackground = AppTheme.softGreen.withAlpha(32);
+    } else if (statusLabel == 'needs_review') {
+      statusColor = AppTheme.warningOrange;
+      statusBackground = AppTheme.warningOrange.withAlpha(32);
+    } else {
+      statusColor = AppTheme.mediumGray;
+      statusBackground = AppTheme.mediumGray.withAlpha(32);
+    }
+
+    return DataRow(
+      cells: [
+        DataCell(
+          Text(
+            item.workerName,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+        DataCell(
+          Text(
+            item.position,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        DataCell(
+          Text(
+            formatHours(item.regularHours + item.overtimeHours),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        DataCell(
+          Text(
+            item.regularHours > 0 ? formatCurrency(item.grossPay / item.regularHours) : '-',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        DataCell(
+          Text(
+            formatCurrency(item.netPay),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ),
+        DataCell(
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: statusBackground,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              statusLabel,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: statusColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -550,6 +622,8 @@ class _AdminPayrollState extends State<AdminPayroll> {
           .payrollCollection(projectId)
           .where('status', isNotEqualTo: 'paid')
           .get();
+
+      if (!mounted) return;
 
       if (querySnapshot.docs.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -866,33 +940,6 @@ class _WorkerPayrollEntry {
   });
 }
 
-class _ManualPayrollRowData {
-  final TextEditingController nameController;
-  final TextEditingController positionController;
-  final TextEditingController ratePerHourController;
-  final TextEditingController totalWorkHoursController;
-  final TextEditingController totalAmountController;
-  String projectId;
-  String workerId;
-
-  _ManualPayrollRowData()
-    : nameController = TextEditingController(),
-      positionController = TextEditingController(),
-      ratePerHourController = TextEditingController(),
-      totalWorkHoursController = TextEditingController(),
-      totalAmountController = TextEditingController(),
-      projectId = '',
-      workerId = '';
-
-  void dispose() {
-    nameController.dispose();
-    positionController.dispose();
-    ratePerHourController.dispose();
-    totalWorkHoursController.dispose();
-    totalAmountController.dispose();
-  }
-}
-
 class _AttendancePayrollAggregate {
   final String projectId;
   final String workerId;
@@ -912,22 +959,6 @@ class _AttendancePayrollAggregate {
     required this.hourlyRate,
     required this.daysPresent,
     required this.totalHours,
-  });
-}
-
-class _WeeklyAttendanceRow {
-  final String workerName;
-  final String position;
-  final String workerType;
-  final double rate;
-  final Set<int> presentWeekdays; // DateTime.monday..DateTime.friday
-
-  _WeeklyAttendanceRow({
-    required this.workerName,
-    required this.position,
-    required this.workerType,
-    required this.rate,
-    required this.presentWeekdays,
   });
 }
 
@@ -1029,6 +1060,13 @@ class _AttendanceMonitoringPanelState
     return workers;
   }
 
+  List<AttendanceRecord> _getAbsentWorkersForDate(DateTime date) {
+    final workers = _getWorkersForDate(date);
+    final absent = workers.where((w) => !w.isPresent).toList()
+      ..sort((a, b) => a.workerName.compareTo(b.workerName));
+    return absent;
+  }
+
   Future<void> _loadWorkersFromFirestore(DateTime date) async {
     try {
       final startOfDay = DateTime(date.year, date.month, date.day);
@@ -1107,6 +1145,7 @@ class _AttendanceMonitoringPanelState
 
   @override
   Widget build(BuildContext context) {
+    final absentWorkers = _getAbsentWorkersForDate(_selectedDate);
     return Container(
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(16),
@@ -1198,6 +1237,53 @@ class _AttendanceMonitoringPanelState
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          Text(
+            'Absent workers (${absentWorkers.length})',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.mediumGray,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 8),
+          if (absentWorkers.isEmpty)
+            Text(
+              'No absences for this date.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: AppTheme.mediumGray),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: absentWorkers
+                  .take(20)
+                  .map(
+                    (w) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppTheme.errorRed.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: AppTheme.errorRed.withValues(alpha: 0.18),
+                        ),
+                      ),
+                      child: Text(
+                        w.workerName,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.errorRed,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
           const SizedBox(height: 8),
           CheckboxListTile(
             value: _present,
@@ -1286,252 +1372,6 @@ class _AttendanceMonitoringPanelState
   }
 }
 
-DataRow _buildWorkerPayrollRow(
-  BuildContext context,
-  PayrollItem item,
-  String payrollStatus,
-) {
-  final hoursWorked = item.totalHours;
-  final hourlyRate = hoursWorked > 0 ? item.grossPay / hoursWorked : 0.0;
-  final totalPayroll = item.netPay;
-
-  String statusLabel;
-  Color statusColor;
-  Color statusBackground;
-
-  switch (payrollStatus) {
-    case 'paid':
-      statusLabel = 'Paid';
-      statusColor = AppTheme.softGreen;
-      statusBackground = AppTheme.softGreen.withAlpha(32);
-      break;
-    case 'returned':
-      statusLabel = 'On hold';
-      statusColor = AppTheme.warningOrange;
-      statusBackground = AppTheme.warningOrange.withAlpha(32);
-      break;
-    default:
-      statusLabel = 'Pending';
-      statusColor = AppTheme.primaryBlue;
-      statusBackground = AppTheme.primaryBlue.withAlpha(32);
-      break;
-  }
-
-  return DataRow(
-    cells: [
-      DataCell(
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 160),
-          child: Text(
-            item.workerName,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      ),
-      DataCell(
-        Text(item.position, style: Theme.of(context).textTheme.bodySmall),
-      ),
-      DataCell(
-        Text(
-          formatHours(hoursWorked),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          formatCurrency(hourlyRate),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          formatCurrency(totalPayroll),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: statusBackground,
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            statusLabel,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: statusColor,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    ],
-  );
-}
-
-Widget _buildWeeklyAttendanceTable(
-  BuildContext context,
-  List<_WeeklyAttendanceRow> weeklyRows,
-) {
-  return SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    child: DataTable(
-      columnSpacing: 16,
-      headingTextStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-        fontWeight: FontWeight.w600,
-        color: AppTheme.mediumGray,
-      ),
-      columns: const [
-        DataColumn(label: Text('No.')),
-        DataColumn(label: Text('Name')),
-        DataColumn(label: Text('Position / Skill')),
-        DataColumn(label: Text('Rate')),
-        DataColumn(label: Text('Mon')),
-        DataColumn(label: Text('Tue')),
-        DataColumn(label: Text('Wed')),
-        DataColumn(label: Text('Thu')),
-        DataColumn(label: Text('Fri')),
-      ],
-      rows: [
-        for (int i = 0; i < weeklyRows.length; i++)
-          DataRow(
-            cells: [
-              DataCell(Text('${i + 1}')),
-              DataCell(
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 140),
-                  child: Text(
-                    weeklyRows[i].workerName,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
-              ),
-              DataCell(
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 160),
-                  child: Text(
-                    '${weeklyRows[i].position}  ${weeklyRows[i].workerType == 'skilled' ? 'Skilled' : 'Labor'}',
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ),
-              DataCell(
-                Text(
-                  weeklyRows[i].rate.toStringAsFixed(2),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-              DataCell(
-                Icon(
-                  weeklyRows[i].presentWeekdays.contains(DateTime.monday)
-                      ? Icons.check
-                      : Icons.radio_button_unchecked,
-                  size: 16,
-                  color: weeklyRows[i].presentWeekdays.contains(DateTime.monday)
-                      ? AppTheme.softGreen
-                      : AppTheme.mediumGray,
-                ),
-              ),
-              DataCell(
-                Icon(
-                  weeklyRows[i].presentWeekdays.contains(DateTime.tuesday)
-                      ? Icons.check
-                      : Icons.radio_button_unchecked,
-                  size: 16,
-                  color:
-                      weeklyRows[i].presentWeekdays.contains(DateTime.tuesday)
-                      ? AppTheme.softGreen
-                      : AppTheme.mediumGray,
-                ),
-              ),
-              DataCell(
-                Icon(
-                  weeklyRows[i].presentWeekdays.contains(DateTime.wednesday)
-                      ? Icons.check
-                      : Icons.radio_button_unchecked,
-                  size: 16,
-                  color:
-                      weeklyRows[i].presentWeekdays.contains(DateTime.wednesday)
-                      ? AppTheme.softGreen
-                      : AppTheme.mediumGray,
-                ),
-              ),
-              DataCell(
-                Icon(
-                  weeklyRows[i].presentWeekdays.contains(DateTime.thursday)
-                      ? Icons.check
-                      : Icons.radio_button_unchecked,
-                  size: 16,
-                  color:
-                      weeklyRows[i].presentWeekdays.contains(DateTime.thursday)
-                      ? AppTheme.softGreen
-                      : AppTheme.mediumGray,
-                ),
-              ),
-              DataCell(
-                Icon(
-                  weeklyRows[i].presentWeekdays.contains(DateTime.friday)
-                      ? Icons.check
-                      : Icons.radio_button_unchecked,
-                  size: 16,
-                  color: weeklyRows[i].presentWeekdays.contains(DateTime.friday)
-                      ? AppTheme.softGreen
-                      : AppTheme.mediumGray,
-                ),
-              ),
-            ],
-          ),
-      ],
-    ),
-  );
-}
-
-void _showWeeklyAttendanceBottomSheet(
-  BuildContext context,
-  List<_WeeklyAttendanceRow> weeklyRows,
-) {
-  showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    builder: (sheetContext) {
-      return SafeArea(
-        child: SizedBox(
-          height: MediaQuery.of(sheetContext).size.height * 0.8,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      'This week attendance checklist',
-                      style: Theme.of(sheetContext).textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(sheetContext).pop(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: _buildWeeklyAttendanceTable(sheetContext, weeklyRows),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    },
-  );
-}
-
 Widget _buildValidationChip(BuildContext context, String status) {
   Color backgroundColor;
   Color textColor;
@@ -1568,127 +1408,6 @@ Widget _buildValidationChip(BuildContext context, String status) {
         fontWeight: FontWeight.w500,
       ),
     ),
-  );
-}
-
-Widget _buildAttendanceSummarySection(
-  BuildContext context, {
-  required int presentCount,
-  required int absentCount,
-  required int onLeaveCount,
-  required int lateCount,
-  required List<_WeeklyAttendanceRow> weeklyRows,
-}) {
-  String workerLabel(int count) => '$count Workers';
-
-  return AppCard(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Attendance summary',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Overview of worker attendance this month.',
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-        ),
-        const SizedBox(height: 12),
-        _buildAttendanceSummaryRow(
-          context,
-          icon: Icons.check_circle,
-          iconColor: AppTheme.softGreen,
-          label: 'Present',
-          value: workerLabel(presentCount),
-        ),
-        const SizedBox(height: 8),
-        _buildAttendanceSummaryRow(
-          context,
-          icon: Icons.cancel,
-          iconColor: AppTheme.errorRed,
-          label: 'Absent',
-          value: workerLabel(absentCount),
-        ),
-        const SizedBox(height: 8),
-        _buildAttendanceSummaryRow(
-          context,
-          icon: Icons.airline_seat_individual_suite,
-          iconColor: AppTheme.warningOrange,
-          label: 'On leave',
-          value: workerLabel(onLeaveCount),
-        ),
-        const SizedBox(height: 8),
-        _buildAttendanceSummaryRow(
-          context,
-          icon: Icons.schedule,
-          iconColor: AppTheme.primaryBlue,
-          label: 'Late arrivals',
-          value: workerLabel(lateCount),
-        ),
-        const SizedBox(height: 16),
-        if (weeklyRows.isNotEmpty) ...[
-          Text(
-            'This week attendance checklist',
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          GestureDetector(
-            onTap: () => _showWeeklyAttendanceBottomSheet(context, weeklyRows),
-            child: _buildWeeklyAttendanceTable(context, weeklyRows),
-          ),
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              'Tap table to view weekly checklist',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-            ),
-          ),
-        ],
-        const SizedBox(height: 16),
-      ],
-    ),
-  );
-}
-
-Widget _buildAttendanceSummaryRow(
-  BuildContext context, {
-  required IconData icon,
-  required Color iconColor,
-  required String label,
-  required String value,
-}) {
-  return Row(
-    children: [
-      Container(
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          color: iconColor.withAlpha(24),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(icon, color: iconColor, size: 18),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
-      ),
-      const SizedBox(width: 8),
-      Text(
-        value,
-        style: Theme.of(
-          context,
-        ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-      ),
-    ],
   );
 }
 

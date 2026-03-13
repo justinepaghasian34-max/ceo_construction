@@ -3,7 +3,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/hive_service.dart';
 import '../../services/sync_service.dart';
-import '../../widgets/common/app_card.dart';
+import 'widgets/site_manager_card.dart';
 import '../../widgets/common/app_button.dart';
 
 class SyncQueueScreen extends StatefulWidget {
@@ -69,7 +69,7 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
                     final data = (item['data'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
                     final projectId = (data['projectId'] ?? '').toString();
 
-                    return AppCard(
+                    return SiteManagerCard(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [

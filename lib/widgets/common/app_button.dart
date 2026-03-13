@@ -169,7 +169,7 @@ class SyncButton extends StatelessWidget {
         AppIconButton(
           icon: isSyncing ? Icons.sync : Icons.sync_outlined,
           onPressed: isSyncing ? null : onPressed,
-          iconColor: isSyncing ? AppTheme.mediumGray : AppTheme.softGreen,
+          iconColor: isSyncing ? AppTheme.mediumGray : AppTheme.white,
           tooltip: isSyncing ? 'Syncing...' : 'Sync pending data',
         ),
         if (pendingCount > 0)

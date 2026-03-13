@@ -72,9 +72,9 @@ class AdminGlassScaffold extends StatelessWidget {
               children: [
                 const SizedBox(width: 16),
                 AdminGlassSidebar(
-                  onDashboard: () => context.push(RouteNames.adminDashboard),
+                  onDashboard: () => context.push(RouteNames.adminHome),
                   onProjects: () => context.push(RouteNames.adminProjects),
-                  onAiReports: () => context.push(RouteNames.adminReports),
+                  onAiProgressReports: () => context.push(RouteNames.adminProgressReports),
                   onPayroll: () => context.push(RouteNames.adminPayroll),
                   onBudget: () => context.push(RouteNames.adminFinancialMonitoring),
                   onMaterials: () => context.push(RouteNames.adminMaterialMonitoring),
@@ -216,15 +216,15 @@ class _AdminDrawer extends StatelessWidget {
           child: AdminGlassSidebar(
             onDashboard: () {
               Navigator.of(context).pop();
-              context.push(RouteNames.adminDashboard);
+              context.push(RouteNames.adminHome);
             },
             onProjects: () {
               Navigator.of(context).pop();
               context.push(RouteNames.adminProjects);
             },
-            onAiReports: () {
+            onAiProgressReports: () {
               Navigator.of(context).pop();
-              context.push(RouteNames.adminReports);
+              context.push(RouteNames.adminProgressReports);
             },
             onPayroll: () {
               Navigator.of(context).pop();
@@ -258,7 +258,7 @@ class AdminGlassSidebar extends StatelessWidget {
     super.key,
     required this.onDashboard,
     required this.onProjects,
-    required this.onAiReports,
+    required this.onAiProgressReports,
     required this.onPayroll,
     required this.onBudget,
     required this.onMaterials,
@@ -268,7 +268,7 @@ class AdminGlassSidebar extends StatelessWidget {
 
   final VoidCallback onDashboard;
   final VoidCallback onProjects;
-  final VoidCallback onAiReports;
+  final VoidCallback onAiProgressReports;
   final VoidCallback onPayroll;
   final VoidCallback onBudget;
   final VoidCallback onMaterials;
@@ -324,9 +324,9 @@ class AdminGlassSidebar extends StatelessWidget {
               onPressed: onProjects,
             ),
             _SidebarNavItem(
-              icon: Icons.photo_camera_outlined,
-              label: 'GovTrack AI',
-              onPressed: onAiReports,
+              icon: Icons.query_stats_outlined,
+              label: 'AI Progress Reports',
+              onPressed: onAiProgressReports,
             ),
             _SidebarNavItem(
               icon: Icons.payments_outlined,
@@ -394,36 +394,6 @@ class _SidebarNavItem extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _SidebarIconButton extends StatelessWidget {
-  const _SidebarIconButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onPressed,
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.04),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-        ),
-        child: Icon(icon, color: Colors.black.withValues(alpha: 0.75), size: 20),
       ),
     );
   }

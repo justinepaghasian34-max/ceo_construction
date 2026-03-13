@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/hive_service.dart';
 import '../../services/auth_service.dart';
-import '../../widgets/common/app_card.dart';
+import 'widgets/site_manager_card.dart';
 import '../../widgets/common/status_chip.dart';
 
 class SiteManagerReportsScreen extends ConsumerWidget {
@@ -55,7 +55,7 @@ class SiteManagerReportsScreen extends ConsumerWidget {
                 final date = report.reportDate;
                 final dateText = '${date.day}/${date.month}/${date.year}';
 
-                return AppCard(
+                return SiteManagerCard(
                   child: Row(
                     children: [
                       Icon(

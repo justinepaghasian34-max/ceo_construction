@@ -9,16 +9,20 @@ import '../../views/splash/splash_screen.dart';
 import '../../views/site_manager/site_manager_home.dart';
 import '../../views/site_manager/daily_report_screen.dart';
 import '../../views/site_manager/attendance_screen.dart';
+import '../../views/site_manager/fingerprint_attendance_screen.dart';
 import '../../views/site_manager/material_usage_screen.dart';
 import '../../views/site_manager/material_delivery_screen.dart';
 import '../../views/site_manager/material_request_screen.dart';
+import '../../views/site_manager/materials_hub_screen.dart';
 import '../../views/site_manager/issues_screen.dart';
 import '../../views/site_manager/sync_queue_screen.dart';
 import '../../views/site_manager/site_manager_reports_screen.dart';
 import '../../views/site_manager/project_progress_update_screen.dart';
+import '../../views/site_manager/ai_assistant_chat_screen.dart';
 import '../../views/admin/admin_home.dart';
 import '../../views/admin/admin_dashboard.dart';
 import '../../views/admin/admin_reports.dart';
+import '../../views/admin/admin_progress_reports.dart';
 import '../../views/admin/admin_projects.dart';
 import '../../views/admin/admin_payroll.dart';
 import '../../views/admin/admin_history.dart';
@@ -90,11 +94,35 @@ class AppRouter {
         // Site Manager Routes
         GoRoute(
           path: RouteNames.siteManagerHome,
-          builder: (context, state) => const SiteManagerHome(),
+          builder: (context, state) => const SiteManagerHome(
+            showBottomNav: true,
+            showBack: false,
+          ),
           routes: [
             GoRoute(
+              path: 'tasks',
+              builder: (context, state) => const DailyReportScreen(
+                showBottomNav: true,
+                showBack: false,
+              ),
+            ),
+            GoRoute(
+              path: 'materials',
+              builder: (context, state) => const MaterialsHubScreen(
+                showBottomNav: true,
+                showBack: false,
+              ),
+            ),
+            GoRoute(
               path: 'govtrack-ai',
-              builder: (context, state) => const AdminReports(showBottomNav: false),
+              builder: (context, state) => const AdminReports(
+                showBottomNav: false,
+                dashboardRoute: RouteNames.siteManagerHome,
+              ),
+            ),
+            GoRoute(
+              path: 'ai-assistant-chat',
+              builder: (context, state) => const AiAssistantChatScreen(),
             ),
             GoRoute(
               path: 'daily-report',
@@ -106,7 +134,24 @@ class AppRouter {
             ),
             GoRoute(
               path: 'attendance',
-              builder: (context, state) => const AttendanceScreen(),
+              builder: (context, state) => const AttendanceScreen(
+                showBottomNav: true,
+                showBack: false,
+              ),
+            ),
+            GoRoute(
+              path: 'fingerprint-attendance',
+              builder: (context, state) {
+                final worker = state.extra is WorkerFingerprintArgs
+                    ? state.extra as WorkerFingerprintArgs
+                    : null;
+
+                return FingerprintAttendanceScreen(
+                  showBottomNav: true,
+                  showBack: true,
+                  worker: worker,
+                );
+              },
             ),
             GoRoute(
               path: 'material-usage',
@@ -165,8 +210,8 @@ class AppRouter {
               builder: (context, state) => const AdminDashboard(),
             ),
             GoRoute(
-              path: 'reports',
-              builder: (context, state) => const AdminReports(),
+              path: 'progress-reports',
+              builder: (context, state) => const AdminProgressReportsScreen(),
             ),
             GoRoute(
               path: 'projects',
@@ -311,7 +356,6 @@ extension AppNavigation on BuildContext {
 
   // Admin Navigation
   void goToAdminDashboard() => go(RouteNames.adminDashboard);
-  void goToAdminReports() => go(RouteNames.adminReports);
   void goToAdminProjects() => go(RouteNames.adminProjects);
   void goToAdminPayroll() => go(RouteNames.adminPayroll);
   void goToAdminHistory() => go(RouteNames.adminHistory);

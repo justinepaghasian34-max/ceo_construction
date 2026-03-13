@@ -106,7 +106,6 @@ class _ProjectProgressUpdateScreenState extends State<ProjectProgressUpdateScree
     try {
       await FirebaseService.instance.projectsCollection.doc(_projectId).update({
         'status': _status,
-        'progressPercentage': _progress,
         'updatedAt': DateTime.now().toIso8601String(),
       });
 
@@ -227,33 +226,25 @@ class _ProjectProgressUpdateScreenState extends State<ProjectProgressUpdateScree
             },
           ),
           const SizedBox(height: 24),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Progress',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              Text(
-                '${_progress.toStringAsFixed(0)} %',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-            ],
+          Text(
+            'Progress (AI-generated)',
+            style: Theme.of(context).textTheme.bodyMedium,
           ),
-          Slider(
-            value: _progress,
-            min: 0,
-            max: 100,
-            divisions: 20,
-            label: '${_progress.toStringAsFixed(0)}%',
-            activeColor: AppTheme.softGreen,
-            onChanged: (value) {
-              setState(() {
-                _progress = value;
-              });
-            },
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: AppTheme.lightGray,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Text(
+              '${_progress.toStringAsFixed(0)} %',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.deepBlue,
+                  ),
+            ),
           ),
           const SizedBox(height: 24),
           AppButton(

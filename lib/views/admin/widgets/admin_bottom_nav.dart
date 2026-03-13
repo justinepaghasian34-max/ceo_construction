@@ -10,7 +10,6 @@ enum AdminNavItem {
   budgetFinancial,
   payroll,
   materialInventory,
-  aiReports,
 }
 
 class AdminBottomNavBar extends StatelessWidget {
@@ -39,9 +38,6 @@ class AdminBottomNavBar extends StatelessWidget {
         break;
       case AdminNavItem.materialInventory:
         context.push(RouteNames.adminMaterialMonitoring);
-        break;
-      case AdminNavItem.aiReports:
-        context.push(RouteNames.adminReports);
         break;
     }
   }
@@ -94,11 +90,6 @@ class AdminBottomNavBar extends StatelessWidget {
               context,
               item: AdminNavItem.materialInventory,
               icon: Icons.inventory_2,
-            ),
-            _buildItem(
-              context,
-              item: AdminNavItem.aiReports,
-              icon: Icons.auto_awesome,
             ),
           ],
         ),

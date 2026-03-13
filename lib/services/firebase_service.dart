@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -133,6 +134,23 @@ class FirebaseService {
       SettableMetadata(contentType: contentType),
     );
     final snapshot = await uploadTask;
+
+    FirebaseException? lastErr;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await snapshot.ref.getDownloadURL();
+      } on FirebaseException catch (e) {
+        lastErr = e;
+        if (e.code != 'object-not-found') {
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+      }
+    }
+
+    if (lastErr != null) {
+      throw lastErr;
+    }
     return await snapshot.ref.getDownloadURL();
   }
 

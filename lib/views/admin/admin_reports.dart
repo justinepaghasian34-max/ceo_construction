@@ -1,12 +1,18 @@
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../core/constants/app_constants.dart';
 import '../../models/daily_report_model.dart';
+import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
 import '../../services/govtrack_ai_service.dart';
 import '../../widgets/common/status_chip.dart';
@@ -16,15 +22,18 @@ class AdminReports extends StatelessWidget {
   const AdminReports({
     super.key,
     this.showBottomNav = true,
+    this.dashboardRoute = RouteNames.adminDashboard,
   });
 
   final bool showBottomNav;
+  final String dashboardRoute;
 
   @override
   Widget build(BuildContext context) {
     return _AiDashboard(
       onOpenDailyReport: (report) => _showReportDetailsDialog(context, report),
       showBottomNav: showBottomNav,
+      dashboardRoute: dashboardRoute,
     );
   }
 
@@ -275,10 +284,12 @@ class _AiDashboard extends StatefulWidget {
   const _AiDashboard({
     required this.onOpenDailyReport,
     required this.showBottomNav,
+    required this.dashboardRoute,
   });
 
   final ValueChanged<DailyReportModel> onOpenDailyReport;
   final bool showBottomNav;
+  final String dashboardRoute;
 
   @override
   State<_AiDashboard> createState() => _AiDashboardState();
@@ -308,7 +319,6 @@ class _AiDashboardState extends State<_AiDashboard> {
   _AiNavItem _selected = _AiNavItem.intelligenceChat;
   int _topTabIndex = 0;
 
-  bool _isVerifying = false;
   bool _isAnalyzing = false;
   bool _isGeneratingReport = false;
 
@@ -317,6 +327,16 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   Uint8List? _selectedImageBytes;
   String? _selectedImageName;
+
+  String? _lastAnalyzedImageUrl;
+  String? _lastAnalyzedStoragePath;
+  String? _lastAnalyzedFileName;
+  double? _lastAnalyzedProgressPercent;
+
+  double? _lastPhotoLat;
+  double? _lastPhotoLng;
+  String? _lastPhotoAddress;
+  DateTime? _lastPhotoCapturedAt;
 
   Map<String, dynamic>? _lastAnalysis;
 
@@ -415,7 +435,7 @@ class _AiDashboardState extends State<_AiDashboard> {
               ],
             ),
       bottomNavigationBar: widget.showBottomNav
-          ? const AdminBottomNavBar(current: AdminNavItem.aiReports)
+          ? const AdminBottomNavBar(current: AdminNavItem.dashboard)
           : null,
     );
   }
@@ -455,6 +475,14 @@ class _AiDashboardState extends State<_AiDashboard> {
           .map((d) => ((d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{}))
           .toList();
 
+      final progressPercent = _calculateProgressPercent(recentDailyReports);
+
+      final assignedSiteManagerId = (projectData['siteManagerId'] ?? '').toString().trim();
+      final assignedSiteManagerName = (projectData['siteManagerName'] ?? '').toString().trim();
+      final assignedSiteManagerEmail = assignedSiteManagerId.isEmpty
+          ? ''
+          : await _tryGetUserEmail(assignedSiteManagerId);
+
       final analysis = await _govTrackAiService.generateGovTrackReport(
         projectId: projectId,
         projectName: projectName,
@@ -466,6 +494,25 @@ class _AiDashboardState extends State<_AiDashboard> {
         <String, dynamic>{
           'projectId': projectId,
           'projectName': projectName,
+          'progressPercent': progressPercent,
+          'analysis': analysis,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
+
+      final currentUser = AuthService.instance.currentUser;
+      await FirebaseService.instance.aiAnalysisCollection.add(
+        <String, dynamic>{
+          'kind': 'govtrack_progress_report',
+          'projectId': projectId,
+          'projectName': projectName,
+          'progressPercent': progressPercent,
+          'assignedSiteManagerId': assignedSiteManagerId,
+          'assignedSiteManagerName': assignedSiteManagerName,
+          'assignedSiteManagerEmail': assignedSiteManagerEmail,
+          'submittedById': currentUser?.id,
+          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedByEmail': currentUser?.email,
           'analysis': analysis,
           'createdAt': FieldValue.serverTimestamp(),
         },
@@ -488,157 +535,88 @@ class _AiDashboardState extends State<_AiDashboard> {
     }
   }
 
-  Widget _buildCommandCenter(BuildContext context) {
+  double _calculateProgressPercent(List<Map<String, dynamic>> reports) {
+    var total = 0.0;
+    var count = 0;
+    for (final r in reports) {
+      final accomplishments = (r['workAccomplishments'] as List?)?.cast<dynamic>() ?? const [];
+      for (final raw in accomplishments) {
+        final item = (raw as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+        final pct = item['percentageComplete'];
+        if (pct is num) {
+          total += pct.toDouble();
+          count += 1;
+        }
+      }
+    }
+    if (count == 0) return 0;
+    final avg = total / count;
+    if (avg.isNaN) return 0;
+    return avg.clamp(0, 100);
+  }
+
+  Future<String> _tryGetUserEmail(String userId) async {
+    try {
+      final doc = await FirebaseService.instance.usersCollection.doc(userId).get();
+      final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      return (data['email'] ?? '').toString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildChat(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isMobile = constraints.maxWidth < 720;
-
-        final metrics = const [
-          _MetricCard(
-            icon: Icons.monitor_heart_outlined,
-            title: 'TOTAL ACTIVE PROJECTS',
-            value: '24',
-            subtitle: '3 Completed this month',
-            deltaText: '5.2%',
-            deltaUp: true,
-          ),
-          _MetricCard(
-            icon: Icons.attach_money,
-            title: 'BUDGET UTILIZATION',
-            value: '₱ 142.5M',
-            subtitle: '85% of allocated funds',
-            deltaText: '2.1%',
-            deltaUp: true,
-          ),
-          _MetricCard(
-            icon: Icons.warning_amber_rounded,
-            title: 'PROJECTS AT RISK',
-            value: '3',
-            subtitle: 'Requires immediate attention',
-            deltaText: '12%',
-            deltaUp: false,
-            tone: _MetricTone.risk,
-          ),
-          _MetricCard(
-            icon: Icons.trending_up,
-            title: 'AVG. COMPLETION RATE',
-            value: '68%',
-            subtitle: 'Across all active sites',
-            deltaText: '8.4%',
-            deltaUp: true,
-          ),
-        ];
-
-        if (isMobile) {
-          return ListView(
-            children: [
-              const _PageTitle(
-                title: 'Executive Command Center',
-                subtitle: 'Real-time Infrastructure Monitoring • Province of Batangas',
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _PillTabs(
-                    index: _topTabIndex,
-                    onChange: (i) => setState(() => _topTabIndex = i),
-                  ),
-                  _IconCircleButton(icon: Icons.search, onTap: () {}),
-                  _IconCircleButton(icon: Icons.notifications_none, onTap: () {}),
-                ],
-              ),
-              const SizedBox(height: 12),
-              ...metrics.map(
-                (m) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: m,
-                ),
-              ),
-            ],
-          );
-        }
+        final showFooter = constraints.maxHeight >= 720;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _PageTitle(
-              title: 'Executive Command Center',
-              subtitle: 'Real-time Infrastructure Monitoring • Province of Batangas',
+              title: 'Intelligence Chat',
+              subtitle: 'Ask GovTrack AI about projects, budgets, or milestones.',
             ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                _PillTabs(
-                  index: _topTabIndex,
-                  onChange: (i) => setState(() => _topTabIndex = i),
-                ),
-                const Spacer(),
-                _IconCircleButton(icon: Icons.search, onTap: () {}),
-                const SizedBox(width: 10),
-                _IconCircleButton(icon: Icons.notifications_none, onTap: () {}),
-              ],
-            ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 16),
             Expanded(
-              child: GridView.count(
-                crossAxisCount: MediaQuery.of(context).size.width >= 1200 ? 2 : 1,
-                mainAxisSpacing: 16,
-                crossAxisSpacing: 16,
-                childAspectRatio: 2.4,
-                children: metrics,
+              child: _Card(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: ListView.separated(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _messages.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) => _GovChatBubble(message: _messages[index]),
+                      ),
+                    ),
+                    const Divider(height: 1, color: _border),
+                    _ChatComposer(
+                      controller: _chatController,
+                      onSend: _sendChat,
+                    ),
+                  ],
+                ),
               ),
             ),
+            if (showFooter) ...[
+              const SizedBox(height: 10),
+              Text(
+                'GovTrack AI uses simulated structural confidence scores. Always verify critical alerts on-site.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _subtitle),
+                textAlign: TextAlign.center,
+              ),
+            ],
           ],
         );
       },
     );
   }
 
-  Widget _buildChat(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _PageTitle(
-          title: 'Intelligence Chat',
-          subtitle: 'Ask GovTrack AI about projects, budgets, or milestones.',
-        ),
-        const SizedBox(height: 16),
-        Expanded(
-          child: _Card(
-            child: Column(
-              children: [
-                Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _messages.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 12),
-                    itemBuilder: (context, index) => _GovChatBubble(message: _messages[index]),
-                  ),
-                ),
-                const Divider(height: 1, color: _border),
-                _ChatComposer(
-                  controller: _chatController,
-                  onSend: _sendChat,
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          'GovTrack AI uses simulated structural confidence scores. Always verify critical alerts on-site.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _subtitle),
-          textAlign: TextAlign.center,
-        ),
-      ],
-    );
-  }
-
   Widget _buildAiDailyProgress(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewPadding.bottom;
     return ListView(
+      padding: EdgeInsets.only(bottom: bottomInset + 24),
       children: [
         const _PageTitle(
           title: 'AI Daily Progress',
@@ -660,6 +638,10 @@ class _AiDashboardState extends State<_AiDashboard> {
                 ),
                 const SizedBox(height: 10),
                 _buildProjectDropdown(context),
+                if (_selectedProjectId != null) ...[
+                  const SizedBox(height: 12),
+                  _AssignedProjectInfo(projectId: _selectedProjectId!),
+                ],
               ],
             ),
           ),
@@ -720,6 +702,7 @@ class _AiDashboardState extends State<_AiDashboard> {
                 _UploadDropzone(
                   bytes: _selectedImageBytes,
                   onPick: _pickDailyProgressImage,
+                  stampText: _buildGpsStampText(),
                 ),
                 const SizedBox(height: 16),
                 SizedBox(
@@ -740,6 +723,46 @@ class _AiDashboardState extends State<_AiDashboard> {
                         : const Text('Analyze Progress', style: TextStyle(fontWeight: FontWeight.w900)),
                   ),
                 ),
+                if (_lastAnalyzedProgressPercent != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: _border),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.insights_outlined, size: 18, color: _AiDashboardState._subtitle),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Progress: ${_lastAnalyzedProgressPercent!.toStringAsFixed(1)}%',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: _title,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    height: 50,
+                    child: FilledButton.icon(
+                      onPressed: _canSubmitProgressToAdmin() ? _submitProgressToAdmin : null,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: _blue,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      ),
+                      icon: const Icon(Icons.send_rounded, size: 18),
+                      label: const Text('Submit Progress to Admin', style: TextStyle(fontWeight: FontWeight.w900)),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -803,108 +826,19 @@ class _AiDashboardState extends State<_AiDashboard> {
     );
   }
 
-  Widget _buildValidationReportsPanel(BuildContext context) {
-    final list = StreamBuilder<QuerySnapshot>(
-      stream: FirebaseService.instance.firestore
-          .collection('ai_verifications')
-          .orderBy('createdAt', descending: true)
-          .limit(20)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return const _EmptyHint(text: 'Failed to load validation history.');
-        }
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(
-            child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
-          );
-        }
-        final docs = snapshot.data?.docs ?? const [];
-        if (docs.isEmpty) {
-          return const _EmptyHint(text: 'No validations have been run yet.');
-        }
-        return ListView.separated(
-          itemCount: docs.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final data = (docs[index].data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
-            return _GovVerificationCard(data: data);
-          },
-        );
-      },
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _PageTitle(
-          title: 'Validation Reports',
-          subtitle: 'Upload a site photo and run verification. Results are stored in Firestore.',
-        ),
-        const SizedBox(height: 16),
-        Expanded(
-          child: _Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SizedBox(
-                    height: 46,
-                    child: FilledButton.icon(
-                      onPressed: _isVerifying ? null : _runVerification,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: _blue,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      icon: _isVerifying
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Icon(Icons.auto_awesome, size: 18),
-                      label: Text(
-                        _isVerifying ? 'Running...' : 'Run AI Verification',
-                        style: const TextStyle(fontWeight: FontWeight.w900),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  const Divider(height: 1, color: _border),
-                  const SizedBox(height: 14),
-                  Expanded(child: list),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPlaceholder(BuildContext context, String title, String subtitle) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _PageTitle(title: title, subtitle: subtitle),
-        const SizedBox(height: 16),
-        const _Card(
-          child: Padding(
-            padding: EdgeInsets.all(20),
-            child: Text('Coming soon.'),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildProjectDropdown(BuildContext context) {
-    final query = FirebaseService.instance.projectsCollection.where('status', isEqualTo: 'ongoing');
+    final user = AuthService.instance.currentUser;
+    var query = FirebaseService.instance.projectsCollection.where('status', isEqualTo: 'ongoing');
+    if (user != null && user.isSiteManager) {
+      query = query.where('siteManagerId', isEqualTo: user.id);
+    }
     return StreamBuilder<QuerySnapshot>(
       stream: query.snapshots(),
       builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const SizedBox(height: 56, child: Center(child: CircularProgressIndicator()));
+        }
+
         final docs = snapshot.data?.docs ?? const [];
         final items = docs
             .map((d) {
@@ -982,6 +916,21 @@ class _AiDashboardState extends State<_AiDashboard> {
       final data = (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
       final reply = (data['reply'] ?? '').toString().trim();
 
+      final currentUser = AuthService.instance.currentUser;
+      await FirebaseService.instance.aiAnalysisCollection.add(
+        <String, dynamic>{
+          'kind': 'govtrack_chat',
+          'message': text,
+          'reply': reply,
+          'projectId': _selectedProjectId,
+          'projectName': _selectedProjectName,
+          'submittedById': currentUser?.id,
+          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedByEmail': currentUser?.email,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
+
       if (!mounted) return;
       setState(() {
         if (_messages.isNotEmpty && _messages.last.isUser == false && _messages.last.text == 'Thinking…') {
@@ -1007,15 +956,273 @@ class _AiDashboardState extends State<_AiDashboard> {
   }
 
   Future<void> _pickDailyProgressImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    final bytes = file.bytes;
-    if (bytes == null || bytes.isEmpty) return;
-    setState(() {
-      _selectedImageBytes = Uint8List.fromList(bytes);
-      _selectedImageName = file.name;
-    });
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Upload from Gallery'),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  await _pickDailyProgressImageFromGallery();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take Photo (Camera)'),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  await _pickDailyProgressImageFromCamera();
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _pickDailyProgressImageFromGallery() async {
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        final picker = ImagePicker();
+        final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 92);
+        if (file == null) return;
+        final bytes = await file.readAsBytes();
+        if (!mounted) return;
+        setState(() {
+          _selectedImageBytes = Uint8List.fromList(bytes);
+          _selectedImageName = file.name;
+          _lastAnalyzedProgressPercent = null;
+          _lastAnalyzedImageUrl = null;
+          _lastAnalyzedStoragePath = null;
+          _lastAnalyzedFileName = null;
+          _lastPhotoLat = null;
+          _lastPhotoLng = null;
+          _lastPhotoAddress = null;
+          _lastPhotoCapturedAt = null;
+        });
+        return;
+      }
+
+      final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.first;
+      final bytes = picked.bytes;
+      if (bytes == null || bytes.isEmpty) return;
+      if (!mounted) return;
+      setState(() {
+        _selectedImageBytes = Uint8List.fromList(bytes);
+        _selectedImageName = picked.name;
+        _lastAnalyzedProgressPercent = null;
+        _lastAnalyzedImageUrl = null;
+        _lastAnalyzedStoragePath = null;
+        _lastAnalyzedFileName = null;
+        _lastPhotoLat = null;
+        _lastPhotoLng = null;
+        _lastPhotoAddress = null;
+        _lastPhotoCapturedAt = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gallery upload failed: $e')),
+      );
+    }
+  }
+
+  String? _buildGpsStampText() {
+    if (_lastPhotoLat == null || _lastPhotoLng == null || _lastPhotoCapturedAt == null) {
+      return null;
+    }
+
+    final d = _lastPhotoCapturedAt!;
+    final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+    final ampm = d.hour >= 12 ? 'PM' : 'AM';
+    final dt = '${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}/${d.year} '
+        '${h.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')} $ampm';
+
+    final addr = (_lastPhotoAddress ?? '').trim();
+    final lat = _lastPhotoLat!.toStringAsFixed(6);
+    final lng = _lastPhotoLng!.toStringAsFixed(6);
+    return '${addr.isEmpty ? 'Location captured' : addr}\nLat $lat  Lng $lng\n$dt';
+  }
+
+  Future<void> _captureAndSetGpsStamp() async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enable Location services to tag this photo.')),
+        );
+        return;
+      }
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location permission denied. Photo will not be GPS-tagged.')),
+        );
+        return;
+      }
+
+      final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      String? address;
+      try {
+        final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
+        if (placemarks.isNotEmpty) {
+          final p = placemarks.first;
+          final parts = <String>[
+            if ((p.street ?? '').trim().isNotEmpty) (p.street ?? '').trim(),
+            if ((p.locality ?? '').trim().isNotEmpty) (p.locality ?? '').trim(),
+            if ((p.administrativeArea ?? '').trim().isNotEmpty) (p.administrativeArea ?? '').trim(),
+            if ((p.country ?? '').trim().isNotEmpty) (p.country ?? '').trim(),
+          ];
+          address = parts.join(', ');
+        }
+      } catch (_) {
+        address = null;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _lastPhotoLat = pos.latitude;
+        _lastPhotoLng = pos.longitude;
+        _lastPhotoAddress = address;
+        _lastPhotoCapturedAt = DateTime.now();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to get GPS location: $e')),
+      );
+    }
+  }
+
+  Future<void> _pickDailyProgressImageFromCamera() async {
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        final picker = ImagePicker();
+        final file = await picker.pickImage(source: ImageSource.camera, imageQuality: 92);
+        if (file == null) return;
+        await _captureAndSetGpsStamp();
+        final bytes = await file.readAsBytes();
+        if (!mounted) return;
+        setState(() {
+          _selectedImageBytes = Uint8List.fromList(bytes);
+          _selectedImageName = file.name;
+          _lastAnalyzedProgressPercent = null;
+          _lastAnalyzedImageUrl = null;
+          _lastAnalyzedStoragePath = null;
+          _lastAnalyzedFileName = null;
+        });
+        return;
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Camera upload is supported on mobile devices only.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Camera upload failed: $e')),
+      );
+    }
+  }
+
+  double? _extractProgressPercentFromAnalysis(Map<String, dynamic>? analysis) {
+    if (analysis == null) return null;
+
+    final direct = analysis['progressPercent'] ?? analysis['progress_percent'] ?? analysis['progress'];
+    if (direct is num) {
+      return direct.toDouble().clamp(0, 100);
+    }
+
+    final schedule = (analysis['schedule'] as Map?)?.cast<String, dynamic>();
+    final schedulePct = schedule?['progressPercent'] ?? schedule?['progress'];
+    if (schedulePct is num) {
+      return schedulePct.toDouble().clamp(0, 100);
+    }
+
+    final confidence = analysis['confidence'];
+    if (confidence is num) {
+      return (confidence.toDouble().clamp(0.0, 1.0) * 100).clamp(0, 100);
+    }
+    return null;
+  }
+
+  bool _canSubmitProgressToAdmin() {
+    return _selectedProjectId != null &&
+        _lastAnalysis != null &&
+        _lastAnalyzedProgressPercent != null &&
+        (_lastAnalyzedImageUrl?.isNotEmpty ?? false);
+  }
+
+  Future<void> _submitProgressToAdmin() async {
+    final projectId = _selectedProjectId;
+    if (projectId == null) return;
+    if (_lastAnalysis == null) return;
+    if (_lastAnalyzedProgressPercent == null) return;
+
+    try {
+      final projectDoc = await FirebaseService.instance.projectsCollection.doc(projectId).get();
+      final projectData = (projectDoc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      final projectName = _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
+
+      final assignedSiteManagerId = (projectData['siteManagerId'] ?? '').toString().trim();
+      final assignedSiteManagerName = (projectData['siteManagerName'] ?? '').toString().trim();
+      final assignedSiteManagerEmail = assignedSiteManagerId.isEmpty
+          ? ''
+          : await _tryGetUserEmail(assignedSiteManagerId);
+
+      final currentUser = AuthService.instance.currentUser;
+
+      await FirebaseService.instance.aiAnalysisCollection.add(
+        <String, dynamic>{
+          'kind': 'govtrack_progress_report',
+          'projectId': projectId,
+          'projectName': projectName,
+          'progressPercent': _lastAnalyzedProgressPercent,
+          'assignedSiteManagerId': assignedSiteManagerId,
+          'assignedSiteManagerName': assignedSiteManagerName,
+          'assignedSiteManagerEmail': assignedSiteManagerEmail,
+          'imageUrl': _lastAnalyzedImageUrl,
+          'storagePath': _lastAnalyzedStoragePath,
+          'fileName': _lastAnalyzedFileName,
+          'photoLat': _lastPhotoLat,
+          'photoLng': _lastPhotoLng,
+          'photoAddress': _lastPhotoAddress,
+          'photoCapturedAt': _lastPhotoCapturedAt == null ? null : Timestamp.fromDate(_lastPhotoCapturedAt!),
+          'analysis': _lastAnalysis,
+          'submittedById': currentUser?.id,
+          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedByEmail': currentUser?.email,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Submitted to Admin.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Submit failed: $e')),
+      );
+    }
   }
 
   Future<void> _analyzeDailyProgress() async {
@@ -1057,7 +1264,28 @@ class _AiDashboardState extends State<_AiDashboard> {
       final data = (res.data as Map?)?.cast<String, dynamic>();
       setState(() {
         _lastAnalysis = data ?? <String, dynamic>{};
+        _lastAnalyzedImageUrl = downloadUrl;
+        _lastAnalyzedStoragePath = storagePath;
+        _lastAnalyzedFileName = fileName;
+        _lastAnalyzedProgressPercent = _extractProgressPercentFromAnalysis(data);
       });
+
+      final currentUser = AuthService.instance.currentUser;
+      await FirebaseService.instance.aiAnalysisCollection.add(
+        <String, dynamic>{
+          'kind': 'govtrack_image_analysis',
+          'projectId': _selectedProjectId,
+          'projectName': _selectedProjectName,
+          'imageUrl': downloadUrl,
+          'fileName': fileName,
+          'storagePath': storagePath,
+          'analysis': data,
+          'submittedById': currentUser?.id,
+          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedByEmail': currentUser?.email,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
     } catch (e) {
       if (!mounted) return;
       final msg = e is FirebaseFunctionsException
@@ -1066,43 +1294,6 @@ class _AiDashboardState extends State<_AiDashboard> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
-    }
-  }
-
-  Future<void> _runVerification() async {
-    try {
-      setState(() => _isVerifying = true);
-      final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-      if (result == null || result.files.isEmpty) return;
-
-      final file = result.files.first;
-      final bytes = file.bytes;
-      if (bytes == null || bytes.isEmpty) throw Exception('Selected file has no data.');
-
-      final fileName = file.name.isNotEmpty ? file.name : 'site_photo.jpg';
-      final now = DateTime.now();
-      final storagePath = 'ai_verifications/${now.millisecondsSinceEpoch}_$fileName';
-
-      final downloadUrl = await FirebaseService.instance.uploadFile(
-        storagePath,
-        Uint8List.fromList(bytes),
-        contentType: _guessContentType(fileName),
-      );
-
-      final callable = FirebaseFunctions.instance.httpsCallable('verifyProgressImage');
-      await callable.call(<String, dynamic>{
-        'imageUrl': downloadUrl,
-        'storagePath': storagePath,
-        'fileName': fileName,
-      });
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Verification recorded.')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Verification failed: $e')));
-    } finally {
-      if (mounted) setState(() => _isVerifying = false);
     }
   }
 
@@ -1115,19 +1306,67 @@ class _AiDashboardState extends State<_AiDashboard> {
 }
 
 class _GovSidebar extends StatelessWidget {
-  const _GovSidebar({required this.selected, required this.onSelect});
+  const _GovSidebar({
+    required this.selected,
+    required this.onSelect,
+  });
   final _AiNavItem selected;
   final ValueChanged<_AiNavItem> onSelect;
 
+  String _formatDateTime(dynamic createdAt) {
+    DateTime? d;
+    if (createdAt is Timestamp) d = createdAt.toDate();
+    if (createdAt is DateTime) d = createdAt;
+    if (d == null) return '';
+    final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
+    final ampm = d.hour >= 12 ? 'PM' : 'AM';
+    return '${d.month}/${d.day}/${d.year}  ${h.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')} $ampm';
+  }
+
+  String _kindLabel(String kind) {
+    switch (kind) {
+      case 'govtrack_chat':
+        return 'AI Chat';
+      case 'govtrack_image_analysis':
+        return 'AI Image';
+      case 'govtrack_progress_report':
+        return 'GovTrack Report';
+      default:
+        return 'AI Activity';
+    }
+  }
+
+  IconData _kindIcon(String kind) {
+    switch (kind) {
+      case 'govtrack_chat':
+        return Icons.forum_outlined;
+      case 'govtrack_image_analysis':
+        return Icons.image_outlined;
+      case 'govtrack_progress_report':
+        return Icons.auto_awesome_outlined;
+      default:
+        return Icons.history;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final currentUser = AuthService.instance.currentUser;
+    final displayName = '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim();
+    final email = (currentUser?.email ?? '').trim();
+    final initialsSource = displayName.isNotEmpty ? displayName : (email.isNotEmpty ? email : 'User');
+    final parts = initialsSource.split(RegExp(r'\s+|\.|\-|\_')).where((e) => e.trim().isNotEmpty).toList();
+    final initials = parts.isEmpty
+        ? 'U'
+        : (parts.first[0] + (parts.length > 1 ? parts[1][0] : '')).toUpperCase();
+
     return Container(
       width: 300,
       decoration: const BoxDecoration(
         color: Colors.white,
         border: Border(right: BorderSide(color: _AiDashboardState._navBorder)),
       ),
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1167,27 +1406,95 @@ class _GovSidebar extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
             Expanded(
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const SizedBox(height: 8),
-                    const _NavSectionTitle(text: 'MODULES'),
+                    const _NavSectionTitle(text: 'HISTORY'),
                     const SizedBox(height: 10),
-                    _GovNavItem(
-                      title: 'Intelligence Chat',
-                      icon: Icons.forum_outlined,
-                      active: selected == _AiNavItem.intelligenceChat,
-                      onTap: () => onSelect(_AiNavItem.intelligenceChat),
-                    ),
-                    _GovNavItem(
-                      title: 'Image Generate',
-                      icon: Icons.auto_awesome_outlined,
-                      active: selected == _AiNavItem.imageGenerate,
-                      onTap: () => onSelect(_AiNavItem.imageGenerate),
-                    ),
+                    if (currentUser == null)
+                      Text(
+                        'Login required to view history.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
+                      )
+                    else
+                      StreamBuilder<QuerySnapshot>(
+                        stream: FirebaseService.instance.aiAnalysisCollection
+                            .where('submittedById', isEqualTo: currentUser.id)
+                            .orderBy('createdAt', descending: true)
+                            .limit(30)
+                            .snapshots(),
+                        builder: (context, snapshot) {
+                          final docs = snapshot.data?.docs ?? const [];
+                          final filtered = docs.where((d) {
+                            final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                            final kind = (data['kind'] ?? '').toString();
+                            return kind == 'govtrack_chat' || kind == 'govtrack_image_analysis' || kind == 'govtrack_progress_report';
+                          }).toList();
+
+                          if (snapshot.connectionState == ConnectionState.waiting) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'Loading history…',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
+                              ),
+                            );
+                          }
+
+                          if (filtered.isEmpty) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: Text(
+                                'No AI history yet.',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
+                              ),
+                            );
+                          }
+
+                          return Column(
+                            children: [
+                              for (final doc in filtered) ...[
+                                Builder(
+                                  builder: (context) {
+                                    final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                                    final kind = (data['kind'] ?? '').toString();
+                                    final title = _kindLabel(kind);
+                                    final projectName = (data['projectName'] ?? '').toString().trim();
+                                    final when = _formatDateTime(data['createdAt']);
+                                    final message = (data['message'] ?? '').toString().trim();
+
+                                    final subtitleParts = <String>[
+                                      if (projectName.isNotEmpty) projectName,
+                                      if (when.isNotEmpty) when,
+                                      if (kind == 'govtrack_chat' && message.isNotEmpty) message,
+                                    ];
+
+                                    final subtitle = subtitleParts.join(' • ');
+
+                                    return _GovNavItem(
+                                      title: title,
+                                      icon: _kindIcon(kind),
+                                      active: false,
+                                      onTap: () {
+                                        if (kind == 'govtrack_chat') {
+                                          onSelect(_AiNavItem.intelligenceChat);
+                                        } else {
+                                          onSelect(_AiNavItem.imageGenerate);
+                                        }
+                                      },
+                                      subtitle: subtitle.isEmpty ? null : subtitle,
+                                    );
+                                  },
+                                ),
+                              ],
+                            ],
+                          );
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -1201,7 +1508,7 @@ class _GovSidebar extends StatelessWidget {
                   radius: 16,
                   backgroundColor: Colors.black.withValues(alpha: 0.04),
                   child: Text(
-                    'JD',
+                    initials,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: _AiDashboardState._title,
                           fontWeight: FontWeight.w900,
@@ -1214,7 +1521,7 @@ class _GovSidebar extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Juan Dela Cruz',
+                        displayName.isEmpty ? 'Site Manager' : displayName,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                               color: _AiDashboardState._title,
                               fontWeight: FontWeight.w900,
@@ -1222,7 +1529,7 @@ class _GovSidebar extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Provincial Engineer',
+                        email.isEmpty ? '—' : email,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
                       ),
                     ],
@@ -1264,14 +1571,14 @@ class _GovNavItem extends StatelessWidget {
     required this.icon,
     required this.active,
     required this.onTap,
-    this.showDot = false,
+    this.subtitle,
   });
 
   final String title;
+  final String? subtitle;
   final IconData icon;
   final bool active;
   final VoidCallback onTap;
-  final bool showDot;
 
   @override
   Widget build(BuildContext context) {
@@ -1297,20 +1604,33 @@ class _GovNavItem extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: active ? _AiDashboardState._title : Colors.black.withValues(alpha: 0.78),
-                          fontWeight: FontWeight.w800,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: active ? _AiDashboardState._title : Colors.black.withValues(alpha: 0.78),
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: _AiDashboardState._navMuted,
+                                fontWeight: FontWeight.w600,
+                              ),
                         ),
+                      ],
+                    ],
                   ),
                 ),
-                if (showDot)
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                  ),
               ],
             ),
           ),
@@ -1334,43 +1654,77 @@ class _TopHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final isNarrow = MediaQuery.of(context).size.width < 720;
     return Container(
-      height: 72,
       padding: EdgeInsets.symmetric(horizontal: isNarrow ? 12 : 24),
       decoration: const BoxDecoration(
         color: Colors.white,
         border: Border(bottom: BorderSide(color: _AiDashboardState._border)),
       ),
-      child: Row(
-        children: [
-          if (showMenu) ...[
-            Builder(
-              builder: (context) => IconButton(
-                icon: const Icon(Icons.menu),
-                onPressed: () => Scaffold.of(context).openDrawer(),
-                tooltip: 'Menu',
-              ),
-            ),
-            const SizedBox(width: 6),
-          ],
-          Expanded(
-            child: Wrap(
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              runSpacing: 8,
-              children: [
-                Text(
-                  'GovTrack AI',
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: _AiDashboardState._title,
-                      ),
-                ),
-                _PillTabs(index: tabIndex, onChange: onTabChange),
-              ],
-            ),
+      child: SafeArea(
+        bottom: false,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: showMenu ? (isNarrow ? 86 : 84) : (isNarrow ? 58 : 62),
           ),
-        ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: showMenu
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Builder(
+                            builder: (context) => IconButton(
+                              icon: const Icon(Icons.menu),
+                              onPressed: () => Scaffold.of(context).openDrawer(),
+                              tooltip: 'Menu',
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'GovTrack AI',
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: _PillTabs(index: tabIndex, onChange: onTabChange),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          runSpacing: 4,
+                          children: [
+                            Text(
+                              'GovTrack AI',
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                            _PillTabs(index: tabIndex, onChange: onTabChange),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
       ),
     );
   }
@@ -1429,31 +1783,6 @@ class _PillTab extends StatelessWidget {
   }
 }
 
-class _IconCircleButton extends StatelessWidget {
-  const _IconCircleButton({required this.icon, required this.onTap});
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(999),
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: _AiDashboardState._border),
-        ),
-        alignment: Alignment.center,
-        child: Icon(icon, size: 18, color: _AiDashboardState._subtitle),
-      ),
-    );
-  }
-}
-
 class _PageTitle extends StatelessWidget {
   const _PageTitle({required this.title, required this.subtitle});
   final String title;
@@ -1499,118 +1828,15 @@ class _Card extends StatelessWidget {
   }
 }
 
-enum _MetricTone { normal, risk }
-
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({
-    required this.icon,
-    required this.title,
-    required this.value,
-    required this.subtitle,
-    required this.deltaText,
-    required this.deltaUp,
-    this.tone = _MetricTone.normal,
-  });
-
-  final IconData icon;
-  final String title;
-  final String value;
-  final String subtitle;
-  final String deltaText;
-  final bool deltaUp;
-  final _MetricTone tone;
-
-  @override
-  Widget build(BuildContext context) {
-    final risk = tone == _MetricTone.risk;
-    final bg = risk ? const Color(0xFFFFF1F2) : Colors.white;
-    final border = risk ? const Color(0xFFFCA5A5) : _AiDashboardState._border;
-    final deltaColor = deltaUp ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
-
-    return Container(
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: border),
-        boxShadow: _AiDashboardState._shadow,
-      ),
-      padding: const EdgeInsets.all(18),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F5F9),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            alignment: Alignment.center,
-            child: Icon(icon, color: _AiDashboardState._subtitle),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w900,
-                              color: _AiDashboardState._subtitle,
-                              letterSpacing: 0.6,
-                            ),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: _AiDashboardState._border),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(deltaUp ? Icons.trending_up : Icons.trending_down, size: 14, color: deltaColor),
-                          const SizedBox(width: 6),
-                          Text(
-                            deltaText,
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: deltaColor,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  value,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: _AiDashboardState._title,
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-                const SizedBox(height: 6),
-                Text(subtitle, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _UploadDropzone extends StatelessWidget {
-  const _UploadDropzone({required this.bytes, required this.onPick});
+  const _UploadDropzone({
+    required this.bytes,
+    required this.onPick,
+    this.stampText,
+  });
   final Uint8List? bytes;
   final VoidCallback onPick;
+  final String? stampText;
 
   @override
   Widget build(BuildContext context) {
@@ -1662,7 +1888,32 @@ class _UploadDropzone extends StatelessWidget {
               )
             : ClipRRect(
                 borderRadius: BorderRadius.circular(18),
-                child: Image.memory(bytes!, fit: BoxFit.cover),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.memory(bytes!, fit: BoxFit.cover),
+                    if (stampText != null && stampText!.trim().isNotEmpty)
+                      Positioned(
+                        left: 10,
+                        right: 10,
+                        bottom: 10,
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            stampText!,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
       ),
     );
@@ -1681,70 +1932,92 @@ class _EmptyHint extends StatelessWidget {
   }
 }
 
-class _GovVerificationCard extends StatelessWidget {
-  const _GovVerificationCard({required this.data});
-  final Map<String, dynamic> data;
+class _AssignedProjectInfo extends StatelessWidget {
+  const _AssignedProjectInfo({required this.projectId});
+  final String projectId;
 
   @override
   Widget build(BuildContext context) {
-    final createdAt = data['createdAt'];
-    DateTime? created;
-    if (createdAt is Timestamp) created = createdAt.toDate();
-    final createdText = created == null
-        ? 'Unknown time'
-        : '${created.year}-${created.month.toString().padLeft(2, '0')}-${created.day.toString().padLeft(2, '0')} '
-            '${created.hour.toString().padLeft(2, '0')}:${created.minute.toString().padLeft(2, '0')}';
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseService.instance.projectsCollection.doc(projectId).snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
 
-    final pass = (data['pass'] ?? false) == true;
-    final confidence = ((data['confidence'] ?? 0.0) as num).toDouble().clamp(0.0, 1.0);
-    final statusText = pass ? 'PASS' : 'FAIL';
-    final statusColor = pass ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
+        final data = (snapshot.data!.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        final siteManagerId = (data['siteManagerId'] ?? '').toString();
+        final siteManagerName = (data['siteManagerName'] ?? '').toString();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _AiDashboardState._border),
-      ),
-      padding: const EdgeInsets.all(14),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: pass ? const Color(0xFFDCFCE7) : const Color(0xFFFEE2E2),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            alignment: Alignment.center,
-            child: Icon(pass ? Icons.check_circle : Icons.cancel, color: statusColor),
+        if (siteManagerId.isEmpty && siteManagerName.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _AiDashboardState._border),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Verification: $statusText',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: _AiDashboardState._title,
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _AiDashboardState._border),
+                ),
+                alignment: Alignment.center,
+                child: const Icon(Icons.person_outline, color: _AiDashboardState._subtitle, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Assigned Site Manager',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: _AiDashboardState._subtitle,
+                            letterSpacing: 0.6,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      siteManagerName.isNotEmpty ? siteManagerName : 'Site Manager',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: _AiDashboardState._title,
+                          ),
+                    ),
+                    if (siteManagerId.isNotEmpty)
+                      StreamBuilder<DocumentSnapshot>(
+                        stream: FirebaseService.instance.usersCollection.doc(siteManagerId).snapshots(),
+                        builder: (context, userSnap) {
+                          final userData = (userSnap.data?.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                          final email = (userData['email'] ?? '').toString();
+                          if (email.isEmpty) return const SizedBox.shrink();
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              email,
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
+                            ),
+                          );
+                        },
                       ),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(createdText, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle)),
-              ],
-            ),
+              ),
+            ],
           ),
-          Text(
-            '${(confidence * 100).toStringAsFixed(0)}%',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: _AiDashboardState._title,
-                ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1999,36 +2272,39 @@ class _ChatComposer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(14),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _AiDashboardState._border),
-          boxShadow: _AiDashboardState._shadow,
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.attach_file, size: 18, color: _AiDashboardState._subtitle),
-            const SizedBox(width: 10),
-            Expanded(
-              child: TextField(
-                controller: controller,
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  hintText: 'Ask GovTrack AI about projects, budgets, or milestones...',
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _AiDashboardState._border),
+            boxShadow: _AiDashboardState._shadow,
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.attach_file, size: 18, color: _AiDashboardState._subtitle),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    hintText: 'Ask GovTrack AI about projects, budgets, or milestones...',
+                  ),
+                  onSubmitted: (_) => onSend(),
                 ),
-                onSubmitted: (_) => onSend(),
               ),
-            ),
-            const SizedBox(width: 10),
-            IconButton(
-              onPressed: onSend,
-              icon: const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
-            ),
-          ],
+              const SizedBox(width: 10),
+              IconButton(
+                onPressed: onSend,
+                icon: const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
+              ),
+            ],
+          ),
         ),
       ),
     );

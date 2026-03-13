@@ -366,6 +366,74 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   }
 });
 
+// AI Progress % Estimation (Cloud Vision OCR MVP)
+exports.estimateProgressPercent = functions.https.onCall(async (data, context) => {
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+    }
+
+    const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl : null;
+    const storagePath = typeof data?.storagePath === 'string' ? data.storagePath : null;
+    const fileName = typeof data?.fileName === 'string' ? data.fileName : null;
+    const projectId = typeof data?.projectId === 'string' ? data.projectId : null;
+    const projectName = typeof data?.projectName === 'string' ? data.projectName : null;
+
+    if (!imageUrl && !storagePath) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'Either imageUrl or storagePath must be provided.'
+      );
+    }
+
+    const bucketName = admin.storage().bucket().name;
+    const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
+    const imageSource = gcsUri || imageUrl;
+
+    const [result] = await visionClient.annotateImage({
+      image: { source: { imageUri: imageSource } },
+      features: [{ type: 'TEXT_DETECTION', maxResults: 5 }],
+    });
+
+    const textAnnotations = Array.isArray(result?.textAnnotations)
+      ? result.textAnnotations
+      : [];
+    const extractedText =
+      textAnnotations.length > 0 && typeof textAnnotations[0].description === 'string'
+        ? textAnnotations[0].description
+        : '';
+
+    // Heuristic: extract a number like "32%" from OCR
+    let progressPercent = null;
+    if (extractedText) {
+      const match = extractedText.match(/(\d{1,3})\s*%/);
+      if (match && match[1]) {
+        const n = Number(match[1]);
+        if (!Number.isNaN(n)) {
+          progressPercent = Math.max(0, Math.min(100, n));
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      projectId: projectId || null,
+      projectName: projectName || null,
+      fileName: fileName || null,
+      progressPercent,
+      extractedText: extractedText ? extractedText.slice(0, 2000) : '',
+      method: 'vision_text_detection',
+    };
+  } catch (error) {
+    console.error('estimateProgressPercent error:', error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    const message = typeof error?.message === 'string' ? error.message : 'Estimation failed';
+    throw new functions.https.HttpsError('internal', message);
+  }
+});
+
 // GovTrack AI Chat (MVP - no external LLM)
 exports.govtrackChat = functions.https.onCall(async (data, context) => {
   try {

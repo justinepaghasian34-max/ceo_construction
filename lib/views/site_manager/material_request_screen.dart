@@ -10,7 +10,7 @@ import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../widgets/common/app_button.dart';
-import '../../widgets/common/app_card.dart';
+import 'widgets/site_manager_card.dart';
 
 class MaterialRequestScreen extends StatefulWidget {
   const MaterialRequestScreen({super.key});
@@ -59,7 +59,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen> {
           child: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              AppCard(
+              SiteManagerCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -95,7 +95,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              AppCard(
+              SiteManagerCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

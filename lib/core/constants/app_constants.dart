@@ -103,8 +103,12 @@ class RouteNames {
 
   // Site Manager Routes
   static const String siteManagerHome = '/site-manager';
+  static const String siteManagerTasks = '/site-manager/tasks';
+  static const String siteManagerMaterials = '/site-manager/materials';
   static const String dailyReport = '/site-manager/daily-report';
   static const String attendance = '/site-manager/attendance';
+  static const String fingerprintAttendance =
+      '/site-manager/fingerprint-attendance';
   static const String materialUsage = '/site-manager/material-usage';
   static const String materialDelivery = '/site-manager/material-delivery';
   static const String materialRequest = '/site-manager/material-request';
@@ -113,11 +117,13 @@ class RouteNames {
       '/site-manager/project-progress-update';
   static const String syncQueue = '/site-manager/sync-queue';
   static const String govTrackAi = '/site-manager/govtrack-ai';
+  static const String aiAssistantChat = '/site-manager/ai-assistant-chat';
 
   // Admin Routes
   static const String adminHome = '/admin';
   static const String adminDashboard = '/admin/dashboard';
   static const String adminReports = '/admin/reports';
+  static const String adminProgressReports = '/admin/progress-reports';
   static const String adminProjects = '/admin/projects';
   static const String adminPayroll = '/admin/payroll';
   static const String adminHistory = '/admin/history';

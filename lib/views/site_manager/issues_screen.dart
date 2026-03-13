@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/hive_service.dart';
-import '../../widgets/common/app_card.dart';
+import 'widgets/site_manager_card.dart';
 
 class IssuesScreen extends StatelessWidget {
   const IssuesScreen({super.key});
@@ -47,7 +47,7 @@ class IssuesScreen extends StatelessWidget {
                 final dateText = '${date.day}/${date.month}/${date.year}';
                 final firstIssue = report.issues.first;
 
-                return AppCard(
+                return SiteManagerCard(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [

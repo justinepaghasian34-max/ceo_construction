@@ -123,20 +123,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final panel = ClipRRect(
       borderRadius: BorderRadius.circular(glassRadius),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
-            color: AppTheme.white.withValues(alpha: 0.16),
+            color: AppTheme.white.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(glassRadius),
             border: Border.all(
-              color: AppTheme.white.withValues(alpha: 0.45),
+              color: AppTheme.white.withValues(alpha: 0.28),
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.14),
-                blurRadius: 22,
-                offset: const Offset(0, 10),
+                color: Colors.black.withValues(alpha: 0.10),
+                blurRadius: 20,
+                offset: const Offset(0, 8),
               ),
             ],
           ),
@@ -185,24 +185,24 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   Widget _buildLoginCard({bool showLogo = false}) {
     const glassRadius = 20.0;
-    final fieldFill = AppTheme.white.withValues(alpha: 0.38);
-    final borderColor = AppTheme.white.withValues(alpha: 0.45);
+    final fieldFill = AppTheme.white.withValues(alpha: 0.32);
+    final borderColor = AppTheme.white.withValues(alpha: 0.28);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(glassRadius),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(glassRadius),
-            color: AppTheme.white.withValues(alpha: 0.16),
+            color: AppTheme.white.withValues(alpha: 0.12),
             border: Border.all(color: borderColor),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.18),
-                blurRadius: 24,
-                offset: const Offset(0, 10),
+                color: Colors.black.withValues(alpha: 0.12),
+                blurRadius: 22,
+                offset: const Offset(0, 8),
               ),
             ],
           ),

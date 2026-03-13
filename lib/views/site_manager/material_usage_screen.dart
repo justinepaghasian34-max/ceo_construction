@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
+import '../../core/theme/app_theme.dart';
 import '../../services/hive_service.dart';
-import '../../widgets/common/app_card.dart';
+import 'widgets/site_manager_card.dart';
 import '../../widgets/common/status_chip.dart';
 
 class MaterialUsageScreen extends StatelessWidget {
@@ -49,7 +49,7 @@ class MaterialUsageScreen extends StatelessWidget {
                 final reportId = (usage['reportId'] ?? '').toString();
                 final syncStatus = (usage['syncStatus'] ?? AppConstants.syncStatusPending).toString();
 
-                return AppCard(
+                return SiteManagerCard(
                   child: Row(
                     children: [
                       Icon(

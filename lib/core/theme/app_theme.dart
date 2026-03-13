@@ -2,29 +2,30 @@ import 'package:flutter/material.dart';
 
 class AppTheme {
   // Color Palette
-  static const Color deepBlue = Color(0xFF1E3A8A);
-  static const Color primaryBlue = Color(0xFF2563EB);
+  static const Color deepBlue = Color(0xFF2F4B8F);
+  static const Color deepBlueDark = Color(0xFF1E3566);
+  static const Color primaryBlue = deepBlue;
   static const Color accentYellow = Color(0xFFFACC15);
-  static const Color softGreen = Color(0xFF10B981);
-  static const Color lightGray = Color(0xFFF3F4F6);
+  static const Color softGreen = Color(0xFF27AE60);
+  static const Color lightGray = Color(0xFFF5F6FA);
   static const Color white = Color(0xFFFFFFFF);
   static const Color darkGray = Color(0xFF374151);
   static const Color mediumGray = Color(0xFF6B7280);
   static const Color errorRed = Color(0xFFEF4444);
-  static const Color warningOrange = Color(0xFFF59E0B);
+  static const Color warningOrange = Color(0xFFF39C12);
 
   static ThemeData get lightTheme {
     return ThemeData(
       useMaterial3: true,
       fontFamily: 'Inter',
-      scaffoldBackgroundColor: white,
+      scaffoldBackgroundColor: lightGray,
       
       // Color Scheme
       colorScheme: ColorScheme.fromSeed(
         seedColor: deepBlue,
         primary: deepBlue,
         secondary: softGreen,
-        surface: lightGray,
+        surface: white,
         error: errorRed,
         brightness: Brightness.light,
       ),

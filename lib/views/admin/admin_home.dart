@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/hive_service.dart';
@@ -23,6 +22,10 @@ class AdminHome extends StatelessWidget {
         IconButton(
           icon: const Icon(Icons.notifications_none),
           onPressed: () => context.push(RouteNames.notifications),
+        ),
+        IconButton(
+          icon: const Icon(Icons.fact_check_outlined),
+          onPressed: () => context.push(RouteNames.adminAuditTrail),
         ),
         IconButton(
           icon: const Icon(Icons.help_outline),
@@ -62,6 +65,7 @@ class AdminHome extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < 1000;
+        const kpiHeight = 150.0;
 
         final List<Widget> cards = [
           _KpiCard(
@@ -83,10 +87,11 @@ class AdminHome extends StatelessWidget {
           ),
         ];
 
-        final weatherCard = SizedBox(
-          width: isNarrow ? double.infinity : 220,
-          child: _buildWeatherRiskCard(context, hive),
-        );
+        Widget wrapKpiCard(Widget child) {
+          return SizedBox(height: kpiHeight, child: child);
+        }
+
+        final weatherCard = wrapKpiCard(_buildWeatherRiskCard(context, hive));
 
         if (isNarrow) {
           return Column(
@@ -94,7 +99,7 @@ class AdminHome extends StatelessWidget {
               ...cards.map(
                 (c) => Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: c,
+                  child: wrapKpiCard(c),
                 ),
               ),
               weatherCard,
@@ -105,13 +110,13 @@ class AdminHome extends StatelessWidget {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(child: cards[0]),
+            Expanded(child: wrapKpiCard(cards[0])),
             const SizedBox(width: 12),
-            Expanded(child: cards[1]),
+            Expanded(child: wrapKpiCard(cards[1])),
             const SizedBox(width: 12),
-            Expanded(child: cards[2]),
+            Expanded(child: wrapKpiCard(cards[2])),
             const SizedBox(width: 12),
-            weatherCard,
+            Expanded(child: weatherCard),
           ],
         );
       },
@@ -197,166 +202,6 @@ class AdminHome extends StatelessWidget {
       borderRadius: 18,
       padding: const EdgeInsets.all(16),
       child: _buildActivityProjectSummaryCard(context),
-    );
-  }
-
-  Widget _buildSummaryRow(BuildContext context) {
-    final projectsRef = FirebaseService.instance.projectsCollection;
-
-    return StreamBuilder<QuerySnapshot>(
-      stream: projectsRef.snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return AppCard(
-            child: Row(
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Loading project summary…',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
-              ],
-            ),
-          );
-        }
-
-        if (snapshot.hasError) {
-          return AppCard(
-            child: Text(
-              'Failed to load project summary.',
-              style: Theme.of(
-                context,
-              ).textTheme.bodyMedium?.copyWith(color: AppTheme.errorRed),
-            ),
-          );
-        }
-
-        final docs = snapshot.data?.docs ?? [];
-        int totalProjects = docs.length;
-        int ongoing = 0;
-        int pending = 0;
-
-        for (final doc in docs) {
-          final data = doc.data() as Map<String, dynamic>;
-          final status = (data['status'] ?? 'unknown').toString().toLowerCase();
-          if (status == 'ongoing') {
-            ongoing++;
-          } else if (status == 'completed') {
-          } else {
-            pending++;
-          }
-        }
-
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            Widget buildStatCard({
-              required IconData icon,
-              required Color iconColor,
-              required String label,
-              required int value,
-            }) {
-              return AppCard(
-                margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                padding: const EdgeInsets.all(16),
-                backgroundColor: AppTheme.white,
-                elevation: 1,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: iconColor.withAlpha(24),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Icon(icon, color: iconColor, size: 22),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            label,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: AppTheme.mediumGray),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      value.toString(),
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.deepBlue,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            final totalCard = buildStatCard(
-              icon: Icons.business,
-              iconColor: AppTheme.deepBlue,
-              label: 'Total project',
-              value: totalProjects,
-            );
-
-            final ongoingCard = buildStatCard(
-              icon: Icons.play_circle_outline,
-              iconColor: AppTheme.primaryBlue,
-              label: 'Ongoing',
-              value: ongoing,
-            );
-
-            final pendingCard = buildStatCard(
-              icon: Icons.pending_actions,
-              iconColor: AppTheme.accentYellow,
-              label: 'Pending',
-              value: pending,
-            );
-
-            final isWide = constraints.maxWidth >= 900;
-            if (isWide) {
-              return Row(
-                children: [
-                  Expanded(child: totalCard),
-                  const SizedBox(width: 12),
-                  Expanded(child: ongoingCard),
-                  const SizedBox(width: 12),
-                  Expanded(child: pendingCard),
-                ],
-              );
-            }
-
-            const cardWidth = 180.0;
-            return SizedBox(
-              height: 132,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    SizedBox(width: cardWidth, child: totalCard),
-                    const SizedBox(width: 12),
-                    SizedBox(width: cardWidth, child: ongoingCard),
-                    const SizedBox(width: 12),
-                    SizedBox(width: cardWidth, child: pendingCard),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
     );
   }
 
@@ -788,356 +633,6 @@ class AdminHome extends StatelessWidget {
       ],
     );
   }
-
-  Widget _buildWeatherForecastCard(BuildContext context, HiveService hive) {
-    return AppCard(
-      padding: const EdgeInsets.all(16),
-      backgroundColor: AppTheme.deepBlue.withValues(alpha: 0.03),
-      child: FutureBuilder<WeatherNow>(
-        future: WeatherService.instance.getCurrentWeatherByCity('Manila,PH'),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return Row(
-              children: [
-                const CircularProgressIndicator(),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Loading current weather…',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
-              ],
-            );
-          }
-
-          if (snapshot.hasError || !snapshot.hasData) {
-            return Text(
-              'Unable to load current weather.',
-              style: Theme.of(
-                context,
-              ).textTheme.bodyMedium?.copyWith(color: AppTheme.errorRed),
-            );
-          }
-
-          final data = snapshot.data!;
-          final condition = data.condition.toLowerCase();
-          IconData icon;
-          Color iconColor;
-
-          if (condition.contains('rain')) {
-            icon = Icons.umbrella;
-            iconColor = AppTheme.warningOrange;
-          } else if (condition.contains('cloud')) {
-            icon = Icons.cloud;
-            iconColor = AppTheme.deepBlue;
-          } else {
-            icon = Icons.wb_sunny;
-            iconColor = AppTheme.accentYellow;
-          }
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppTheme.deepBlue.withAlpha(20),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(icon, color: iconColor),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(child: SizedBox.shrink()),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '${data.temperatureC.toStringAsFixed(1)}°C',
-                style: Theme.of(
-                  context,
-                ).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '7-day forecast',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.mediumGray,
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 140,
-                child: FutureBuilder<List<WeatherDailyForecast>>(
-                  future: WeatherService.instance.get7DayForecastByCity(
-                    'Manila,PH',
-                  ),
-                  builder: (context, forecastSnapshot) {
-                    if (forecastSnapshot.connectionState ==
-                        ConnectionState.waiting) {
-                      return const Center(
-                        child: SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      );
-                    }
-
-                    if (forecastSnapshot.hasError ||
-                        !forecastSnapshot.hasData ||
-                        forecastSnapshot.data!.isEmpty) {
-                      return Text(
-                        'No forecast data available.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.mediumGray,
-                        ),
-                      );
-                    }
-
-                    final forecasts = forecastSnapshot.data!;
-                    return ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: forecasts.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 8),
-                      itemBuilder: (context, index) {
-                        final day = forecasts[index];
-                        final weekdayNames = [
-                          'Mon',
-                          'Tue',
-                          'Wed',
-                          'Thu',
-                          'Fri',
-                          'Sat',
-                          'Sun',
-                        ];
-                        final dayLabel = weekdayNames[day.date.weekday - 1];
-                        final dayCondition = day.condition.toLowerCase();
-                        IconData dayIcon;
-                        Color dayIconColor;
-                        if (dayCondition.contains('rain')) {
-                          dayIcon = Icons.umbrella;
-                          dayIconColor = AppTheme.warningOrange;
-                        } else if (dayCondition.contains('cloud')) {
-                          dayIcon = Icons.cloud;
-                          dayIconColor = AppTheme.deepBlue;
-                        } else {
-                          dayIcon = Icons.wb_sunny;
-                          dayIconColor = AppTheme.accentYellow;
-                        }
-
-                        String conditionLabel;
-                        if (dayCondition.contains('rain')) {
-                          conditionLabel = 'Rainy';
-                        } else if (dayCondition.contains('cloud')) {
-                          conditionLabel = 'Cloudy';
-                        } else {
-                          conditionLabel = 'Sunny';
-                        }
-
-                        return InkWell(
-                          onTap: () {
-                            _showDailyWeatherDetails(context, day);
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            width: 90,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppTheme.white,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              mainAxisSize: MainAxisSize.max,
-                              children: [
-                                Text(
-                                  dayLabel.toUpperCase(),
-                                  style: Theme.of(context).textTheme.labelSmall
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w700,
-                                        color: AppTheme.deepBlue,
-                                      ),
-                                ),
-                                Icon(dayIcon, size: 22, color: dayIconColor),
-                                Flexible(
-                                  child: Text(
-                                    conditionLabel.toUpperCase(),
-                                    maxLines: 2,
-                                    textAlign: TextAlign.center,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(color: AppTheme.mediumGray),
-                                  ),
-                                ),
-                                Text(
-                                  '${day.maxTempC.toStringAsFixed(0)}°',
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                                Text(
-                                  'Low ${day.minTempC.toStringAsFixed(0)}°',
-                                  style: Theme.of(context).textTheme.labelSmall
-                                      ?.copyWith(color: AppTheme.mediumGray),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  void _showDailyWeatherDetails(
-    BuildContext context,
-    WeatherDailyForecast day,
-  ) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: false,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) {
-        final weekdayNames = [
-          'Monday',
-          'Tuesday',
-          'Wednesday',
-          'Thursday',
-          'Friday',
-          'Saturday',
-          'Sunday',
-        ];
-        final dayLabel = weekdayNames[day.date.weekday - 1];
-        final dateText =
-            '${day.date.year.toString().padLeft(4, '0')}-${day.date.month.toString().padLeft(2, '0')}-${day.date.day.toString().padLeft(2, '0')}';
-
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    'Forecast for $dayLabel',
-                    style: Theme.of(sheetContext).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  const Spacer(),
-                  Text(
-                    dateText,
-                    style: Theme.of(
-                      sheetContext,
-                    ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 140,
-                child: FutureBuilder<List<WeatherHourlyForecast>>(
-                  future: WeatherService.instance
-                      .getHourlyForecastByCityAndDate('Manila,PH', day.date),
-                  builder: (hourContext, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      );
-                    }
-
-                    if (snapshot.hasError ||
-                        !snapshot.hasData ||
-                        snapshot.data!.isEmpty) {
-                      return Text(
-                        'No hourly data available.',
-                        style: Theme.of(hourContext).textTheme.bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      );
-                    }
-
-                    final hours = snapshot.data!;
-                    return ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: hours.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: 12),
-                      itemBuilder: (hourContext, index) {
-                        final h = hours[index];
-                        final timeOfDay = TimeOfDay.fromDateTime(h.dateTime);
-                        final timeLabel = timeOfDay.format(hourContext);
-                        final cond = h.condition.toLowerCase();
-                        IconData icon;
-                        Color iconColor;
-                        if (cond.contains('rain')) {
-                          icon = Icons.umbrella;
-                          iconColor = AppTheme.warningOrange;
-                        } else if (cond.contains('cloud')) {
-                          icon = Icons.cloud;
-                          iconColor = AppTheme.deepBlue;
-                        } else {
-                          icon = Icons.wb_sunny;
-                          iconColor = AppTheme.accentYellow;
-                        }
-
-                        return Container(
-                          width: 80,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppTheme.deepBlue.withValues(alpha: 0.03),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                timeLabel,
-                                style: Theme.of(hourContext)
-                                    .textTheme
-                                    .labelSmall
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              Icon(icon, size: 20, color: iconColor),
-                              Text(
-                                '${h.tempC.toStringAsFixed(0)}°C',
-                                style: Theme.of(hourContext)
-                                    .textTheme
-                                    .titleSmall
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
 }
 
 class _KpiCard extends StatelessWidget {
@@ -1214,11 +709,12 @@ class _KpiCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Container(
-            height: 48,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(12),
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(12),
+              ),
             ),
           ),
         ],
