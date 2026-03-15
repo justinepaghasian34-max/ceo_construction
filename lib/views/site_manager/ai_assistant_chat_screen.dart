@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -66,6 +67,8 @@ class _AiAssistantChatScreenState extends State<AiAssistantChatScreen> {
     required String analysisDocId,
   }) async {
     try {
+      final firebaseUser = FirebaseAuth.instance.currentUser;
+      final idToken = await firebaseUser?.getIdToken(true);
       final callable = FirebaseFunctions.instance.httpsCallable('estimateProgressPercent');
       final res = await callable.call({
         'projectId': projectId,
@@ -74,6 +77,7 @@ class _AiAssistantChatScreenState extends State<AiAssistantChatScreen> {
         'storagePath': storagePath,
         'fileName': fileName,
         'analysisDocId': analysisDocId,
+        'idToken': idToken,
       });
 
       final data = (res.data is Map) ? (res.data as Map).cast<String, dynamic>() : <String, dynamic>{};

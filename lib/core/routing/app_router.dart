@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:async';
 import '../constants/app_constants.dart';
 import '../../services/auth_service.dart';
 import '../../views/auth/login_screen.dart';
@@ -41,22 +42,35 @@ class AppRouter {
   static final _rootNavigatorKey = GlobalKey<NavigatorState>();
 
   static GoRouter createRouter(Ref ref) {
+    final authService = ref.read(authServiceProvider);
     return GoRouter(
       navigatorKey: _rootNavigatorKey,
       initialLocation: RouteNames.splash,
+      refreshListenable: GoRouterRefreshStream(authService.authStateChanges),
       redirect: (context, state) {
-        final authService = ref.read(authServiceProvider);
+        final firebaseUser = authService.currentFirebaseUser;
+        final hasFirebaseUser = firebaseUser != null;
         final isAuthenticated = authService.isAuthenticated;
         final userRole = authService.userRole;
 
         final location = state.uri.toString();
 
         // If not authenticated and not on login, register, or splash, redirect to login
-        if (!isAuthenticated &&
+        if (!hasFirebaseUser &&
             location != RouteNames.login &&
             location != RouteNames.register &&
             location != RouteNames.splash) {
           return RouteNames.login;
+        }
+
+        // If FirebaseAuth still has a user but our local role/user model isn't ready yet,
+        // avoid bouncing to login. Send the user to splash so the app can rehydrate.
+        if (hasFirebaseUser &&
+            userRole == null &&
+            location != RouteNames.splash &&
+            location != RouteNames.login &&
+            location != RouteNames.register) {
+          return RouteNames.splash;
         }
 
         // If authenticated and on login, register, or splash, redirect to appropriate home
@@ -306,33 +320,49 @@ class AppRouter {
   static bool _hasAccessToRoute(String route, String? userRole) {
     if (userRole == null) return false;
 
-    // Common routes accessible to all authenticated users
     if (route.startsWith(RouteNames.profile) ||
         route.startsWith(RouteNames.settings) ||
         route.startsWith(RouteNames.notifications)) {
       return true;
     }
 
-    // Role-specific route access
-    switch (userRole) {
-      case AppConstants.roleSiteManager:
-        return route.startsWith(RouteNames.siteManagerHome);
-      case AppConstants.roleAdmin:
-        return route.startsWith(RouteNames.adminHome);
-      case AppConstants.roleCeo:
-        return route.startsWith(RouteNames.ceoHome);
-      default:
-        return false;
+    if (userRole == AppConstants.roleAdmin) {
+      return route.startsWith(RouteNames.adminHome);
     }
+
+    if (userRole == AppConstants.roleCeo) {
+      return route.startsWith(RouteNames.ceoHome);
+    }
+
+    if (userRole == AppConstants.roleSiteManager) {
+      return route.startsWith(RouteNames.siteManagerHome);
+    }
+
+    return false;
   }
 }
 
-// Router provider
+class GoRouterRefreshStream extends ChangeNotifier {
+  GoRouterRefreshStream(Stream<dynamic> stream) {
+    _sub = stream.asBroadcastStream().listen((_) {
+      notifyListeners();
+    });
+  }
+
+  StreamSubscription<dynamic>? _sub;
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _sub = null;
+    super.dispose();
+  }
+}
+
 final goRouterProvider = Provider<GoRouter>((ref) {
   return AppRouter.createRouter(ref);
 });
 
-// Navigation helper methods
 extension AppNavigation on BuildContext {
   void goToLogin() => go(RouteNames.login);
   void goToHome() {
@@ -345,7 +375,6 @@ extension AppNavigation on BuildContext {
   void goToSettings() => go(RouteNames.settings);
   void goToNotifications() => go(RouteNames.notifications);
 
-  // Site Manager Navigation
   void goToDailyReport() => go(RouteNames.dailyReport);
   void goToAttendance() => go(RouteNames.attendance);
   void goToMaterialUsage() => go(RouteNames.materialUsage);
@@ -354,13 +383,11 @@ extension AppNavigation on BuildContext {
   void goToIssues() => go(RouteNames.issues);
   void goToSyncQueue() => go(RouteNames.syncQueue);
 
-  // Admin Navigation
   void goToAdminDashboard() => go(RouteNames.adminDashboard);
   void goToAdminProjects() => go(RouteNames.adminProjects);
   void goToAdminPayroll() => go(RouteNames.adminPayroll);
   void goToAdminHistory() => go(RouteNames.adminHistory);
   void goToAdminAuditTrail() => go(RouteNames.adminAuditTrail);
   void goToAdminMaterialMonitoring() => go(RouteNames.adminMaterialMonitoring);
-  void goToAdminFinancialMonitoring() =>
-      go(RouteNames.adminFinancialMonitoring);
+  void goToAdminFinancialMonitoring() => go(RouteNames.adminFinancialMonitoring);
 }

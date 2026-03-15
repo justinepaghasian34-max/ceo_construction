@@ -54,10 +54,29 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     if (!mounted) return;
 
+    String? nextRoute;
+
     try {
       // Check authentication state
       final authService = ref.read(authServiceProvider);
-      final isAuthenticated = authService.isAuthenticated;
+      var isAuthenticated = authService.isAuthenticated;
+      final hasFirebaseUser = authService.currentFirebaseUser != null;
+
+      // If FirebaseAuth has a user but our local user model is missing,
+      // try to rehydrate it from Firestore.
+      if (!isAuthenticated && hasFirebaseUser) {
+        final ok = await authService
+            .refreshUserData()
+            .timeout(const Duration(seconds: 12), onTimeout: () => false);
+        if (!ok) {
+          await authService.signOut();
+          nextRoute = RouteNames.login;
+          return;
+        }
+
+        // Recompute auth state after rehydration.
+        isAuthenticated = authService.isAuthenticated;
+      }
 
       if (isAuthenticated) {
         // Validate privileged email for Admin
@@ -68,9 +87,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
         if (userRole == AppConstants.roleAdmin &&
             email != AppConstants.adminEmail.toLowerCase()) {
           await authService.signOut();
-          if (mounted) {
-            context.go(RouteNames.login);
-          }
+          nextRoute = RouteNames.login;
           return;
         }
 
@@ -88,17 +105,18 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
             homeRoute = RouteNames.login;
         }
 
-        context.go(homeRoute);
+        nextRoute = homeRoute;
       } else {
         // User is not logged in, go to login
-        context.go(RouteNames.login);
+        nextRoute = RouteNames.login;
       }
     } catch (e) {
       // Error occurred, go to login
-      if (mounted) {
-        context.go(RouteNames.login);
-      }
+      nextRoute = RouteNames.login;
     }
+
+    if (!mounted) return;
+    context.go(nextRoute);
   }
 
   @override

@@ -18,148 +18,316 @@ class AdminMaterialMonitoring extends StatefulWidget {
 }
 
 class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
+  String? _selectedProjectId;
+  String? _selectedProjectName;
+
+  Future<void> _showAddInventoryItemDialog() async {
+    final projectId = _selectedProjectId;
+    if (projectId == null || projectId.isEmpty) return;
+
+    final nameController = TextEditingController();
+    final unitController = TextEditingController();
+    final stockController = TextEditingController();
+    final unitPriceController = TextEditingController();
+
+    final rootMessenger = ScaffoldMessenger.of(context);
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Add Inventory Item'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Material name'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: unitController,
+                  decoration: const InputDecoration(labelText: 'Unit (e.g. bag, pcs)'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: stockController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Initial stock'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: unitPriceController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Unit price (₱)'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final navigator = Navigator.of(dialogContext);
+                final name = nameController.text.trim();
+                final unit = unitController.text.trim();
+                final stock = double.tryParse(stockController.text.trim().replaceAll(',', ''));
+                final unitPrice = double.tryParse(unitPriceController.text.trim().replaceAll(',', ''));
+
+                if (name.isEmpty || unit.isEmpty || stock == null || stock < 0) {
+                  if (!mounted) return;
+                  rootMessenger.showSnackBar(
+                    const SnackBar(
+                      content: Text('Please enter material name, unit, and a valid stock.'),
+                      backgroundColor: AppTheme.errorRed,
+                    ),
+                  );
+                  return;
+                }
+
+                await FirebaseService.instance.materialInventoryCollection(projectId).add({
+                  'materialName': name,
+                  'unit': unit,
+                  'stock': stock,
+                  if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                  'projectId': projectId,
+                  'projectName': _selectedProjectName,
+                  'createdAt': FieldValue.serverTimestamp(),
+                  'updatedAt': FieldValue.serverTimestamp(),
+                });
+
+                if (!mounted) return;
+                navigator.pop();
+                rootMessenger.showSnackBar(
+                  const SnackBar(content: Text('Inventory item added.')),
+                );
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final hive = HiveService.instance;
-    final usages = hive.getAllMaterialUsage();
-    final inventoryItems = hive.getAllMaterialInventory();
-    final reports = hive.getAllDailyReports();
+    final projectStream = FirebaseService.instance.projectsCollection
+        .where('status', isEqualTo: 'ongoing')
+        .snapshots();
 
-    final reportById = <String, dynamic>{};
-    for (final r in reports) {
-      reportById[r.id] = r;
-    }
+    return StreamBuilder<QuerySnapshot>(
+      stream: projectStream,
+      builder: (context, projectSnap) {
+        final projectDocs = projectSnap.data?.docs ?? const [];
 
-    final now = DateTime.now();
-    final startOfMonth = DateTime(now.year, now.month, 1);
-    final endOfMonth = DateTime(now.year, now.month + 1, 1);
-
-    double totalStock = 0;
-    for (final item in inventoryItems) {
-      final stockRaw = item['stock'];
-      double stock;
-      if (stockRaw is num) {
-        stock = stockRaw.toDouble();
-      } else {
-        stock = double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
-      }
-      totalStock += stock;
-    }
-
-    double monthQuantity = 0;
-
-    // Build a price lookup from inventory (by material name)
-    final Map<String, double> unitPriceByMaterial = {};
-    for (final item in inventoryItems) {
-      final name = (item['materialName'] ?? '').toString();
-      if (name.isEmpty) continue;
-
-      final priceRaw = item['unitPrice'] ?? item['price'];
-      double? price;
-      if (priceRaw is num) {
-        price = priceRaw.toDouble();
-      } else if (priceRaw is String) {
-        final cleaned =
-            priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
-        price = double.tryParse(cleaned);
-      }
-
-      if (price != null) {
-        unitPriceByMaterial[name] = price;
-      }
-    }
-
-    final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
-
-    for (final usage in usages) {
-      final name = (usage['materialName'] ?? 'Material').toString();
-
-      final quantityRaw = usage['quantity'] ?? usage['stock'] ?? 0;
-      final quantity = double.tryParse(quantityRaw.toString()) ?? 0.0;
-
-      DateTime? usageDate;
-      final reportId = (usage['reportId'] ?? '').toString();
-      final report = reportById[reportId];
-      if (report != null) {
-        final dateDynamic = report.reportDate;
-        if (dateDynamic is DateTime) {
-          usageDate = dateDynamic;
+        if (_selectedProjectId == null && projectDocs.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (_selectedProjectId != null) return;
+            final d = projectDocs.first;
+            final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+            setState(() {
+              _selectedProjectId = d.id;
+              _selectedProjectName = (data['name'] ?? '').toString();
+            });
+          });
         }
-      }
 
-      if (usageDate == null) {
-        final dateRaw = usage['date'];
-        if (dateRaw is String) {
-          try {
-            usageDate = DateTime.parse(dateRaw);
-          } catch (_) {}
-        } else if (dateRaw is DateTime) {
-          usageDate = dateRaw;
-        }
-      }
+        final selectedProjectId = _selectedProjectId;
+        final inventoryStream = selectedProjectId == null
+            ? Stream<QuerySnapshot>.empty()
+            : FirebaseService.instance.materialInventoryCollection(selectedProjectId)
+                .orderBy('materialName')
+                .snapshots();
 
-      if (usageDate != null &&
-          !usageDate.isBefore(startOfMonth) &&
-          usageDate.isBefore(endOfMonth)) {
-        monthQuantity += quantity;
-      }
+        final usageStream = selectedProjectId == null
+            ? Stream<QuerySnapshot<Map<String, dynamic>>>.empty()
+            : FirebaseService.instance.firestore
+                .collectionGroup('material_usage')
+                .where('projectId', isEqualTo: selectedProjectId)
+                .snapshots();
 
-      final status = (usage['status'] ?? usage['syncStatus'] ?? '').toString();
+        return StreamBuilder<QuerySnapshot>(
+          stream: inventoryStream,
+          builder: (context, invSnap) {
+            if (invSnap.hasError) {
+              return AdminGlassScaffold(
+                title: 'Material & Inventory Monitoring',
+                bottomNavigationBar: const AdminBottomNavBar(
+                  current: AdminNavItem.materialInventory,
+                ),
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'Failed to load inventory: ${invSnap.error}',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: AppTheme.errorRed,
+                            fontWeight: FontWeight.w700,
+                          ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              );
+            }
 
-      final projectId = (usage['projectId'] ?? 'Unknown site').toString();
+            final inventoryItems = invSnap.data?.docs
+                    .map((d) => ((d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{})..['id'] = d.id)
+                    .toList() ??
+                <Map<String, dynamic>>[];
 
-      final unitPrice = unitPriceByMaterial[name];
-      final double? totalCost = unitPrice != null ? unitPrice * quantity : null;
+            // Build a price lookup from inventory (by material name)
+            final Map<String, double> unitPriceByMaterial = {};
+            for (final item in inventoryItems) {
+              final name = (item['materialName'] ?? '').toString();
+              if (name.isEmpty) continue;
+              final priceRaw = item['unitPrice'] ?? item['price'];
+              double? price;
+              if (priceRaw is num) {
+                price = priceRaw.toDouble();
+              } else if (priceRaw is String) {
+                final cleaned = priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
+                price = double.tryParse(cleaned);
+              }
+              if (price != null) {
+                unitPriceByMaterial[name] = price;
+              }
+            }
 
-      usageByProject.putIfAbsent(projectId, () => []).add(
-            _MaterialUsageEntry(
-              materialName: name,
-              quantity: quantity,
-              unit: (usage['unit'] ?? '').toString(),
-              status: status,
-              projectId: projectId,
-              reportId: reportId,
-              date: usageDate,
-              unitPrice: unitPrice,
-              totalCost: totalCost,
-            ),
-          );
-    }
+            double totalStock = 0;
+            for (final item in inventoryItems) {
+              final stockRaw = item['stock'];
+              double stock;
+              if (stockRaw is num) {
+                stock = stockRaw.toDouble();
+              } else {
+                stock = double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
+              }
+              totalStock += stock;
+            }
 
-    final List<_SiteDistributionSummary> siteSummaries = [];
-    usageByProject.forEach((projectId, entries) {
-      double siteTotalQuantity = 0;
-      double siteTotalCost = 0;
-      final Set<String> siteMaterials = {};
-      DateTime? lastUsageDate;
+            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: usageStream,
+              builder: (context, usageSnap) {
+                if (usageSnap.hasError) {
+                  return AdminGlassScaffold(
+                    title: 'Material & Inventory Monitoring',
+                    bottomNavigationBar: const AdminBottomNavBar(
+                      current: AdminNavItem.materialInventory,
+                    ),
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          'Failed to load material usage: ${usageSnap.error}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                color: AppTheme.errorRed,
+                                fontWeight: FontWeight.w700,
+                              ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  );
+                }
 
-      for (final entry in entries) {
-        siteTotalQuantity += entry.quantity;
-        siteTotalCost += entry.totalCost ?? 0.0;
-        siteMaterials.add(entry.materialName);
-        if (entry.date != null) {
-          if (lastUsageDate == null || entry.date!.isAfter(lastUsageDate)) {
-            lastUsageDate = entry.date;
-          }
-        }
-      }
+                final now = DateTime.now();
+                final startOfMonth = DateTime(now.year, now.month, 1);
+                final endOfMonth = DateTime(now.year, now.month + 1, 1);
 
-      siteSummaries.add(
-        _SiteDistributionSummary(
-          projectId: projectId,
-          materialsCount: siteMaterials.length,
-          totalQuantity: siteTotalQuantity,
-          totalCost: siteTotalCost,
-          lastUsageDate: lastUsageDate,
-        ),
-      );
-    });
+                double monthQuantity = 0;
+                final List<_MaterialUsageEntry> usageEntries = [];
 
-    siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+                final usageDocs = usageSnap.data?.docs ?? const [];
+                for (final d in usageDocs) {
+                  final usage = d.data();
+                  final name = (usage['materialName'] ?? 'Material').toString();
+                  final quantityRaw = usage['quantity'] ?? usage['stock'] ?? 0;
+                  final quantity = double.tryParse(quantityRaw.toString()) ?? 0.0;
 
-    return AdminGlassScaffold(
-      title: 'Material & Inventory Monitoring',
-      actions: [
+                  DateTime? usageDate;
+                  final dateRaw = usage['date'] ?? usage['createdAt'];
+                  if (dateRaw is String) {
+                    try {
+                      usageDate = DateTime.parse(dateRaw);
+                    } catch (_) {}
+                  } else if (dateRaw is Timestamp) {
+                    usageDate = dateRaw.toDate();
+                  } else if (dateRaw is DateTime) {
+                    usageDate = dateRaw;
+                  }
+
+                  if (usageDate != null && !usageDate.isBefore(startOfMonth) && usageDate.isBefore(endOfMonth)) {
+                    monthQuantity += quantity;
+                  }
+
+                  final status = (usage['status'] ?? usage['syncStatus'] ?? '').toString();
+                  final unitPrice = unitPriceByMaterial[name];
+                  final double? totalCost = unitPrice != null ? unitPrice * quantity : null;
+
+                  usageEntries.add(
+                    _MaterialUsageEntry(
+                      materialName: name,
+                      quantity: quantity,
+                      unit: (usage['unit'] ?? '').toString(),
+                      status: status,
+                      projectId: (usage['projectId'] ?? '').toString(),
+                      reportId: (usage['reportId'] ?? '').toString(),
+                      date: usageDate,
+                      unitPrice: unitPrice,
+                      totalCost: totalCost,
+                    ),
+                  );
+                }
+
+                final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
+                for (final e in usageEntries) {
+                  usageByProject.putIfAbsent(e.projectId, () => []).add(e);
+                }
+
+                final List<_SiteDistributionSummary> siteSummaries = [];
+                usageByProject.forEach((projectId, entries) {
+                  double siteTotalQuantity = 0;
+                  double siteTotalCost = 0;
+                  final Set<String> siteMaterials = {};
+                  DateTime? lastUsageDate;
+
+                  for (final entry in entries) {
+                    siteTotalQuantity += entry.quantity;
+                    siteTotalCost += entry.totalCost ?? 0.0;
+                    siteMaterials.add(entry.materialName);
+                    if (entry.date != null) {
+                      if (lastUsageDate == null || entry.date!.isAfter(lastUsageDate)) {
+                        lastUsageDate = entry.date;
+                      }
+                    }
+                  }
+
+                  siteSummaries.add(
+                    _SiteDistributionSummary(
+                      projectId: projectId,
+                      materialsCount: siteMaterials.length,
+                      totalQuantity: siteTotalQuantity,
+                      totalCost: siteTotalCost,
+                      lastUsageDate: lastUsageDate,
+                    ),
+                  );
+                });
+
+                siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+
+                return AdminGlassScaffold(
+                  title: 'Material & Inventory Monitoring',
+                  actions: [
         StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: FirebaseService.instance.firestore
               .collectionGroup('material_requests')
@@ -210,6 +378,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           },
         ),
         IconButton(
+          tooltip: 'Add inventory item',
+          icon: const Icon(Icons.add_box_outlined),
+          onPressed: selectedProjectId == null ? null : _showAddInventoryItemDialog,
+        ),
+        IconButton(
           icon: const Icon(Icons.person_outline),
           onPressed: () => context.push(RouteNames.profile),
         ),
@@ -224,6 +397,41 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(
+                'Select project',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              DropdownButtonFormField<String>(
+                initialValue: selectedProjectId,
+                items: [
+                  for (final d in projectDocs)
+                    () {
+                      final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                      final name = (data['name'] ?? d.id).toString();
+                      return DropdownMenuItem<String>(
+                        value: d.id,
+                        child: Text(name, overflow: TextOverflow.ellipsis),
+                      );
+                    }(),
+                ],
+                onChanged: (v) {
+                  if (v == null) return;
+                  final doc = projectDocs.firstWhere((e) => e.id == v, orElse: () => projectDocs.first);
+                  final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                  setState(() {
+                    _selectedProjectId = v;
+                    _selectedProjectName = (data['name'] ?? '').toString();
+                  });
+                },
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
               SmartInsightCard(
                 title: 'Smart Insight',
                 message:
@@ -435,6 +643,12 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           ),
         ),
       ),
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 

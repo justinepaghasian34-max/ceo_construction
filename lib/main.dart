@@ -11,26 +11,99 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 
+const bool _useFunctionsEmulator = bool.fromEnvironment(
+  'USE_FUNCTIONS_EMULATOR',
+  defaultValue: false,
+);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  if (kDebugMode) {
-    FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
+  Object? startupError;
+  StackTrace? startupStack;
+
+  try {
+    if (Firebase.apps.isEmpty) {
+      try {
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        ).timeout(const Duration(seconds: 20));
+      } on FirebaseException catch (e) {
+        if (e.code != 'duplicate-app') {
+          rethrow;
+        }
+      }
+    }
+
+    if (kDebugMode && _useFunctionsEmulator) {
+      FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
+    }
+
+    await FirebaseService.initialize().timeout(const Duration(seconds: 10));
+    await HiveService.initialize().timeout(const Duration(seconds: 20));
+    await SyncService.instance.initialize().timeout(const Duration(seconds: 10));
+  } catch (e, st) {
+    startupError = e;
+    startupStack = st;
   }
-  // Initialize services
-  await FirebaseService.initialize();
-  await HiveService.initialize();
-  await SyncService.instance.initialize();
 
-  runApp(const ProviderScope(child: CeoConsApp()));
+  runApp(ProviderScope(child: CeoConsApp(startupError: startupError, startupStack: startupStack)));
 }
 
 class CeoConsApp extends ConsumerWidget {
-  const CeoConsApp({super.key});
+  const CeoConsApp({
+    super.key,
+    this.startupError,
+    this.startupStack,
+  });
+
+  final Object? startupError;
+  final StackTrace? startupStack;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (startupError != null) {
+      return MaterialApp(
+        title: AppConstants.appName,
+        theme: AppTheme.lightTheme,
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: AppTheme.white,
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Startup failed',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.errorRed,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      startupError.toString(),
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    if (kDebugMode && startupStack != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        startupStack.toString(),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return MaterialApp.router(
       title: AppConstants.appName,
       theme: AppTheme.lightTheme,

@@ -1,10 +1,15 @@
 import 'dart:io';
+import 'dart:developer' as developer;
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -316,6 +321,9 @@ class _AiDashboardState extends State<_AiDashboard> {
     ),
   ];
 
+  Uint8List? _chatImageBytes;
+  String? _chatImageName;
+
   _AiNavItem _selected = _AiNavItem.intelligenceChat;
   int _topTabIndex = 0;
 
@@ -355,9 +363,73 @@ class _AiDashboardState extends State<_AiDashboard> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please sign in to use GovTrack AI.')),
+        );
+        context.go(RouteNames.login);
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _chatController.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickChatImage() async {
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Upload from Gallery'),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  final picker = ImagePicker();
+                  final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+                  if (picked == null) return;
+                  final bytes = await picked.readAsBytes();
+                  if (!mounted) return;
+                  setState(() {
+                    _chatImageBytes = bytes;
+                    _chatImageName = picked.name;
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take Photo'),
+                onTap: () async {
+                  Navigator.of(ctx).pop();
+                  final picker = ImagePicker();
+                  final picked = await picker.pickImage(source: ImageSource.camera, imageQuality: 85);
+                  if (picked == null) return;
+                  final bytes = await picked.readAsBytes();
+                  if (!mounted) return;
+                  setState(() {
+                    _chatImageBytes = bytes;
+                    _chatImageName = picked.name;
+                  });
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -449,6 +521,53 @@ class _AiDashboardState extends State<_AiDashboard> {
     }
   }
 
+  Future<bool> _ensureFunctionsAuthenticated() async {
+    // Preflight: if DNS cannot resolve Firebase hosts, callable auth will often fail
+    // and surface as UNAUTHENTICATED. Detect this early and show a clearer message.
+    try {
+      final res = await InternetAddress.lookup('firestore.googleapis.com')
+          .timeout(const Duration(seconds: 4));
+      if (res.isEmpty) {
+        throw const SocketException('DNS lookup returned no results');
+      }
+    } catch (_) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No internet/DNS access to Firebase. Please change network or Private DNS, then try again.',
+          ),
+        ),
+      );
+      return false;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in again. Your session expired.')),
+      );
+      return false;
+    }
+
+    try {
+      await user.getIdToken(true);
+    } catch (_) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Cannot refresh session. Please check your internet/DNS and try again.',
+          ),
+        ),
+      );
+      return false;
+    }
+
+    return true;
+  }
+
   Future<void> _generateGovTrackReport() async {
     final projectId = _selectedProjectId;
     if (projectId == null) {
@@ -457,6 +576,9 @@ class _AiDashboardState extends State<_AiDashboard> {
       );
       return;
     }
+
+    final okAuth = await _ensureFunctionsAuthenticated();
+    if (!okAuth) return;
 
     try {
       setState(() => _isGeneratingReport = true);
@@ -483,12 +605,31 @@ class _AiDashboardState extends State<_AiDashboard> {
           ? ''
           : await _tryGetUserEmail(assignedSiteManagerId);
 
-      final analysis = await _govTrackAiService.generateGovTrackReport(
-        projectId: projectId,
-        projectName: projectName,
-        projectData: projectData,
-        recentDailyReports: recentDailyReports,
-      );
+      Map<String, dynamic> analysis;
+      try {
+        final callable = FirebaseFunctions.instance.httpsCallable('generateGovTrackReportGemini');
+        final res = await callable
+            .call(<String, dynamic>{
+          'projectId': projectId,
+          'projectName': projectName,
+          'projectData': projectData,
+          'recentDailyReports': recentDailyReports,
+        })
+            .timeout(const Duration(seconds: 60));
+
+        final data = (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        analysis = (data['analysis'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        if (analysis.isEmpty) {
+          throw Exception('Gemini returned empty analysis.');
+        }
+      } catch (_) {
+        analysis = await _govTrackAiService.generateGovTrackReport(
+          projectId: projectId,
+          projectName: projectName,
+          projectData: projectData,
+          recentDailyReports: recentDailyReports,
+        );
+      }
 
       await FirebaseService.instance.projectsCollection.doc(projectId).collection('govtrack_reports').add(
         <String, dynamic>{
@@ -573,11 +714,6 @@ class _AiDashboardState extends State<_AiDashboard> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _PageTitle(
-              title: 'Intelligence Chat',
-              subtitle: 'Ask GovTrack AI about projects, budgets, or milestones.',
-            ),
-            const SizedBox(height: 16),
             Expanded(
               child: _Card(
                 child: Column(
@@ -594,6 +730,15 @@ class _AiDashboardState extends State<_AiDashboard> {
                     _ChatComposer(
                       controller: _chatController,
                       onSend: _sendChat,
+                      onPickImage: _pickChatImage,
+                      attachmentBytes: _chatImageBytes,
+                      attachmentName: _chatImageName,
+                      onRemoveImage: () {
+                        setState(() {
+                          _chatImageBytes = null;
+                          _chatImageName = null;
+                        });
+                      },
                     ),
                   ],
                 ),
@@ -618,11 +763,7 @@ class _AiDashboardState extends State<_AiDashboard> {
     return ListView(
       padding: EdgeInsets.only(bottom: bottomInset + 24),
       children: [
-        const _PageTitle(
-          title: 'AI Daily Progress',
-          subtitle: 'Upload site photos for instant AI structural analysis and progress verification.',
-        ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 6),
         _Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -646,7 +787,7 @@ class _AiDashboardState extends State<_AiDashboard> {
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         _Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -692,7 +833,7 @@ class _AiDashboardState extends State<_AiDashboard> {
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         _Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -704,13 +845,27 @@ class _AiDashboardState extends State<_AiDashboard> {
                   onPick: _pickDailyProgressImage,
                   stampText: _buildGpsStampText(),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 SizedBox(
-                  height: 54,
+                  height: 46,
+                  child: FilledButton.icon(
+                    onPressed: _isAnalyzing ? null : _pickDailyProgressImage,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E3A8A),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    icon: const Icon(Icons.upload_rounded, size: 18),
+                    label: const Text('Upload Photo', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 46,
                   child: FilledButton(
                     onPressed: _isAnalyzing ? null : _analyzeDailyProgress,
                     style: FilledButton.styleFrom(
-                      backgroundColor: _blue,
+                      backgroundColor: const Color(0xFF1E3A8A),
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     ),
@@ -720,7 +875,21 @@ class _AiDashboardState extends State<_AiDashboard> {
                             height: 22,
                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
-                        : const Text('Analyze Progress', style: TextStyle(fontWeight: FontWeight.w900)),
+                        : const Text('Analyze Image', style: TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 46,
+                  child: FilledButton.icon(
+                    onPressed: _canSubmitProgressToAdmin() ? _submitProgressToAdmin : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E3A8A),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    ),
+                    icon: const Icon(Icons.send_rounded, size: 18),
+                    label: const Text('Submit to Admin', style: TextStyle(fontWeight: FontWeight.w900)),
                   ),
                 ),
                 if (_lastAnalyzedProgressPercent != null) ...[
@@ -746,20 +915,6 @@ class _AiDashboardState extends State<_AiDashboard> {
                           ),
                         ),
                       ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 50,
-                    child: FilledButton.icon(
-                      onPressed: _canSubmitProgressToAdmin() ? _submitProgressToAdmin : null,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: _blue,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      icon: const Icon(Icons.send_rounded, size: 18),
-                      label: const Text('Submit Progress to Admin', style: TextStyle(fontWeight: FontWeight.w900)),
                     ),
                   ),
                 ],
@@ -902,6 +1057,22 @@ class _AiDashboardState extends State<_AiDashboard> {
     final text = _chatController.text.trim();
     if (text.isEmpty) return;
 
+    debugPrint('govtrack: _sendChat start');
+
+    final okAuth = await _ensureFunctionsAuthenticated();
+    if (!okAuth) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(_ChatMessage(isUser: true, text: text));
+        _messages.add(const _ChatMessage(
+          isUser: false,
+          text: 'Please sign in again, then try sending your message.',
+        ));
+        _chatController.clear();
+      });
+      return;
+    }
+
     setState(() {
       _messages.add(_ChatMessage(isUser: true, text: text));
       _messages.add(const _ChatMessage(isUser: false, text: 'Thinking…'));
@@ -909,11 +1080,116 @@ class _AiDashboardState extends State<_AiDashboard> {
     });
 
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable('govtrackChat');
-      final res = await callable
-          .call(<String, dynamic>{'message': text})
-          .timeout(const Duration(seconds: 45));
-      final data = (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      Map<String, dynamic> data;
+
+      String? attachmentUrl;
+      String? attachmentStoragePath;
+      String? attachmentFileName;
+
+      if (_chatImageBytes != null) {
+        final now = DateTime.now();
+        final fileName = (_chatImageName?.isNotEmpty ?? false) ? _chatImageName! : 'chat_image.jpg';
+        final safeFileName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final storagePath = 'govtrack_chat_attachments/${now.millisecondsSinceEpoch}_$safeFileName';
+        final downloadUrl = await FirebaseService.instance.uploadFile(
+          storagePath,
+          _chatImageBytes!,
+          contentType: _guessContentType(fileName),
+        );
+        attachmentUrl = downloadUrl;
+        attachmentStoragePath = storagePath;
+        attachmentFileName = fileName;
+      }
+
+      Future<String?> getToken({required bool forceRefresh}) async {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) return null;
+        try {
+          return await user.getIdToken(forceRefresh);
+        } catch (_) {
+          return null;
+        }
+      }
+
+      Future<String?> getBestToken() async {
+        final t1 = await getToken(forceRefresh: false);
+        if (t1 != null && t1.trim().isNotEmpty) return t1;
+        final t2 = await getToken(forceRefresh: true);
+        if (t2 != null && t2.trim().isNotEmpty) return t2;
+        return null;
+      }
+
+      Future<Map<String, dynamic>> callGemini() async {
+        final idToken = await getBestToken();
+        if (idToken == null || idToken.trim().isEmpty) {
+          debugPrint('govtrack: missing idToken before calling govtrackChatGemini');
+          developer.log(
+            'GovTrack chat: missing idToken before calling govtrackChatGemini',
+            name: 'govtrack',
+          );
+          throw Exception(
+            'Cannot get a session token. Please check your internet/DNS and try again.',
+          );
+        }
+        final user = FirebaseAuth.instance.currentUser;
+        debugPrint(
+          'govtrack: calling govtrackChatGemini uid=${user?.uid ?? 'null'} tokenLen=${idToken.length}',
+        );
+        developer.log(
+          'Calling govtrackChatGemini',
+          name: 'govtrack',
+          error: {
+            'uid': user?.uid,
+            'tokenLen': idToken.length,
+          },
+        );
+        final callable = FirebaseFunctions.instance.httpsCallable('govtrackChatGemini');
+        final res = await callable
+            .call(<String, dynamic>{
+          'message': text,
+          'idToken': idToken,
+          'imageUrl': attachmentUrl,
+          'storagePath': attachmentStoragePath,
+          'fileName': attachmentFileName,
+        })
+            .timeout(const Duration(seconds: 45));
+        debugPrint('govtrack: govtrackChatGemini returned');
+        return (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      }
+
+      try {
+        data = await callGemini();
+      } on FirebaseFunctionsException catch (e, st) {
+        debugPrint(
+          'govtrack: FirebaseFunctionsException code=${e.code} message=${e.message} details=${e.details}',
+        );
+        developer.log(
+          'govtrackChatGemini FirebaseFunctionsException',
+          name: 'govtrack',
+          error: {
+            'code': e.code,
+            'message': e.message,
+            'details': e.details,
+          },
+          stackTrace: st,
+        );
+        if (e.code == 'unauthenticated') {
+          await getToken(forceRefresh: true);
+          data = await callGemini();
+        } else {
+          rethrow;
+        }
+      } catch (e, st) {
+        debugPrint('govtrack: non-FirebaseFunctionsException error=$e');
+        developer.log(
+          'govtrackChatGemini failed (non-FirebaseFunctionsException)',
+          name: 'govtrack',
+          error: e,
+          stackTrace: st,
+        );
+        rethrow;
+      }
+
       final reply = (data['reply'] ?? '').toString().trim();
 
       final currentUser = AuthService.instance.currentUser;
@@ -922,6 +1198,9 @@ class _AiDashboardState extends State<_AiDashboard> {
           'kind': 'govtrack_chat',
           'message': text,
           'reply': reply,
+          'imageUrl': attachmentUrl,
+          'storagePath': attachmentStoragePath,
+          'fileName': attachmentFileName,
           'projectId': _selectedProjectId,
           'projectName': _selectedProjectName,
           'submittedById': currentUser?.id,
@@ -930,6 +1209,13 @@ class _AiDashboardState extends State<_AiDashboard> {
           'createdAt': FieldValue.serverTimestamp(),
         },
       );
+
+      if (mounted) {
+        setState(() {
+          _chatImageBytes = null;
+          _chatImageName = null;
+        });
+      }
 
       if (!mounted) return;
       setState(() {
@@ -942,12 +1228,25 @@ class _AiDashboardState extends State<_AiDashboard> {
         ));
       });
     } catch (e) {
+      final u = FirebaseAuth.instance.currentUser;
+      final uid = u?.uid;
       final msg = e is FirebaseFunctionsException
-          ? 'Chat failed (${e.code}): ${e.message ?? e.details ?? 'Unknown error'}'
-          : 'Chat failed: $e';
+          ? 'Chat failed (${e.code}): message=${e.message ?? 'null'} details=${e.details ?? 'null'} (uid: ${uid ?? 'null'})'
+          : 'Chat failed: $e (uid: ${uid ?? 'null'})';
+      debugPrint('govtrack: $msg');
+      developer.log(
+        'GovTrack chat failed',
+        name: 'govtrack',
+        error: msg,
+      );
       if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
       setState(() {
-        if (_messages.isNotEmpty && _messages.last.isUser == false && _messages.last.text == 'Thinking…') {
+        if (_messages.isNotEmpty &&
+            _messages.last.isUser == false &&
+            _messages.last.text == 'Thinking…') {
           _messages.removeLast();
         }
         _messages.add(_ChatMessage(isUser: false, text: msg));
@@ -1241,9 +1540,20 @@ class _AiDashboardState extends State<_AiDashboard> {
 
     try {
       setState(() => _isAnalyzing = true);
+
+      final fbUser = AuthService.instance.currentFirebaseUser;
+      if (fbUser == null) {
+        throw FirebaseFunctionsException(
+          code: 'unauthenticated',
+          message: 'No Firebase user is signed in.',
+        );
+      }
+
+      final idToken = await fbUser.getIdToken(true);
       final now = DateTime.now();
       final fileName = (_selectedImageName?.isNotEmpty ?? false) ? _selectedImageName! : 'site_photo.jpg';
-      final storagePath = 'ai_verifications/${now.millisecondsSinceEpoch}_$fileName';
+      final safeFileName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+      final storagePath = 'ai_verifications/${now.millisecondsSinceEpoch}_$safeFileName';
       final downloadUrl = await FirebaseService.instance.uploadFile(
         storagePath,
         _selectedImageBytes!,
@@ -1258,6 +1568,7 @@ class _AiDashboardState extends State<_AiDashboard> {
         'fileName': fileName,
         'projectId': _selectedProjectId,
         'projectName': _selectedProjectName,
+        'idToken': idToken,
       })
           .timeout(const Duration(seconds: 90));
 
@@ -1287,10 +1598,10 @@ class _AiDashboardState extends State<_AiDashboard> {
         },
       );
     } catch (e) {
-      if (!mounted) return;
       final msg = e is FirebaseFunctionsException
           ? 'Analyze failed (${e.code}): ${e.message ?? e.details ?? 'Unknown error'}'
           : 'Analyze failed: $e';
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } finally {
       if (mounted) setState(() => _isAnalyzing = false);
@@ -1384,25 +1695,9 @@ class _GovSidebar extends StatelessWidget {
                   child: const Icon(Icons.shield_outlined, color: Colors.white, size: 18),
                 ),
                 const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'GovTrack AI',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: _AiDashboardState._title,
-                            fontWeight: FontWeight.w900,
-                          ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'INFRA INTELLIGENCE',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: _AiDashboardState._navMuted,
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                  ],
+                _PageTitle(
+                  title: 'GovTrack AI',
+                  subtitle: 'INFRA INTELLIGENCE',
                 ),
               ],
             ),
@@ -1692,6 +1987,24 @@ class _TopHeader extends StatelessWidget {
                                   ),
                             ),
                           ),
+                          const SizedBox(width: 10),
+                          SizedBox(
+                            width: isNarrow ? 150 : 220,
+                            height: 40,
+                            child: TextField(
+                              decoration: InputDecoration(
+                                hintText: 'Search',
+                                prefixIcon: const Icon(Icons.search, size: 20),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                                filled: true,
+                                fillColor: const Color(0xFFF1F5F9),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 8),
@@ -1717,7 +2030,30 @@ class _TopHeader extends StatelessWidget {
                                     color: _AiDashboardState._title,
                                   ),
                             ),
-                            _PillTabs(index: tabIndex, onChange: onTabChange),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: isNarrow ? 160 : 220,
+                                  height: 40,
+                                  child: TextField(
+                                    decoration: InputDecoration(
+                                      hintText: 'Search',
+                                      prefixIcon: const Icon(Icons.search, size: 20),
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                                      filled: true,
+                                      fillColor: const Color(0xFFF1F5F9),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                        borderSide: BorderSide.none,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                _PillTabs(index: tabIndex, onChange: onTabChange),
+                              ],
+                            ),
                           ],
                         ),
                       ),
@@ -1737,18 +2073,20 @@ class _PillTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F5F9),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: _AiDashboardState._border),
-      ),
-      child: Row(
-        children: [
-          _PillTab(text: 'Chat', active: index == 0, onTap: () => onChange(0)),
-          _PillTab(text: 'Image Generate', active: index == 1, onTap: () => onChange(1)),
-        ],
+    return SizedBox(
+      height: 44,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: _AiDashboardState._border),
+          ),
+        ),
+        child: Row(
+          children: [
+            _PillTab(text: 'Intelligence Chat', active: index == 0, onTap: () => onChange(0)),
+            _PillTab(text: 'AI Daily Progress', active: index == 1, onTap: () => onChange(1)),
+          ],
+        ),
       ),
     );
   }
@@ -1764,18 +2102,21 @@ class _PillTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(999),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: active ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(999),
+          border: Border(
+            bottom: BorderSide(
+              color: active ? _AiDashboardState._navActiveAccent : Colors.transparent,
+              width: 3,
+            ),
+          ),
         ),
         child: Text(
           text,
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: active ? _AiDashboardState._title : _AiDashboardState._subtitle,
+                fontWeight: FontWeight.w900,
+                color: active ? _AiDashboardState._navActiveAccent : _AiDashboardState._subtitle,
               ),
         ),
       ),
@@ -2266,9 +2607,20 @@ class _MiniStatCard extends StatelessWidget {
 }
 
 class _ChatComposer extends StatelessWidget {
-  const _ChatComposer({required this.controller, required this.onSend});
+  const _ChatComposer({
+    required this.controller,
+    required this.onSend,
+    required this.onPickImage,
+    required this.attachmentBytes,
+    required this.attachmentName,
+    required this.onRemoveImage,
+  });
   final TextEditingController controller;
   final VoidCallback onSend;
+  final VoidCallback onPickImage;
+  final Uint8List? attachmentBytes;
+  final String? attachmentName;
+  final VoidCallback onRemoveImage;
 
   @override
   Widget build(BuildContext context) {
@@ -2284,24 +2636,69 @@ class _ChatComposer extends StatelessWidget {
             border: Border.all(color: _AiDashboardState._border),
             boxShadow: _AiDashboardState._shadow,
           ),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.attach_file, size: 18, color: _AiDashboardState._subtitle),
-              const SizedBox(width: 10),
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    hintText: 'Ask GovTrack AI about projects, budgets, or milestones...',
+              if (attachmentBytes != null) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(
+                          attachmentBytes!,
+                          width: 54,
+                          height: 54,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          (attachmentName ?? 'Image').trim().isEmpty ? 'Image' : attachmentName!.trim(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: _AiDashboardState._title,
+                              ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: onRemoveImage,
+                        icon: const Icon(Icons.close_rounded, size: 18, color: _AiDashboardState._subtitle),
+                        tooltip: 'Remove image',
+                      ),
+                    ],
                   ),
-                  onSubmitted: (_) => onSend(),
                 ),
-              ),
-              const SizedBox(width: 10),
-              IconButton(
-                onPressed: onSend,
-                icon: const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
+              ],
+              Row(
+                children: [
+                  IconButton(
+                    onPressed: onPickImage,
+                    icon: const Icon(Icons.attach_file, size: 18, color: _AiDashboardState._subtitle),
+                    tooltip: 'Attach image',
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: TextField(
+                      controller: controller,
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        hintText: 'Ask GovTrack AI about projects, budgets, or milestones...',
+                      ),
+                      onSubmitted: (_) => onSend(),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    onPressed: onSend,
+                    icon: const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
+                  ),
+                ],
               ),
             ],
           ),

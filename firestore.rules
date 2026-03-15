@@ -19,11 +19,20 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
-        (isSiteManager() && hasProjectAccess(projectId))
+        (isSiteManager() && (hasProjectAccess(projectId) || resource.data.siteManagerId == request.auth.uid))
       );
 
       // Only Admin can create/update/delete projects (CRUD)
       allow write: if request.auth != null && isAdmin();
+
+      match /material_inventory/{itemId} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          (isSiteManager() && hasProjectAccess(projectId))
+        );
+        allow write: if request.auth != null && isAdmin();
+      }
       
       // Daily reports sub-collection
       match /daily_reports/{reportId} {
@@ -119,9 +128,11 @@ service cloud.firestore {
     match /ai_analysis/{analysisId} {
       allow read: if request.auth != null && (
         isAdmin() || 
-        isCeoHead()
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
-      allow write: if false; // Only Cloud Functions can write
+      allow create: if request.auth != null;
+      allow update, delete: if false;
     }
     
     // Audit logs - ADMIN ONLY (Cloud Functions write entries)
@@ -155,6 +166,22 @@ service cloud.firestore {
     match /{path=**}/material_requests/{requestId} {
       allow read: if request.auth != null;
       allow update: if request.auth != null && isAdmin();
+    }
+
+    // Collection group rules for material usage (Admin Material Monitoring screen)
+    match /{path=**}/material_usage/{usageId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
+      );
+
+      allow create, update: if request.auth != null && (
+        isAdmin() ||
+        (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
+      );
+
+      allow delete: if request.auth != null && isAdmin();
     }
     
     // Helper functions

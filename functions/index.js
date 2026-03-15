@@ -1,11 +1,322 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const { defineSecret, defineString } = require('firebase-functions/params');
 
 const vision = require('@google-cloud/vision');
 
 admin.initializeApp();
 
 const visionClient = new vision.ImageAnnotatorClient();
+
+const geminiApiKey = defineSecret('GEMINI_API_KEY');
+const geminiModel = defineString('GEMINI_MODEL', { default: 'gemini-1.5-flash-latest' });
+
+let _geminiModelCache = {
+  model: null,
+  expiresAtMs: 0,
+};
+
+let _geminiModelsCache = {
+  supported: null,
+  expiresAtMs: 0,
+};
+
+async function geminiListModels({ apiKey, apiVersion }) {
+  const base = apiVersion === 'v1' ? 'https://generativelanguage.googleapis.com/v1' : 'https://generativelanguage.googleapis.com/v1beta';
+  const url = `${base}/models?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, { method: 'GET' });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = (json && (json.error?.message || json.message)) || `Gemini ListModels error (${res.status})`;
+    const err = new Error(msg);
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
+  return Array.isArray(json?.models) ? json.models : [];
+}
+
+function orderGenerateContentModels(models) {
+  const supported = models
+    .filter((m) => {
+      const methods = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      return methods.includes('generateContent');
+    })
+    .map((m) => String(m?.name || '').trim())
+    .filter(Boolean);
+
+  if (!supported.length) return [];
+
+  // Prefer explicit versioned models over generic ones.
+  const preference = [
+    'gemini-2.0-flash-001',
+    'gemini-2.0-flash-lite',
+    'gemini-2.5',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-2.0-pro',
+    'gemini-2.0-flash',
+  ];
+
+  const scored = supported.map((name) => {
+    const lower = name.toLowerCase();
+    let score = 1000;
+    for (let i = 0; i < preference.length; i++) {
+      if (lower.includes(preference[i])) {
+        score = i;
+        break;
+      }
+    }
+    // Penalize the generic gemini-2.0-flash which may be deprecated for new users.
+    if (lower === 'models/gemini-2.0-flash') score += 50;
+    return { name, score };
+  });
+
+  scored.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+  return scored.map((s) => s.name);
+}
+
+async function getSupportedGenerateContentModels({ apiKey, forceRefresh = false }) {
+  const now = Date.now();
+  if (!forceRefresh && Array.isArray(_geminiModelsCache.supported) && _geminiModelsCache.expiresAtMs > now) {
+    return _geminiModelsCache.supported;
+  }
+
+  let models = [];
+  try {
+    models = await geminiListModels({ apiKey, apiVersion: 'v1beta' });
+  } catch (e) {
+    console.warn('Gemini ListModels v1beta failed, trying v1:', { message: e?.message, status: e?.status });
+    models = await geminiListModels({ apiKey, apiVersion: 'v1' });
+  }
+
+  const ordered = orderGenerateContentModels(models);
+  _geminiModelsCache = {
+    supported: ordered,
+    expiresAtMs: now + 10 * 60 * 1000,
+  };
+  return ordered;
+}
+
+async function getWorkingGeminiModel({ apiKey, requestedModel, forceRefresh = false }) {
+  const now = Date.now();
+  if (!forceRefresh && _geminiModelCache.model && _geminiModelCache.expiresAtMs > now) {
+    return _geminiModelCache.model;
+  }
+
+  const requested = typeof requestedModel === 'string' ? requestedModel.trim() : '';
+  const requestedFull = requested ? `models/${requested}` : '';
+
+  const supported = await getSupportedGenerateContentModels({ apiKey, forceRefresh });
+  const requestedIsSupported = requestedFull ? supported.includes(requestedFull) : false;
+  const chosen = requestedIsSupported ? requestedFull : supported[0];
+  if (!chosen) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'No Gemini models available that support generateContent for this API key/project. Please enable Gemini API and ensure the API key has access.'
+    );
+  }
+
+  _geminiModelCache = {
+    model: chosen,
+    expiresAtMs: now + 10 * 60 * 1000,
+  };
+
+  if (requestedFull && !requestedIsSupported) {
+    console.warn('Gemini requested model is not available/supported; using discovered model instead.', {
+      requested: requestedFull,
+      used: chosen,
+      supportedCount: supported.length,
+    });
+  } else {
+    console.log('Gemini model selected:', { used: chosen });
+  }
+
+  return chosen;
+}
+
+async function geminiGenerateContent({ apiKey, model, contents, generationConfig }) {
+  if (typeof apiKey !== 'string' || !apiKey.trim()) {
+    throw new functions.https.HttpsError('failed-precondition', 'Gemini API key is not configured.');
+  }
+
+  const preferredModel = await getWorkingGeminiModel({ apiKey, requestedModel: model });
+
+  const attempt = async ({ apiVersion, modelName }) => {
+    const base = apiVersion === 'v1' ? 'https://generativelanguage.googleapis.com/v1' : 'https://generativelanguage.googleapis.com/v1beta';
+    const url = `${base}/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents,
+        generationConfig,
+      }),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    return { res, json };
+  };
+
+  // First try v1beta, then v1, and if the model is invalid, refresh model list and retry once.
+  const tries = [
+    { apiVersion: 'v1beta', refresh: false },
+    { apiVersion: 'v1', refresh: false },
+    { apiVersion: 'v1beta', refresh: true },
+    { apiVersion: 'v1', refresh: true },
+  ];
+
+  let lastStatus;
+  let lastMsg;
+  for (const t of tries) {
+    const supported = t.refresh
+      ? await getSupportedGenerateContentModels({ apiKey, forceRefresh: true })
+      : await getSupportedGenerateContentModels({ apiKey, forceRefresh: false });
+
+    // Try preferred model first (if it is in supported), then fall back to the rest.
+    const candidateModels = [preferredModel, ...supported].filter((m) => typeof m === 'string' && m.trim());
+    const uniq = Array.from(new Set(candidateModels));
+
+    for (const modelName of uniq) {
+      const { res, json } = await attempt({ apiVersion: t.apiVersion, modelName });
+      if (res.ok) {
+        _geminiModelCache = { model: modelName, expiresAtMs: Date.now() + 10 * 60 * 1000 };
+        return json;
+      }
+
+      lastStatus = res.status;
+      lastMsg = (json && (json.error?.message || json.message)) || `Gemini API error (${res.status})`;
+      const msgLower = String(lastMsg || '').toLowerCase();
+      const looksLikeModelIssue =
+        res.status === 404 ||
+        msgLower.includes('not found') ||
+        msgLower.includes('not supported') ||
+        msgLower.includes('no longer available');
+
+      if (!looksLikeModelIssue && res.status !== 400) {
+        break;
+      }
+    }
+  }
+
+  throw new functions.https.HttpsError('unavailable', lastMsg || `Gemini API error (${lastStatus || 'unknown'})`);
+}
+
+function geminiExtractText(result) {
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const first = candidates[0];
+  const parts = Array.isArray(first?.content?.parts) ? first.content.parts : [];
+  return parts.map((p) => (p?.text || '')).join('').trim();
+}
+
+async function resolveAuth(context, data) {
+  const projectId = admin.app().options && admin.app().options.projectId;
+  const incomingToken = typeof data?.idToken === 'string' ? data.idToken.trim() : '';
+  console.log('resolveAuth: start', {
+    projectId,
+    hasContextAuth: Boolean(context && context.auth),
+    contextAuthUid: context?.auth?.uid || null,
+    hasIdToken: Boolean(incomingToken),
+    idTokenLen: incomingToken ? incomingToken.length : 0,
+  });
+
+  if (context && context.auth) {
+    return { uid: context.auth.uid, token: context.auth.token || {} };
+  }
+
+  const idToken = incomingToken;
+  if (!idToken) {
+    console.error('resolveAuth missing auth: context.auth is null and data.idToken is empty');
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'User must be authenticated',
+      {
+        hasContextAuth: Boolean(context && context.auth),
+        hasIdToken: false,
+        projectId,
+      }
+    );
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    console.log('resolveAuth: verifyIdToken ok', {
+      uid: decoded?.uid || null,
+      aud: decoded?.aud || null,
+      iss: decoded?.iss || null,
+      projectId,
+    });
+    return { uid: decoded.uid, token: decoded };
+  } catch (e) {
+    const message = typeof e?.message === 'string' ? e.message : 'Invalid authentication token';
+    const code = typeof e?.code === 'string' ? e.code : undefined;
+    console.error('resolveAuth verifyIdToken failed:', {
+      projectId,
+      code,
+      message,
+      name: e?.name,
+    });
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Invalid authentication token',
+      {
+        code,
+        message,
+        name: e?.name,
+        projectId,
+        hasContextAuth: false,
+        hasIdToken: true,
+        idTokenLen: idToken.length,
+      }
+    );
+  }
+}
+
+async function resolveAuthOptional(context, data) {
+  try {
+    return await resolveAuth(context, data);
+  } catch (e) {
+    if (e instanceof functions.https.HttpsError && e.code === 'unauthenticated') {
+      return null;
+    }
+    throw e;
+  }
+}
+
+async function requireGovtrackRole(auth) {
+  if (!auth || !auth.uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const tokenRole = (auth.token || {}).role;
+  if (typeof tokenRole === 'string' && tokenRole.trim()) {
+    const allowed = tokenRole === 'admin' || tokenRole === 'ceo_head' || tokenRole === 'site_manager';
+    if (!allowed) {
+      throw new functions.https.HttpsError('permission-denied', 'Insufficient permissions');
+    }
+    return tokenRole;
+  }
+
+  const uid = auth.uid;
+  let role;
+  try {
+    const userDoc = await admin.firestore().collection('users').doc(uid).get();
+    role = (userDoc.data() || {}).role;
+  } catch (e) {
+    console.error('requireGovtrackRole Firestore lookup failed:', e);
+    throw new functions.https.HttpsError(
+      'unavailable',
+      'Unable to verify user role right now. Please check your internet connection and try again.'
+    );
+  }
+  const allowed = role === 'admin' || role === 'ceo_head' || role === 'site_manager';
+  if (!allowed) {
+    throw new functions.https.HttpsError('permission-denied', 'Insufficient permissions');
+  }
+  return role;
+}
 
 // AI Analytics Cloud Function
 exports.analyzeProjectProgress = functions.firestore
@@ -195,9 +506,7 @@ exports.revalidatePayrollOnAttendanceChange = functions.firestore
 // AI Progress Image Verification (Cloud Vision MVP)
 exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   try {
-    if (!context.auth) {
-      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
-    }
+    const auth = await resolveAuthOptional(context, data);
 
     const isEmulator =
       process.env.FUNCTIONS_EMULATOR === 'true' ||
@@ -227,7 +536,7 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
       const status = 'on_track';
 
       const doc = {
-        userId: context.auth.uid,
+        userId: auth?.auth?.uid || null,
         projectId: projectId || null,
         projectName: projectName || null,
         imageUrl: imageUrl || null,
@@ -324,7 +633,7 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     const status = pass ? 'on_track' : 'high_risk';
 
     const doc = {
-      userId: context.auth.uid,
+      userId: auth?.auth?.uid || null,
       projectId: projectId || null,
       projectName: projectName || null,
       imageUrl: imageUrl || null,
@@ -366,12 +675,284 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   }
 });
 
+exports.govtrackChatGemini = functions
+  .runWith({ secrets: [geminiApiKey] })
+  .https.onCall(async (data, context) => {
+  try {
+    console.log('govtrackChatGemini auth presence:', {
+      hasContextAuth: Boolean(context && context.auth),
+      hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
+    });
+    const auth = await resolveAuthOptional(context, data);
+    if (auth) {
+      await requireGovtrackRole(auth);
+    }
+
+    const message = typeof data?.message === 'string' ? data.message.trim() : '';
+    if (!message) {
+      throw new functions.https.HttpsError('invalid-argument', 'Message is required');
+    }
+
+    const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl.trim() : '';
+    const storagePath = typeof data?.storagePath === 'string' ? data.storagePath.trim() : '';
+
+    let ocrText = '';
+    let ocrLabels = [];
+    let ocrObjects = [];
+    if (imageUrl || storagePath) {
+      try {
+        const bucketName = admin.storage().bucket().name;
+        const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
+        const imageSource = gcsUri || imageUrl;
+        console.log('govtrackChatGemini: running Vision OCR', {
+          hasGcs: Boolean(gcsUri),
+          hasUrl: Boolean(imageUrl),
+          storagePath: storagePath || null,
+        });
+
+        const [visionResult] = await visionClient.annotateImage({
+          image: { source: { imageUri: imageSource } },
+          features: [
+            { type: 'TEXT_DETECTION', maxResults: 5 },
+            { type: 'LABEL_DETECTION', maxResults: 10 },
+            { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
+          ],
+        });
+
+        const textAnnotations = Array.isArray(visionResult?.textAnnotations)
+          ? visionResult.textAnnotations
+          : [];
+        const labelAnnotations = Array.isArray(visionResult?.labelAnnotations)
+          ? visionResult.labelAnnotations
+          : [];
+        const localizedObjectAnnotations = Array.isArray(visionResult?.localizedObjectAnnotations)
+          ? visionResult.localizedObjectAnnotations
+          : [];
+
+        const extractedText = textAnnotations.length && textAnnotations[0]?.description
+          ? String(textAnnotations[0].description)
+          : '';
+        ocrText = extractedText.trim().slice(0, 6000);
+
+        ocrLabels = labelAnnotations
+          .map((l) => String(l?.description || '').trim())
+          .filter(Boolean)
+          .slice(0, 10);
+
+        ocrObjects = localizedObjectAnnotations
+          .map((o) => String(o?.name || '').trim())
+          .filter(Boolean)
+          .slice(0, 10);
+      } catch (e) {
+        console.warn('govtrackChatGemini: Vision OCR failed; continuing without image context', {
+          message: e?.message,
+        });
+      }
+    }
+
+    const apiKey = geminiApiKey.value();
+    const model = geminiModel.value();
+    const systemPrompt =
+      'You are GovTrack AI, a professional government-grade infrastructure monitoring assistant. '
+      + 'Be concise. Provide actionable steps. If asked for data you do not have, say so and suggest where to find it.';
+
+    const imageContext = (ocrText || (Array.isArray(ocrLabels) && ocrLabels.length) || (Array.isArray(ocrObjects) && ocrObjects.length))
+      ? (
+          `\n\nBlueprint/Image context (OCR + Vision):\n`
+          + `OCR_TEXT:\n${ocrText || '[no text detected]'}\n\n`
+          + `LABELS: ${(ocrLabels || []).join(', ') || '[none]'}\n`
+          + `OBJECTS: ${(ocrObjects || []).join(', ') || '[none]'}\n`
+        )
+      : '';
+
+    const result = await geminiGenerateContent({
+      apiKey,
+      model,
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `${systemPrompt}${imageContext}\n\nUser: ${message}` }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 512,
+      },
+    });
+
+    const reply = geminiExtractText(result);
+    return {
+      ok: true,
+      intent: 'gemini',
+      reply: reply || 'I was unable to generate a response. Please try again.',
+      uid: auth ? auth.uid : null,
+      hasImage: Boolean(imageUrl || storagePath),
+      ocrTextPreview: ocrText ? ocrText.slice(0, 300) : '',
+      ocrLabels,
+    };
+  } catch (error) {
+    console.error('govtrackChatGemini error:', error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    throw new functions.https.HttpsError('internal', error?.message || 'Chat failed');
+  }
+  });
+
+exports.generateGovTrackReportGemini = functions
+  .runWith({ secrets: [geminiApiKey] })
+  .https.onCall(async (data, context) => {
+  try {
+    const auth = await resolveAuth(context, data);
+    await requireGovtrackRole(auth);
+
+    const projectId = typeof data?.projectId === 'string' ? data.projectId : '';
+    const projectName = typeof data?.projectName === 'string' ? data.projectName : 'Selected Project';
+    const projectData = data?.projectData && typeof data.projectData === 'object' ? data.projectData : null;
+    const recentDailyReports = Array.isArray(data?.recentDailyReports) ? data.recentDailyReports : null;
+
+    if (!projectId) {
+      throw new functions.https.HttpsError('invalid-argument', 'projectId is required');
+    }
+    if (!projectData || !recentDailyReports) {
+      throw new functions.https.HttpsError('invalid-argument', 'projectData and recentDailyReports are required');
+    }
+
+    const apiKey = geminiApiKey.value();
+    const model = geminiModel.value();
+    const systemPrompt =
+      'You are GovTrack AI. Generate a concise construction monitoring report. '
+      + 'Return STRICT JSON ONLY (no markdown) with keys: '
+      + 'summary (string), confidence (number 0..1), pass (boolean), '
+      + 'schedule (object {deltaPercent:string, status:string, notes:string}), '
+      + 'budget (object {deltaPercent:string, status:string, notes:string}), '
+      + 'risks (array of strings), recommendations (array of strings), labels (array of short strings). '
+      + 'Use available data only; if unknown, write notes as "Insufficient data". Keep summary under 120 words.';
+
+    const payload = {
+      projectId,
+      projectName,
+      project: projectData,
+      recentDailyReports,
+    };
+
+    const result = await geminiGenerateContent({
+      apiKey,
+      model,
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: `${systemPrompt}\n\nDATA:\n${JSON.stringify(payload)}` }],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 1024,
+      },
+    });
+
+    const text = geminiExtractText(result);
+    if (!text) {
+      throw new functions.https.HttpsError('internal', 'Gemini returned an empty response.');
+    }
+
+    let analysis;
+    try {
+      analysis = JSON.parse(text);
+    } catch (e) {
+      console.error('Gemini report JSON parse error. Raw:', text);
+      throw new functions.https.HttpsError('internal', 'Gemini response was not valid JSON.');
+    }
+
+    if (!analysis || typeof analysis !== 'object' || Array.isArray(analysis)) {
+      throw new functions.https.HttpsError('internal', 'Gemini response was not a JSON object.');
+    }
+
+    return {
+      ok: true,
+      intent: 'gemini',
+      analysis,
+    };
+  } catch (error) {
+    console.error('generateGovTrackReportGemini error:', error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    throw new functions.https.HttpsError('internal', error?.message || 'Report generation failed');
+  }
+  });
+
+// Deduct material inventory stock when site manager logs material usage
+exports.deductMaterialInventoryOnUsageCreate = functions.firestore
+  .document('projects/{projectId}/daily_reports/{reportId}/material_usage/{usageId}')
+  .onCreate(async (snap, context) => {
+    try {
+      const { projectId } = context.params;
+      const usage = snap.data() || {};
+
+      const materialName = typeof usage.materialName === 'string' ? usage.materialName.trim() : '';
+      const inventoryItemId = typeof usage.inventoryItemId === 'string' ? usage.inventoryItemId.trim() : '';
+      const quantityRaw = usage.quantity ?? usage.qty ?? usage.usedQuantity ?? 0;
+      const quantity = Number(quantityRaw);
+      if (!projectId || !Number.isFinite(quantity) || quantity <= 0) {
+        return null;
+      }
+
+      const invCol = admin.firestore().collection('projects').doc(projectId).collection('material_inventory');
+
+      let invDocRef = null;
+      if (inventoryItemId) {
+        invDocRef = invCol.doc(inventoryItemId);
+      } else if (materialName) {
+        const q = await invCol.where('materialName', '==', materialName).limit(1).get();
+        if (!q.empty) {
+          invDocRef = q.docs[0].ref;
+        }
+      }
+
+      if (!invDocRef) {
+        console.log('No inventory item matched for usage', projectId, inventoryItemId, materialName);
+        return null;
+      }
+
+      await admin.firestore().runTransaction(async (tx) => {
+        const invSnap = await tx.get(invDocRef);
+        if (!invSnap.exists) {
+          throw new Error('Inventory doc not found');
+        }
+        const inv = invSnap.data() || {};
+        if (typeof inv.lastUsageId === 'string' && inv.lastUsageId === snap.id) {
+          return;
+        }
+        const stockRaw = inv.stock ?? inv.quantity ?? 0;
+        const currentStock = Number(stockRaw);
+        const safeCurrent = Number.isFinite(currentStock) ? currentStock : 0;
+        const newStock = Math.max(0, safeCurrent - quantity);
+
+        tx.update(invDocRef, {
+          stock: newStock,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastDeductedAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastDeductedQty: quantity,
+          lastUsageId: snap.id,
+        });
+      });
+
+      return null;
+    } catch (error) {
+      console.error('deductMaterialInventoryOnUsageCreate error:', error);
+      return null;
+    }
+  });
+
 // AI Progress % Estimation (Cloud Vision OCR MVP)
 exports.estimateProgressPercent = functions.https.onCall(async (data, context) => {
   try {
-    if (!context.auth) {
-      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
-    }
+    console.log('estimateProgressPercent auth presence:', {
+      hasContextAuth: Boolean(context && context.auth),
+      hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
+    });
+    await resolveAuthOptional(context, data);
 
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl : null;
     const storagePath = typeof data?.storagePath === 'string' ? data.storagePath : null;
@@ -437,9 +1018,8 @@ exports.estimateProgressPercent = functions.https.onCall(async (data, context) =
 // GovTrack AI Chat (MVP - no external LLM)
 exports.govtrackChat = functions.https.onCall(async (data, context) => {
   try {
-    if (!context.auth) {
-      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
-    }
+    const auth = await resolveAuth(context, data);
+    await requireGovtrackRole(auth);
 
     const message = typeof data?.message === 'string' ? data.message.trim() : '';
     if (!message) {

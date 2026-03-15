@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
@@ -13,7 +14,14 @@ class FirebaseService {
   // Firebase instances
   FirebaseAuth get auth => FirebaseAuth.instance;
   FirebaseFirestore get firestore => FirebaseFirestore.instance;
-  FirebaseStorage get storage => FirebaseStorage.instance;
+  FirebaseStorage get storage {
+    final bucket = Firebase.app().options.storageBucket;
+    if (bucket == null || bucket.isEmpty) {
+      return FirebaseStorage.instance;
+    }
+    final normalized = bucket.startsWith('gs://') ? bucket : 'gs://$bucket';
+    return FirebaseStorage.instanceFor(bucket: normalized);
+  }
   FirebaseMessaging get messaging => FirebaseMessaging.instance;
 
   // Initialize Firebase
@@ -93,6 +101,9 @@ class FirebaseService {
   CollectionReference dailyReportsCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('daily_reports');
 
+  CollectionReference materialInventoryCollection(String projectId) =>
+      projectsCollection.doc(projectId).collection('material_inventory');
+
   CollectionReference attendanceCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('attendance');
 
@@ -136,7 +147,7 @@ class FirebaseService {
     final snapshot = await uploadTask;
 
     FirebaseException? lastErr;
-    for (var attempt = 0; attempt < 4; attempt++) {
+    for (var attempt = 0; attempt < 10; attempt++) {
       try {
         return await snapshot.ref.getDownloadURL();
       } on FirebaseException catch (e) {
@@ -144,7 +155,8 @@ class FirebaseService {
         if (e.code != 'object-not-found') {
           rethrow;
         }
-        await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+        final delayMs = (300 * (1 << attempt)).clamp(300, 5000);
+        await Future<void>.delayed(Duration(milliseconds: delayMs));
       }
     }
 
