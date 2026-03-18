@@ -21,6 +21,32 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
   String? _selectedProjectId;
   String? _selectedProjectName;
 
+  Future<List<Map<String, dynamic>>> _loadMaterialUsageForProjectReports(
+    String projectId,
+    List<QueryDocumentSnapshot> reportDocs,
+  ) async {
+    final out = <Map<String, dynamic>>[];
+    for (final r in reportDocs) {
+      final reportId = r.id;
+      try {
+        final snap = await FirebaseService.instance
+            .materialUsageCollection(projectId, reportId)
+            .limit(500)
+            .get();
+        for (final d in snap.docs) {
+          final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+          out.add(<String, dynamic>{
+            ...data,
+            'reportId': (data['reportId'] ?? reportId).toString(),
+          });
+        }
+      } catch (_) {
+        // Ignore individual report failures; continue.
+      }
+    }
+    return out;
+  }
+
   Future<void> _showAddInventoryItemDialog() async {
     final projectId = _selectedProjectId;
     if (projectId == null || projectId.isEmpty) return;
@@ -146,10 +172,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 .snapshots();
 
         final usageStream = selectedProjectId == null
-            ? Stream<QuerySnapshot<Map<String, dynamic>>>.empty()
-            : FirebaseService.instance.firestore
-                .collectionGroup('material_usage')
-                .where('projectId', isEqualTo: selectedProjectId)
+            ? Stream<QuerySnapshot>.empty()
+            : FirebaseService.instance
+                .dailyReportsCollection(selectedProjectId)
+                .orderBy('reportDate', descending: true)
+                .limit(60)
                 .snapshots();
 
         return StreamBuilder<QuerySnapshot>(
@@ -212,10 +239,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
               totalStock += stock;
             }
 
-            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            return StreamBuilder<QuerySnapshot>(
               stream: usageStream,
-              builder: (context, usageSnap) {
-                if (usageSnap.hasError) {
+              builder: (context, reportsSnap) {
+                if (reportsSnap.hasError) {
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
                     bottomNavigationBar: const AdminBottomNavBar(
@@ -225,7 +252,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Text(
-                          'Failed to load material usage: ${usageSnap.error}',
+                          'Failed to load material usage: ${reportsSnap.error}',
                           style: Theme.of(context)
                               .textTheme
                               .bodyMedium
@@ -240,92 +267,141 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   );
                 }
 
-                final now = DateTime.now();
-                final startOfMonth = DateTime(now.year, now.month, 1);
-                final endOfMonth = DateTime(now.year, now.month + 1, 1);
-
-                double monthQuantity = 0;
-                final List<_MaterialUsageEntry> usageEntries = [];
-
-                final usageDocs = usageSnap.data?.docs ?? const [];
-                for (final d in usageDocs) {
-                  final usage = d.data();
-                  final name = (usage['materialName'] ?? 'Material').toString();
-                  final quantityRaw = usage['quantity'] ?? usage['stock'] ?? 0;
-                  final quantity = double.tryParse(quantityRaw.toString()) ?? 0.0;
-
-                  DateTime? usageDate;
-                  final dateRaw = usage['date'] ?? usage['createdAt'];
-                  if (dateRaw is String) {
-                    try {
-                      usageDate = DateTime.parse(dateRaw);
-                    } catch (_) {}
-                  } else if (dateRaw is Timestamp) {
-                    usageDate = dateRaw.toDate();
-                  } else if (dateRaw is DateTime) {
-                    usageDate = dateRaw;
-                  }
-
-                  if (usageDate != null && !usageDate.isBefore(startOfMonth) && usageDate.isBefore(endOfMonth)) {
-                    monthQuantity += quantity;
-                  }
-
-                  final status = (usage['status'] ?? usage['syncStatus'] ?? '').toString();
-                  final unitPrice = unitPriceByMaterial[name];
-                  final double? totalCost = unitPrice != null ? unitPrice * quantity : null;
-
-                  usageEntries.add(
-                    _MaterialUsageEntry(
-                      materialName: name,
-                      quantity: quantity,
-                      unit: (usage['unit'] ?? '').toString(),
-                      status: status,
-                      projectId: (usage['projectId'] ?? '').toString(),
-                      reportId: (usage['reportId'] ?? '').toString(),
-                      date: usageDate,
-                      unitPrice: unitPrice,
-                      totalCost: totalCost,
+                if (selectedProjectId == null) {
+                  return AdminGlassScaffold(
+                    title: 'Material & Inventory Monitoring',
+                    bottomNavigationBar: const AdminBottomNavBar(
+                      current: AdminNavItem.materialInventory,
                     ),
+                    child: const SizedBox.shrink(),
                   );
                 }
 
-                final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
-                for (final e in usageEntries) {
-                  usageByProject.putIfAbsent(e.projectId, () => []).add(e);
-                }
+                final reportDocs = reportsSnap.data?.docs ?? const [];
 
-                final List<_SiteDistributionSummary> siteSummaries = [];
-                usageByProject.forEach((projectId, entries) {
-                  double siteTotalQuantity = 0;
-                  double siteTotalCost = 0;
-                  final Set<String> siteMaterials = {};
-                  DateTime? lastUsageDate;
-
-                  for (final entry in entries) {
-                    siteTotalQuantity += entry.quantity;
-                    siteTotalCost += entry.totalCost ?? 0.0;
-                    siteMaterials.add(entry.materialName);
-                    if (entry.date != null) {
-                      if (lastUsageDate == null || entry.date!.isAfter(lastUsageDate)) {
-                        lastUsageDate = entry.date;
-                      }
+                return FutureBuilder<List<Map<String, dynamic>>>(
+                  future: _loadMaterialUsageForProjectReports(selectedProjectId, reportDocs),
+                  builder: (context, usageSnap) {
+                    if (usageSnap.connectionState == ConnectionState.waiting) {
+                      return AdminGlassScaffold(
+                        title: 'Material & Inventory Monitoring',
+                        bottomNavigationBar: const AdminBottomNavBar(
+                          current: AdminNavItem.materialInventory,
+                        ),
+                        child: const Center(child: CircularProgressIndicator()),
+                      );
                     }
-                  }
 
-                  siteSummaries.add(
-                    _SiteDistributionSummary(
-                      projectId: projectId,
-                      materialsCount: siteMaterials.length,
-                      totalQuantity: siteTotalQuantity,
-                      totalCost: siteTotalCost,
-                      lastUsageDate: lastUsageDate,
-                    ),
-                  );
-                });
+                    if (usageSnap.hasError) {
+                      return AdminGlassScaffold(
+                        title: 'Material & Inventory Monitoring',
+                        bottomNavigationBar: const AdminBottomNavBar(
+                          current: AdminNavItem.materialInventory,
+                        ),
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Text(
+                              'Failed to load material usage: ${usageSnap.error}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: AppTheme.errorRed,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                      );
+                    }
 
-                siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+                    final now = DateTime.now();
+                    final startOfMonth = DateTime(now.year, now.month, 1);
+                    final endOfMonth = DateTime(now.year, now.month + 1, 1);
 
-                return AdminGlassScaffold(
+                    double monthQuantity = 0;
+                    final List<_MaterialUsageEntry> usageEntries = [];
+
+                    final usageDocs = usageSnap.data ?? const <Map<String, dynamic>>[];
+                    for (final usage in usageDocs) {
+                      final name = (usage['materialName'] ?? 'Material').toString();
+                      final quantityRaw = usage['quantity'] ?? usage['stock'] ?? 0;
+                      final quantity = double.tryParse(quantityRaw.toString()) ?? 0.0;
+
+                      DateTime? usageDate;
+                      final dateRaw = usage['date'] ?? usage['createdAt'];
+                      if (dateRaw is String) {
+                        try {
+                          usageDate = DateTime.parse(dateRaw);
+                        } catch (_) {}
+                      } else if (dateRaw is Timestamp) {
+                        usageDate = dateRaw.toDate();
+                      } else if (dateRaw is DateTime) {
+                        usageDate = dateRaw;
+                      }
+
+                      if (usageDate != null && !usageDate.isBefore(startOfMonth) && usageDate.isBefore(endOfMonth)) {
+                        monthQuantity += quantity;
+                      }
+
+                      final status = (usage['status'] ?? usage['syncStatus'] ?? '').toString();
+                      final unitPrice = unitPriceByMaterial[name];
+                      final double? totalCost = unitPrice != null ? unitPrice * quantity : null;
+
+                      usageEntries.add(
+                        _MaterialUsageEntry(
+                          materialName: name,
+                          quantity: quantity,
+                          unit: (usage['unit'] ?? '').toString(),
+                          status: status,
+                          projectId: (usage['projectId'] ?? '').toString(),
+                          reportId: (usage['reportId'] ?? '').toString(),
+                          date: usageDate,
+                          unitPrice: unitPrice,
+                          totalCost: totalCost,
+                        ),
+                      );
+                    }
+
+                    final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
+                    for (final e in usageEntries) {
+                      usageByProject.putIfAbsent(e.projectId, () => []).add(e);
+                    }
+
+                    final List<_SiteDistributionSummary> siteSummaries = [];
+                    usageByProject.forEach((projectId, entries) {
+                      double siteTotalQuantity = 0;
+                      double siteTotalCost = 0;
+                      final Set<String> siteMaterials = {};
+                      DateTime? lastUsageDate;
+
+                      for (final entry in entries) {
+                        siteTotalQuantity += entry.quantity;
+                        siteTotalCost += entry.totalCost ?? 0.0;
+                        siteMaterials.add(entry.materialName);
+                        if (entry.date != null) {
+                          if (lastUsageDate == null || entry.date!.isAfter(lastUsageDate)) {
+                            lastUsageDate = entry.date;
+                          }
+                        }
+                      }
+
+                      siteSummaries.add(
+                        _SiteDistributionSummary(
+                          projectId: projectId,
+                          materialsCount: siteMaterials.length,
+                          totalQuantity: siteTotalQuantity,
+                          totalCost: siteTotalCost,
+                          lastUsageDate: lastUsageDate,
+                        ),
+                      );
+                    });
+
+                    siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+
+                    return AdminGlassScaffold(
                   title: 'Material & Inventory Monitoring',
                   actions: [
         StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -380,7 +456,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
         IconButton(
           tooltip: 'Add inventory item',
           icon: const Icon(Icons.add_box_outlined),
-          onPressed: selectedProjectId == null ? null : _showAddInventoryItemDialog,
+          onPressed: _showAddInventoryItemDialog,
         ),
         IconButton(
           icon: const Icon(Icons.person_outline),
@@ -643,6 +719,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           ),
         ),
       ),
+                    );
+                  },
                 );
               },
             );

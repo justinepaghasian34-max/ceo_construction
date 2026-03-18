@@ -56,15 +56,40 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     return WorkerFingerprintArgs(workerName: name, position: position, rate: rate);
   }
 
+  Future<WorkerFingerprintArgs?> _inferWorkerArgsFromTodayAttendance() async {
+    final attendance = await _getOrCreateTodayAttendance();
+    if (attendance == null) return null;
+    if (attendance.records.isEmpty) return null;
+
+    final r = attendance.records.first;
+    final name = r.workerName.trim();
+    final position = r.position.trim();
+    final rate = r.rate;
+    if (name.isEmpty || position.isEmpty) return null;
+    return WorkerFingerprintArgs(workerName: name, position: position, rate: rate);
+  }
+
   Future<void> _openFingerprintDailyAttendance(BuildContext context) async {
-    final args = _lastWorkerArgs();
+    final router = GoRouter.of(context);
+    var args = _lastWorkerArgs();
+    args ??= await _inferWorkerArgsFromTodayAttendance();
+    if (!context.mounted) return;
     if (args == null) {
       await _showRegisterWorkerFingerprintSheet(context);
       return;
     }
 
+    await HiveService.instance.saveSetting(_kLastFingerprintWorkerKey, {
+      'workerName': args.workerName,
+      'position': args.position,
+      'rate': args.rate,
+    });
+
     if (!context.mounted) return;
-    context.push(RouteNames.fingerprintAttendance, extra: args);
+    await router.push(RouteNames.fingerprintAttendance, extra: args);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _showRegisterWorkerFingerprintSheet(BuildContext context) async {

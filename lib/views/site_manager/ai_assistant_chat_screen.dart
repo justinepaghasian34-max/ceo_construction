@@ -149,6 +149,7 @@ class _AiAssistantChatScreenState extends State<AiAssistantChatScreen> {
       );
 
       final createdAt = Timestamp.now();
+      final fbUid = FirebaseAuth.instance.currentUser?.uid;
 
       final docRef = await FirebaseService.instance.aiAnalysisCollection.add({
         'kind': 'govtrack_progress_report',
@@ -161,6 +162,7 @@ class _AiAssistantChatScreenState extends State<AiAssistantChatScreen> {
         'storagePath': storagePath,
         'fileName': safeName,
         'submittedById': user.id,
+        'submittedByUid': fbUid,
         'submittedByName': '${user.firstName} ${user.lastName}'.trim(),
         'submittedByEmail': user.email,
         'assignedSiteManagerName': '${user.firstName} ${user.lastName}'.trim(),

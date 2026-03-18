@@ -6,7 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -337,8 +336,6 @@ class _AiDashboardState extends State<_AiDashboard> {
   String? _selectedImageName;
 
   String? _lastAnalyzedImageUrl;
-  String? _lastAnalyzedStoragePath;
-  String? _lastAnalyzedFileName;
   double? _lastAnalyzedProgressPercent;
 
   double? _lastPhotoLat;
@@ -1057,6 +1054,9 @@ class _AiDashboardState extends State<_AiDashboard> {
     final text = _chatController.text.trim();
     if (text.isEmpty) return;
 
+    final pendingImageBytes = _chatImageBytes;
+    final pendingImageName = _chatImageName;
+
     debugPrint('govtrack: _sendChat start');
 
     final okAuth = await _ensureFunctionsAuthenticated();
@@ -1074,13 +1074,45 @@ class _AiDashboardState extends State<_AiDashboard> {
     }
 
     setState(() {
-      _messages.add(_ChatMessage(isUser: true, text: text));
+      _messages.add(_ChatMessage(
+        isUser: true,
+        text: text,
+        imageBytes: pendingImageBytes,
+        imageName: pendingImageName,
+      ));
       _messages.add(const _ChatMessage(isUser: false, text: 'Thinking…'));
       _chatController.clear();
     });
 
     try {
       Map<String, dynamic> data;
+
+      List<Map<String, dynamic>> buildRecentHistory() {
+        final out = <Map<String, dynamic>>[];
+        for (final m in _messages) {
+          if (m.isUser == false && m.text.trim() == 'Thinking…') continue;
+          final t = m.text.trim();
+          if (t.isEmpty) continue;
+          out.add(<String, dynamic>{
+            'role': m.isUser ? 'user' : 'assistant',
+            'text': t,
+            'hasImage': m.imageBytes != null,
+          });
+        }
+
+        if (out.isNotEmpty) {
+          final last = out.last;
+          if (last['role'] == 'user' && (last['text'] ?? '').toString() == text) {
+            out.removeLast();
+          }
+        }
+
+        const maxTurns = 12;
+        if (out.length > maxTurns) {
+          return out.sublist(out.length - maxTurns);
+        }
+        return out;
+      }
 
       String? attachmentUrl;
       String? attachmentStoragePath;
@@ -1099,6 +1131,13 @@ class _AiDashboardState extends State<_AiDashboard> {
         attachmentUrl = downloadUrl;
         attachmentStoragePath = storagePath;
         attachmentFileName = fileName;
+
+        if (mounted) {
+          setState(() {
+            _chatImageBytes = null;
+            _chatImageName = null;
+          });
+        }
       }
 
       Future<String?> getToken({required bool forceRefresh}) async {
@@ -1147,12 +1186,15 @@ class _AiDashboardState extends State<_AiDashboard> {
         final res = await callable
             .call(<String, dynamic>{
           'message': text,
+          'history': buildRecentHistory(),
           'idToken': idToken,
           'imageUrl': attachmentUrl,
           'storagePath': attachmentStoragePath,
           'fileName': attachmentFileName,
+          'projectId': _selectedProjectId,
+          'projectName': _selectedProjectName,
         })
-            .timeout(const Duration(seconds: 45));
+            .timeout(const Duration(seconds: 120));
         debugPrint('govtrack: govtrackChatGemini returned');
         return (res.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
       }
@@ -1193,6 +1235,7 @@ class _AiDashboardState extends State<_AiDashboard> {
       final reply = (data['reply'] ?? '').toString().trim();
 
       final currentUser = AuthService.instance.currentUser;
+      final fbUser = FirebaseAuth.instance.currentUser;
       await FirebaseService.instance.aiAnalysisCollection.add(
         <String, dynamic>{
           'kind': 'govtrack_chat',
@@ -1204,18 +1247,12 @@ class _AiDashboardState extends State<_AiDashboard> {
           'projectId': _selectedProjectId,
           'projectName': _selectedProjectName,
           'submittedById': currentUser?.id,
+          'submittedByUid': fbUser?.uid,
           'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
           'submittedByEmail': currentUser?.email,
           'createdAt': FieldValue.serverTimestamp(),
         },
       );
-
-      if (mounted) {
-        setState(() {
-          _chatImageBytes = null;
-          _chatImageName = null;
-        });
-      }
 
       if (!mounted) return;
       setState(() {
@@ -1244,6 +1281,8 @@ class _AiDashboardState extends State<_AiDashboard> {
         SnackBar(content: Text(msg)),
       );
       setState(() {
+        _chatImageBytes = null;
+        _chatImageName = null;
         if (_messages.isNotEmpty &&
             _messages.last.isUser == false &&
             _messages.last.text == 'Thinking…') {
@@ -1300,8 +1339,6 @@ class _AiDashboardState extends State<_AiDashboard> {
           _selectedImageName = file.name;
           _lastAnalyzedProgressPercent = null;
           _lastAnalyzedImageUrl = null;
-          _lastAnalyzedStoragePath = null;
-          _lastAnalyzedFileName = null;
           _lastPhotoLat = null;
           _lastPhotoLng = null;
           _lastPhotoAddress = null;
@@ -1321,8 +1358,6 @@ class _AiDashboardState extends State<_AiDashboard> {
         _selectedImageName = picked.name;
         _lastAnalyzedProgressPercent = null;
         _lastAnalyzedImageUrl = null;
-        _lastAnalyzedStoragePath = null;
-        _lastAnalyzedFileName = null;
         _lastPhotoLat = null;
         _lastPhotoLng = null;
         _lastPhotoAddress = null;
@@ -1423,8 +1458,6 @@ class _AiDashboardState extends State<_AiDashboard> {
           _selectedImageName = file.name;
           _lastAnalyzedProgressPercent = null;
           _lastAnalyzedImageUrl = null;
-          _lastAnalyzedStoragePath = null;
-          _lastAnalyzedFileName = null;
         });
         return;
       }
@@ -1478,39 +1511,7 @@ class _AiDashboardState extends State<_AiDashboard> {
     try {
       final projectDoc = await FirebaseService.instance.projectsCollection.doc(projectId).get();
       final projectData = (projectDoc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
-      final projectName = _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
-
-      final assignedSiteManagerId = (projectData['siteManagerId'] ?? '').toString().trim();
-      final assignedSiteManagerName = (projectData['siteManagerName'] ?? '').toString().trim();
-      final assignedSiteManagerEmail = assignedSiteManagerId.isEmpty
-          ? ''
-          : await _tryGetUserEmail(assignedSiteManagerId);
-
-      final currentUser = AuthService.instance.currentUser;
-
-      await FirebaseService.instance.aiAnalysisCollection.add(
-        <String, dynamic>{
-          'kind': 'govtrack_progress_report',
-          'projectId': projectId,
-          'projectName': projectName,
-          'progressPercent': _lastAnalyzedProgressPercent,
-          'assignedSiteManagerId': assignedSiteManagerId,
-          'assignedSiteManagerName': assignedSiteManagerName,
-          'assignedSiteManagerEmail': assignedSiteManagerEmail,
-          'imageUrl': _lastAnalyzedImageUrl,
-          'storagePath': _lastAnalyzedStoragePath,
-          'fileName': _lastAnalyzedFileName,
-          'photoLat': _lastPhotoLat,
-          'photoLng': _lastPhotoLng,
-          'photoAddress': _lastPhotoAddress,
-          'photoCapturedAt': _lastPhotoCapturedAt == null ? null : Timestamp.fromDate(_lastPhotoCapturedAt!),
-          'analysis': _lastAnalysis,
-          'submittedById': currentUser?.id,
-          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
-          'submittedByEmail': currentUser?.email,
-          'createdAt': FieldValue.serverTimestamp(),
-        },
-      );
+      _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1576,12 +1577,11 @@ class _AiDashboardState extends State<_AiDashboard> {
       setState(() {
         _lastAnalysis = data ?? <String, dynamic>{};
         _lastAnalyzedImageUrl = downloadUrl;
-        _lastAnalyzedStoragePath = storagePath;
-        _lastAnalyzedFileName = fileName;
         _lastAnalyzedProgressPercent = _extractProgressPercentFromAnalysis(data);
       });
 
       final currentUser = AuthService.instance.currentUser;
+      final fbAuthUser = FirebaseAuth.instance.currentUser;
       await FirebaseService.instance.aiAnalysisCollection.add(
         <String, dynamic>{
           'kind': 'govtrack_image_analysis',
@@ -1592,6 +1592,7 @@ class _AiDashboardState extends State<_AiDashboard> {
           'storagePath': storagePath,
           'analysis': data,
           'submittedById': currentUser?.id,
+          'submittedByUid': fbAuthUser?.uid,
           'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
           'submittedByEmail': currentUser?.email,
           'createdAt': FieldValue.serverTimestamp(),
@@ -1717,18 +1718,43 @@ class _GovSidebar extends StatelessWidget {
                       )
                     else
                       StreamBuilder<QuerySnapshot>(
-                        stream: FirebaseService.instance.aiAnalysisCollection
-                            .where('submittedById', isEqualTo: currentUser.id)
-                            .orderBy('createdAt', descending: true)
-                            .limit(30)
-                            .snapshots(),
+                        stream: (() {
+                          final uid = FirebaseAuth.instance.currentUser?.uid;
+                          if (uid != null && uid.trim().isNotEmpty) {
+                            return FirebaseService.instance.aiAnalysisCollection
+                                .where('submittedByUid', isEqualTo: uid)
+                                .limit(30)
+                                .snapshots();
+                          }
+                          // Fallback for older sessions/docs that only store submittedById
+                          return FirebaseService.instance.aiAnalysisCollection
+                              .where('submittedById', isEqualTo: currentUser.id)
+                              .limit(30)
+                              .snapshots();
+                        })(),
                         builder: (context, snapshot) {
                           final docs = snapshot.data?.docs ?? const [];
                           final filtered = docs.where((d) {
                             final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
                             final kind = (data['kind'] ?? '').toString();
                             return kind == 'govtrack_chat' || kind == 'govtrack_image_analysis' || kind == 'govtrack_progress_report';
-                          }).toList();
+                          }).toList()
+                            ..sort((a, b) {
+                              DateTime? toDt(dynamic v) {
+                                if (v is Timestamp) return v.toDate();
+                                if (v is DateTime) return v;
+                                return null;
+                              }
+
+                              final ad = (a.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                              final bd = (b.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                              final at = toDt(ad['createdAt']);
+                              final bt = toDt(bd['createdAt']);
+                              if (at == null && bt == null) return 0;
+                              if (at == null) return 1;
+                              if (bt == null) return -1;
+                              return bt.compareTo(at);
+                            });
 
                           if (snapshot.connectionState == ConnectionState.waiting) {
                             return Padding(
@@ -2581,9 +2607,16 @@ class _MiniStatCard extends StatelessWidget {
               ),
               if (subValue.isNotEmpty) ...[
                 const SizedBox(width: 6),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(subValue, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle)),
+                Flexible(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      subValue,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle),
+                    ),
+                  ),
                 ),
               ],
             ],
@@ -2709,9 +2742,16 @@ class _ChatComposer extends StatelessWidget {
 }
 
 class _ChatMessage {
-  const _ChatMessage({required this.isUser, required this.text});
+  const _ChatMessage({
+    required this.isUser,
+    required this.text,
+    this.imageBytes,
+    this.imageName,
+  });
   final bool isUser;
   final String text;
+  final Uint8List? imageBytes;
+  final String? imageName;
 }
 
 class _GovChatBubble extends StatelessWidget {
@@ -2750,9 +2790,27 @@ class _GovChatBubble extends StatelessWidget {
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: border),
             ),
-            child: Text(
-              message.text,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor, height: 1.35),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (message.imageBytes != null) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(
+                      message.imageBytes!,
+                      width: 220,
+                      height: 140,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                Text(
+                  message.text,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor, height: 1.35),
+                ),
+              ],
             ),
           ),
         ),

@@ -127,6 +127,7 @@ service cloud.firestore {
     // AI Analysis collection - read-only for most users
     match /ai_analysis/{analysisId} {
       allow read: if request.auth != null && (
+        resource.data.submittedByUid == request.auth.uid ||
         isAdmin() || 
         isCeoHead() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))

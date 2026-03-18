@@ -666,6 +666,17 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     };
   } catch (error) {
     console.error('verifyProgressImage error:', error);
+    const msg = typeof error?.message === 'string' ? error.message : '';
+    const isVisionPermissionDenied =
+      msg.includes('PERMISSION_DENIED') ||
+      msg.includes('vision.googleapis.com') ||
+      error?.code === 7;
+    if (isVisionPermissionDenied) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'Cloud Vision API is disabled or not yet enabled for this project. Enable the Vision API in Google Cloud Console for the same Firebase/GCP project, then retry after a few minutes.'
+      );
+    }
     if (error instanceof functions.https.HttpsError) {
       throw error;
     }
@@ -676,21 +687,40 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
 });
 
 exports.govtrackChatGemini = functions
-  .runWith({ secrets: [geminiApiKey] })
+  .runWith({ secrets: [geminiApiKey], timeoutSeconds: 180 })
   .https.onCall(async (data, context) => {
   try {
     console.log('govtrackChatGemini auth presence:', {
       hasContextAuth: Boolean(context && context.auth),
       hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
     });
-    const auth = await resolveAuthOptional(context, data);
-    if (auth) {
-      await requireGovtrackRole(auth);
-    }
-
     const message = typeof data?.message === 'string' ? data.message.trim() : '';
     if (!message) {
       throw new functions.https.HttpsError('invalid-argument', 'Message is required');
+    }
+
+    const rawHistory = Array.isArray(data?.history) ? data.history : [];
+    const history = rawHistory
+      .filter((h) => h && typeof h === 'object')
+      .map((h) => {
+        const roleRaw = typeof h.role === 'string' ? h.role.trim().toLowerCase() : '';
+        const role = roleRaw === 'assistant' ? 'assistant' : 'user';
+        const text = typeof h.text === 'string' ? h.text.trim() : '';
+        const hasImage = Boolean(h.hasImage);
+        return { role, text, hasImage };
+      })
+      .filter((h) => h.text);
+
+    const projectId = typeof data?.projectId === 'string' ? data.projectId.trim() : '';
+    const projectName = typeof data?.projectName === 'string' ? data.projectName.trim() : '';
+
+    // If the caller is asking for project-aware intelligence, require auth and verify access.
+    const auth = projectId ? await resolveAuth(context, data) : await resolveAuthOptional(context, data);
+    let role = null;
+    if (auth) {
+      role = await requireGovtrackRole(auth);
+    } else if (projectId) {
+      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated to use project context.');
     }
 
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl.trim() : '';
@@ -701,17 +731,41 @@ exports.govtrackChatGemini = functions
     let ocrObjects = [];
     if (imageUrl || storagePath) {
       try {
-        const bucketName = admin.storage().bucket().name;
-        const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
-        const imageSource = gcsUri || imageUrl;
+        let used = 'none';
+        let visionImage = null;
+
+        if (storagePath) {
+          try {
+            const file = admin.storage().bucket().file(storagePath);
+            const [bytes] = await file.download();
+            if (bytes && bytes.length) {
+              visionImage = { content: Buffer.from(bytes).toString('base64') };
+              used = 'storage_bytes';
+            }
+          } catch (downloadErr) {
+            console.warn('govtrackChatGemini: failed to download storagePath; will try URI fallback', {
+              storagePath,
+              message: downloadErr?.message,
+            });
+          }
+        }
+
+        if (!visionImage) {
+          const bucketName = admin.storage().bucket().name;
+          const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
+          const imageSource = gcsUri || imageUrl;
+          visionImage = { source: { imageUri: imageSource } };
+          used = gcsUri ? 'gcs_uri' : 'http_url';
+        }
+
         console.log('govtrackChatGemini: running Vision OCR', {
-          hasGcs: Boolean(gcsUri),
+          used,
           hasUrl: Boolean(imageUrl),
-          storagePath: storagePath || null,
+          hasStoragePath: Boolean(storagePath),
         });
 
         const [visionResult] = await visionClient.annotateImage({
-          image: { source: { imageUri: imageSource } },
+          image: visionImage,
           features: [
             { type: 'TEXT_DETECTION', maxResults: 5 },
             { type: 'LABEL_DETECTION', maxResults: 10 },
@@ -744,17 +798,177 @@ exports.govtrackChatGemini = functions
           .filter(Boolean)
           .slice(0, 10);
       } catch (e) {
+        const emsg = typeof e?.message === 'string' ? e.message : '';
+        const isVisionPermissionDenied =
+          emsg.includes('PERMISSION_DENIED') ||
+          emsg.includes('vision.googleapis.com') ||
+          e?.code === 7;
+        if (isVisionPermissionDenied) {
+          throw new functions.https.HttpsError(
+            'failed-precondition',
+            'Cloud Vision API is disabled or not yet enabled for this project. Enable the Vision API in Google Cloud Console for the same Firebase/GCP project, then retry after a few minutes.'
+          );
+        }
         console.warn('govtrackChatGemini: Vision OCR failed; continuing without image context', {
           message: e?.message,
         });
       }
     }
 
+    let projectDataJson = '';
+    if (projectId && auth) {
+      const uid = auth.uid;
+      const isPrivileged = role === 'admin' || role === 'ceo_head';
+
+      const projectRef = admin.firestore().collection('projects').doc(projectId);
+      const projectSnap = await projectRef.get();
+      if (!projectSnap.exists) {
+        throw new functions.https.HttpsError('not-found', 'Project not found.');
+      }
+      const projectData = projectSnap.data() || {};
+
+      if (!isPrivileged) {
+        let hasAccess = false;
+        const siteManagerId = typeof projectData.siteManagerId === 'string' ? projectData.siteManagerId : '';
+        if (siteManagerId && siteManagerId === uid) {
+          hasAccess = true;
+        }
+
+        if (!hasAccess) {
+          const userSnap = await admin.firestore().collection('users').doc(uid).get();
+          const userData = userSnap.exists ? (userSnap.data() || {}) : {};
+          const assigned = Array.isArray(userData.assignedProjects) ? userData.assignedProjects : [];
+          hasAccess = assigned.includes(projectId);
+        }
+
+        if (!hasAccess) {
+          throw new functions.https.HttpsError('permission-denied', 'You do not have access to this project.');
+        }
+      }
+
+      const safeLimit = (arr, n) => (Array.isArray(arr) ? arr.slice(0, n) : []);
+      const stringifySafe = (v, max) => {
+        const s = JSON.stringify(v);
+        return s.length > max ? s.slice(0, max) : s;
+      };
+
+      const [dailyReportsSnap, inventorySnap, deliveriesSnap, usageSnap] = await Promise.all([
+        projectRef.collection('daily_reports').orderBy('reportDate', 'desc').limit(10).get().catch(() => null),
+        projectRef.collection('material_inventory').limit(80).get().catch(() => null),
+        projectRef.collection('deliveries').limit(40).get().catch(() => null),
+        admin.firestore().collectionGroup('material_usage').where('projectId', '==', projectId).limit(120).get().catch(() => null),
+      ]);
+
+      const dailyReports = dailyReportsSnap
+        ? dailyReportsSnap.docs.map((d) => (d.data() || {}))
+        : [];
+      const inventory = inventorySnap
+        ? inventorySnap.docs.map((d) => (d.data() || {}))
+        : [];
+      const deliveries = deliveriesSnap
+        ? deliveriesSnap.docs.map((d) => (d.data() || {}))
+        : [];
+      const materialUsage = usageSnap
+        ? usageSnap.docs.map((d) => (d.data() || {}))
+        : [];
+
+      const compactDaily = safeLimit(dailyReports, 10).map((r) => ({
+        reportDate: r.reportDate || null,
+        weatherCondition: r.weatherCondition || null,
+        temperatureC: r.temperatureC ?? null,
+        issues: safeLimit(r.issues, 8),
+        workAccomplishments: safeLimit(r.workAccomplishments, 8).map((w) => ({
+          wbsCode: w.wbsCode || null,
+          description: w.description || null,
+          unit: w.unit || null,
+          quantityAccomplished: w.quantityAccomplished ?? null,
+          percentageComplete: w.percentageComplete ?? null,
+        })),
+        remarks: r.remarks || null,
+      }));
+
+      const compactInv = safeLimit(inventory, 60).map((i) => ({
+        materialName: i.materialName || null,
+        unit: i.unit || null,
+        stock: i.stock ?? null,
+        unitPrice: i.unitPrice ?? i.price ?? null,
+        updatedAt: i.updatedAt || null,
+      }));
+
+      const compactDeliveries = safeLimit(deliveries, 30).map((d) => ({
+        description: d.description || null,
+        supplier: d.supplier || null,
+        receivedAt: d.receivedAt || d.date || d.deliveryDate || null,
+        status: d.status || null,
+      }));
+
+      const compactUsage = safeLimit(materialUsage, 100).map((u) => ({
+        materialName: u.materialName || null,
+        quantity: u.quantity ?? null,
+        unit: u.unit || null,
+        date: u.date || null,
+        reportId: u.reportId || null,
+        remarks: u.remarks || null,
+      }));
+
+      const contextObj = {
+        project: {
+          id: projectId,
+          name: projectName || projectData.name || projectData.projectName || null,
+          progressPercentage: projectData.progressPercentage ?? projectData.progress ?? null,
+          siteManagerId: projectData.siteManagerId || null,
+          status: projectData.status || null,
+        },
+        dailyReports: compactDaily,
+        materialInventory: compactInv,
+        deliveries: compactDeliveries,
+        materialUsage: compactUsage,
+      };
+
+      projectDataJson = stringifySafe(contextObj, 14000);
+    }
+
     const apiKey = geminiApiKey.value();
     const model = geminiModel.value();
+
+    const constructionTaxonomy =
+      'Construction scope & materials taxonomy (use as a completeness checklist):\n'
+      + 'A) Preliminaries: permits, mobilization, temporary facilities, safety signage/PPE, hoarding, scaffolds, tools, testing.\n'
+      + 'B) Survey/Earthworks: setting-out, excavation, backfill, compaction, dewatering, soil treatment, hauling.\n'
+      + 'C) Concrete & Reinforcement: cement, sand, gravel, water, admixtures, rebars, tie wire, chairs/spacers, formworks, curing.\n'
+      + 'D) Masonry: CHB/brick, mortar, plastering materials, lintels, masonry reinforcement.\n'
+      + 'E) Structural (steel/timber): steel sections, bolts/anchors, weld consumables, primers/paint, wood framing, connectors.\n'
+      + 'F) Roofing/Waterproofing: trusses/purlins, roof sheets/tiles, insulation, flashing, gutters/downspouts, sealants, membranes.\n'
+      + 'G) Architectural/Finishes: drywall/ceilings, tiles, paint systems, floor finishes, adhesives/grout, skirting, handrails.\n'
+      + 'H) Doors/Windows/Glazing: frames, panels, hardware, locks, sealants, glass.\n'
+      + 'I) Electrical: conduits, wires/cables, panels/breakers, lighting, switches/outlets, grounding, rough-in boxes, testing.\n'
+      + 'J) Plumbing/Sanitary: pipes/fittings, valves, traps, fixtures, pumps, water tanks, vents, testing.\n'
+      + 'K) Mechanical/HVAC: ducting, diffusers, piping, insulation, refrigerant lines, units, controls, testing/commissioning.\n'
+      + 'L) Fire Protection: sprinklers, pipes/fittings, valves, alarms, extinguishers, signage, testing.\n'
+      + 'M) External/Siteworks: drainage, pavement, fencing, landscaping, external lighting, access roads, utilities tie-ins.\n'
+      + 'N) QA/QC & HSE: concrete tests, rebar inspection, waterproofing tests, electrical megger, safety plans, permits-to-work.';
     const systemPrompt =
-      'You are GovTrack AI, a professional government-grade infrastructure monitoring assistant. '
-      + 'Be concise. Provide actionable steps. If asked for data you do not have, say so and suggest where to find it.';
+      'You are GovTrack AI, a senior construction project engineer and estimator. '
+      + 'Your job is to help with construction planning and decision-making: materials takeoff, rough cost ranges, timelines, manpower, equipment, sequencing, and risks. '
+      + 'Always be practical and actionable. '
+      + 'If the user request lacks details, DO NOT refuse; instead: (1) make clearly stated assumptions, (2) give a rough estimate/range, (3) list what exact info you need to refine it, and (4) ask 3-6 short follow-up questions. '
+      + 'When giving quantities or costs, provide ranges and mention the unit system. '
+      + 'Do not claim you inspected a real site; if you are unsure, say so. '
+      + 'Keep answers concise but useful. '
+      + 'When the user asks for "materials" or "list of materials", respond with a categorized checklist across ALL construction trades (civil/structural/architectural/MEPF/finishes/siteworks) using the taxonomy below. '
+      + 'Include typical units (e.g., bags, m3, pcs, meters), common specs/assumptions, and call out missing details needed to compute quantities.';
+
+    const projectDataContext = projectDataJson
+      ? `\n\nPROJECT_DATA_JSON (authoritative project records):\n${projectDataJson}\n`
+      : '';
+
+    const projectContext = (projectId || projectName)
+      ? (
+          `\n\nProject context:\n`
+          + `projectName: ${projectName || '[unknown]'}\n`
+          + `projectId: ${projectId || '[unknown]'}\n`
+        )
+      : '';
 
     const imageContext = (ocrText || (Array.isArray(ocrLabels) && ocrLabels.length) || (Array.isArray(ocrObjects) && ocrObjects.length))
       ? (
@@ -765,13 +979,33 @@ exports.govtrackChatGemini = functions
         )
       : '';
 
+    const buildTranscript = (items, maxChars) => {
+      if (!Array.isArray(items) || !items.length) return '';
+      const lines = [];
+      for (const it of items.slice(-12)) {
+        const role = it.role === 'assistant' ? 'Assistant' : 'User';
+        const suffix = it.hasImage ? ' (image attached)' : '';
+        const text = String(it.text || '').replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        lines.push(`${role}${suffix}: ${text}`);
+      }
+      const joined = lines.join('\n');
+      if (!joined) return '';
+      return joined.length > maxChars ? joined.slice(joined.length - maxChars) : joined;
+    };
+
+    const transcript = buildTranscript(history, 3500);
+    const chatHistoryContext = transcript
+      ? `\n\nRECENT_CHAT_TRANSCRIPT (for continuity; last turns):\n${transcript}\n`
+      : '';
+
     const result = await geminiGenerateContent({
       apiKey,
       model,
       contents: [
         {
           role: 'user',
-          parts: [{ text: `${systemPrompt}${imageContext}\n\nUser: ${message}` }],
+          parts: [{ text: `${systemPrompt}\n\n${constructionTaxonomy}${projectContext}${projectDataContext}${chatHistoryContext}${imageContext}\n\nUser request: ${message}` }],
         },
       ],
       generationConfig: {

@@ -15,6 +15,20 @@ service firebase.storage {
       ) && isValidImageUpload();
     }
 
+    // GovTrack AI chat attachments
+    match /govtrack_chat_attachments/{allPaths=**} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        isSiteManager()
+      );
+      allow write: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        isSiteManager()
+      ) && isValidImageUpload();
+    }
+
     // Project files - organized by project ID
     match /projects/{projectId}/{allPaths=**} {
       allow read: if request.auth != null && (
