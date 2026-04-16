@@ -72,6 +72,7 @@ class AdminHome extends StatelessWidget {
             title: 'Net Margin',
             value: '18.2%',
             accent: const Color(0xFF2DD4BF),
+            onTap: () => context.push(RouteNames.adminFinancialMonitoring),
           ),
           _KpiCard(
             title: 'Cost Performance Index (CPI)',
@@ -79,11 +80,13 @@ class AdminHome extends StatelessWidget {
             badgeText: 'On Track',
             badgeColor: const Color(0xFF22C55E),
             accent: const Color(0xFF22C55E),
+            onTap: () => context.push(RouteNames.adminFinancialMonitoring),
           ),
           _KpiCard(
             title: 'Schedule Performance Index (SPI)',
             value: '0.05',
             accent: const Color(0xFFF97316),
+            onTap: () => context.push(RouteNames.adminProgressReports),
           ),
         ];
 
@@ -124,8 +127,9 @@ class AdminHome extends StatelessWidget {
   }
 
   Widget _buildWeatherRiskCard(BuildContext context, HiveService hive) {
-    return GlassCard(
-      borderRadius: 16,
+    const borderRadius = 16.0;
+    final card = GlassCard(
+      borderRadius: borderRadius,
       padding: const EdgeInsets.all(14),
       child: FutureBuilder<WeatherNow>(
         future: WeatherService.instance.getCurrentWeatherByCity('Manila,PH'),
@@ -193,6 +197,18 @@ class AdminHome extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => context.push(RouteNames.adminWeatherForecast),
+          borderRadius: BorderRadius.circular(borderRadius),
+          child: card,
+        ),
       ),
     );
   }
@@ -642,6 +658,7 @@ class _KpiCard extends StatelessWidget {
     required this.accent,
     this.badgeText,
     this.badgeColor,
+    this.onTap,
   });
 
   final String title;
@@ -649,11 +666,13 @@ class _KpiCard extends StatelessWidget {
   final Color accent;
   final String? badgeText;
   final Color? badgeColor;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return GlassCard(
-      borderRadius: 16,
+    const borderRadius = 16.0;
+    final card = GlassCard(
+      borderRadius: borderRadius,
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -718,6 +737,20 @@ class _KpiCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+
+    if (onTap == null) return card;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(borderRadius),
+          child: card,
+        ),
       ),
     );
   }

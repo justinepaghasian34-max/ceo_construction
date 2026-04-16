@@ -31,7 +31,26 @@ service cloud.firestore {
           isCeoHead() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
-        allow write: if request.auth != null && isAdmin();
+
+        allow create, delete: if request.auth != null && isAdmin();
+
+        // Admin can update freely. Site managers can only decrement stock for
+        // assigned projects (best-effort inventory deduction after usage sync).
+        allow update: if request.auth != null && (
+          isAdmin() ||
+          (
+            isSiteManager() &&
+            hasProjectAccess(projectId) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'stock',
+              'updatedAt'
+            ]) &&
+            request.resource.data.stock is number &&
+            resource.data.stock is number &&
+            request.resource.data.stock <= resource.data.stock &&
+            request.resource.data.stock >= 0
+          )
+        );
       }
       
       // Daily reports sub-collection
@@ -72,8 +91,11 @@ service cloud.firestore {
       
       // Payroll sub-collection
       match /payroll/{payrollId} {
-        // TEMP: Allow anyone to read payroll documents to guarantee collectionGroup queries work.
-        allow read: if true;
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          (isSiteManager() && hasProjectAccess(projectId))
+        );
         allow create: if request.auth != null && isAdmin();
         allow update: if request.auth != null && isAdmin();
         
@@ -91,7 +113,8 @@ service cloud.firestore {
           hasProjectAccess(projectId)
         );
         allow write: if request.auth != null && (
-          isSiteManager() && hasProjectAccess(projectId)
+          isAdmin() ||
+          (isSiteManager() && hasProjectAccess(projectId))
         );
       }
 
@@ -104,7 +127,19 @@ service cloud.firestore {
         allow create: if request.auth != null && (
           isSiteManager() && hasProjectAccess(projectId)
         );
-        allow update: if request.auth != null && isAdmin();
+        allow update: if request.auth != null && (
+          isAdmin() ||
+          (
+            isSiteManager() &&
+            hasProjectAccess(projectId) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'deliveryStatus',
+              'deliveredAt',
+              'deliveredBy',
+              'deliveredByName'
+            ])
+          )
+        );
       }
       
       // History sub-collection
@@ -120,8 +155,28 @@ service cloud.firestore {
     
     // Notifications collection
     match /notifications/{notificationId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow write: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        (isAdmin() && resource.data.audienceRole == 'admin') ||
+        (isCeoHead() && resource.data.audienceRole == 'admin')
+      );
+
+      allow create: if request.auth != null && (
+        // user-scoped notifications
+        request.resource.data.userId == request.auth.uid ||
+        // admin-audience notifications (e.g., material requests)
+        request.resource.data.audienceRole == 'admin'
+      );
+
+      allow update: if request.auth != null && (
+        (resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid) ||
+        ((isAdmin() || isCeoHead()) && resource.data.audienceRole == 'admin')
+      );
+
+      allow delete: if request.auth != null && (
+        (resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid) ||
+        ((isAdmin() || isCeoHead()) && resource.data.audienceRole == 'admin')
+      );
     }
     
     // AI Analysis collection - read-only for most users
@@ -138,7 +193,8 @@ service cloud.firestore {
     
     // Audit logs - ADMIN ONLY (Cloud Functions write entries)
     match /audit_logs/{logId} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null && (isAdmin() || isCeoHead());
+      allow write: if false;
     }
     
     // Disbursements collection
@@ -148,12 +204,6 @@ service cloud.firestore {
         isCeoHead()
       );
       allow write: if request.auth != null && isAdmin();
-    }
-    
-    // Collection group rules for payroll (collectionGroup queries)
-    match /{path=**}/payroll/{payrollId} {
-      // TEMP: Allow anyone to read payroll documents to guarantee collectionGroup queries work.
-      allow read: if true;
     }
 
     // Collection group rules for history (Project History screen)
@@ -165,7 +215,17 @@ service cloud.firestore {
     }
 
     match /{path=**}/material_requests/{requestId} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
+      );
+
+      allow create: if request.auth != null && (
+        isAdmin() ||
+        (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
+      );
+
       allow update: if request.auth != null && isAdmin();
     }
 
@@ -184,27 +244,65 @@ service cloud.firestore {
 
       allow delete: if request.auth != null && isAdmin();
     }
+
+    // Collection group rules for deliveries (Admin Material Monitoring screen)
+    match /{path=**}/deliveries/{deliveryId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
+      );
+    }
+
+    // Collection group rules for attendance (Admin Payroll monitoring)
+    match /{path=**}/attendance/{attendanceId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
+      );
+    }
+
+    // Collection group rules for payroll (Admin Payroll monitoring)
+    match /{path=**}/payroll/{payrollId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        (isSiteManager() && hasProjectAccess(resource.data.projectId))
+      );
+
+      // Admin-only writes
+      allow create, update, delete: if request.auth != null && isAdmin();
+    }
+
+    // Collection group rules for payroll items (if queried)
+    match /{path=**}/items/{itemId} {
+      allow read: if request.auth != null && (isAdmin() || isCeoHead());
+      allow write: if request.auth != null && isAdmin();
+    }
     
     // Helper functions
     function isAdmin() {
-      return getUserRole() == 'admin';
+      return getUserRole() in ['admin', 'Admin', 'ADMIN'];
     }
     
     function isSiteManager() {
-      return getUserRole() == 'site_manager';
+      return getUserRole() in ['site_manager', 'Site_Manager', 'Site manager', 'site manager', 'SITE_MANAGER'];
     }
     
     function isCeoHead() {
-      return getUserRole() == 'ceo_head';
+      return getUserRole() in ['ceo_head', 'Ceo_Head', 'CEO_HEAD', 'CEO head', 'ceo head'];
     }
     
     function getUserRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+          : '';
     }
     
     function hasProjectAccess(projectId) {
-      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      return projectId in userData.assignedProjects;
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          projectId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedProjects;
     }
     
     // TEMP: allow all reads and writes

@@ -86,7 +86,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
           if (snapshot.hasError) {
             return Center(
               child: Text(
-                'Failed to load payroll data',
+                'Failed to load payroll data: ${snapshot.error}',
                 style: Theme.of(
                   context,
                 ).textTheme.bodyMedium?.copyWith(color: AppTheme.errorRed),
@@ -104,6 +104,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
           double totalOvertimeHours = 0;
           double pendingPayoutTotal = 0;
           final Set<String> activeWorkerIds = {};
+          final Map<String, String> activeWorkerNameByKey = {};
           final Map<String, Map<String, _WorkerPayrollEntry>>
           aggregatedByProject = {};
           final Map<String, String> validationStatusByProject = {};
@@ -151,6 +152,9 @@ class _AdminPayrollState extends State<AdminPayroll> {
                   ? item.workerId
                   : item.workerName;
               activeWorkerIds.add(workerKey);
+              if (item.workerName.trim().isNotEmpty) {
+                activeWorkerNameByKey[workerKey] = item.workerName.trim();
+              }
               totalOvertimeHours += item.overtimeHours;
 
               final existingEntry = projectEntries[workerKey];
@@ -221,32 +225,136 @@ class _AdminPayrollState extends State<AdminPayroll> {
           recentPayouts.sort((a, b) => b.date.compareTo(a.date));
           final visiblePayouts = recentPayouts.take(5).toList();
 
-          final hive = HiveService.instance;
-          final allAttendance = hive.getAllAttendance();
           final now = DateTime.now();
           final startOfMonth = DateTime(now.year, now.month, 1);
           final endOfMonth = DateTime(now.year, now.month + 1, 1);
 
-          final List<AttendanceModel> monthAttendance = allAttendance
-              .where(
-                (a) =>
-                    !a.attendanceDate.isBefore(startOfMonth) &&
-                    a.attendanceDate.isBefore(endOfMonth),
-              )
-              .toList();
+          final attendanceQuery = FirebaseFirestore.instance
+              .collectionGroup('attendance')
+              .limit(400);
 
-          // Use current-month attendance when available; otherwise fall back to
-          // all attendance so Admin still sees Site Manager data.
-          final List<AttendanceModel> attendanceForPayroll =
-              monthAttendance.isNotEmpty ? monthAttendance : allAttendance;
+          return StreamBuilder<QuerySnapshot>(
+            stream: attendanceQuery.snapshots(),
+            builder: (context, attendanceSnap) {
+              if (attendanceSnap.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'Unable to load attendance from Firestore: ${attendanceSnap.error}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: AppTheme.warningOrange),
+                    ),
+                  ),
+                );
+              }
+              final attendanceDocs = attendanceSnap.data?.docs ?? const [];
+              final attendanceForPayroll = attendanceDocs
+                  .map((doc) {
+                    final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
+                        <String, dynamic>{};
+                    return AttendanceModel.fromJson({'id': doc.id, ...data});
+                  })
+                  .where((attendance) {
+                    final d = attendance.attendanceDate;
+                    return !d.isBefore(startOfMonth) && d.isBefore(endOfMonth);
+                  })
+                  .toList();
 
-          return GlassCard(
-            borderRadius: 18,
-            padding: const EdgeInsets.all(14),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+              final Map<String, _AttendanceWorkerSummary> attendanceSummary = {};
+              for (final attendance in attendanceForPayroll) {
+                final day = DateTime(
+                  attendance.attendanceDate.year,
+                  attendance.attendanceDate.month,
+                  attendance.attendanceDate.day,
+                );
+                for (final record in attendance.records) {
+                  final hasDayFlags = record.monPresent ||
+                      record.tuePresent ||
+                      record.wedPresent ||
+                      record.thuPresent ||
+                      record.friPresent ||
+                      record.satPresent;
+                  final isPresent = record.isPresent || hasDayFlags;
+                  if (!isPresent) continue;
+
+                  final key =
+                      '${attendance.projectId}_${record.workerId.isNotEmpty ? record.workerId : record.workerName}';
+                  final existing = attendanceSummary[key];
+                  if (existing == null) {
+                    attendanceSummary[key] = _AttendanceWorkerSummary(
+                      projectId: attendance.projectId,
+                      workerId: record.workerId,
+                      workerName: record.workerName,
+                      position: record.position,
+                      rate: record.rate,
+                      attendedDays: {day},
+                    );
+                  } else {
+                    existing.attendedDays.add(day);
+                    if (existing.position.trim().isEmpty &&
+                        record.position.trim().isNotEmpty) {
+                      existing.position = record.position;
+                    }
+                    if (existing.rate <= 0 && record.rate > 0) {
+                      existing.rate = record.rate;
+                    }
+                    if (existing.workerName.trim().isEmpty &&
+                        record.workerName.trim().isNotEmpty) {
+                      existing.workerName = record.workerName;
+                    }
+                  }
+                }
+              }
+
+              return StreamBuilder<QuerySnapshot>(
+                stream: FirebaseService.instance.projectsCollection.snapshots(),
+                builder: (context, projectsSnap) {
+                  final Map<String, String> siteManagerNameByProject = {};
+                  final projectDocs = projectsSnap.data?.docs ?? const [];
+                  for (final doc in projectDocs) {
+                    final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
+                        <String, dynamic>{};
+                    final name = (data['siteManagerName'] ?? '').toString().trim();
+                    if (name.isNotEmpty) {
+                      siteManagerNameByProject[doc.id] = name;
+                    }
+                  }
+
+                  String siteLabel(String projectId) {
+                    final name = siteManagerNameByProject[projectId];
+                    if (name != null && name.isNotEmpty) return name;
+                    return shortProjectId(projectId);
+                  }
+
+                  if (projectsSnap.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          'Unable to load projects: ${projectsSnap.error}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(color: AppTheme.warningOrange),
+                        ),
+                      ),
+                    );
+                  }
+
+                  if (!projectsSnap.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  return GlassCard(
+                borderRadius: 18,
+                padding: const EdgeInsets.all(14),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   SmartInsightCard(
                     title: 'Smart Insight',
                     message:
@@ -262,14 +370,249 @@ class _AdminPayrollState extends State<AdminPayroll> {
                   const SizedBox(height: 8),
                   LayoutBuilder(
                     builder: (context, constraints) {
+                      void showSummarySheet({
+                        required String title,
+                        required Widget child,
+                      }) {
+                        showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.white,
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+                          ),
+                          builder: (sheetContext) {
+                            return SafeArea(
+                              child: Padding(
+                                padding: EdgeInsets.only(
+                                  left: 16,
+                                  right: 16,
+                                  top: 12,
+                                  bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            title,
+                                            style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                                                  fontWeight: FontWeight.w800,
+                                                ),
+                                          ),
+                                        ),
+                                        IconButton(
+                                          onPressed: () => Navigator.pop(sheetContext),
+                                          icon: const Icon(Icons.close),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Flexible(child: child),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      }
+
+                      void showTotalPayrollDetails() {
+                        final paidTotal = (totalPayroll - pendingPayoutTotal)
+                            .clamp(0.0, double.infinity)
+                            .toDouble();
+                        showSummarySheet(
+                          title: 'Total payroll cost',
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: [
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('Total payroll'),
+                                trailing: Text(
+                                  formatCurrency(totalPayroll),
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('Paid payouts'),
+                                trailing: Text(
+                                  formatCurrency(paidTotal),
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('Pending payouts'),
+                                trailing: Text(
+                                  formatCurrency(pendingPayoutTotal),
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      void showActiveWorkersDetails() {
+                        final names = activeWorkerNameByKey.values.toSet().toList()
+                          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+                        showSummarySheet(
+                          title: 'Active workers',
+                          child: names.isEmpty
+                              ? const Center(child: Text('No active workers yet.'))
+                              : ListView.separated(
+                                  shrinkWrap: true,
+                                  itemCount: names.length,
+                                  separatorBuilder: (_, __) => const Divider(height: 1),
+                                  itemBuilder: (ctx, i) {
+                                    return ListTile(
+                                      contentPadding: EdgeInsets.zero,
+                                      leading: CircleAvatar(
+                                        backgroundColor: AppTheme.primaryBlue.withValues(alpha: 0.10),
+                                        child: Text(
+                                          names[i].isNotEmpty ? names[i][0].toUpperCase() : '?',
+                                          style: const TextStyle(color: AppTheme.primaryBlue, fontWeight: FontWeight.w800),
+                                        ),
+                                      ),
+                                      title: Text(names[i]),
+                                    );
+                                  },
+                                ),
+                        );
+                      }
+
+                      void showPendingPayoutsDetails() {
+                        final entries = itemsByProject.entries.toList()
+                          ..sort((a, b) => siteLabel(a.key).compareTo(siteLabel(b.key)));
+
+                        showSummarySheet(
+                          title: 'Pending payouts',
+                          child: entries.isEmpty
+                              ? const Center(child: Text('No pending payouts.'))
+                              : ListView.separated(
+                                  shrinkWrap: true,
+                                  itemCount: entries.length,
+                                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                                  itemBuilder: (ctx, i) {
+                                    final projectId = entries[i].key;
+                                    final workers = entries[i].value;
+                                    final siteTotal = workers.fold<double>(0, (a, b) => a + b.item.netPay);
+                                    return AppCard(
+                                      padding: const EdgeInsets.all(12),
+                                      onTap: () {
+                                        Navigator.pop(ctx);
+                                        _showFullWorkerPayrollTable(context, projectId, workers);
+                                      },
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  'Site: ${siteLabel(projectId)}',
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                                        fontWeight: FontWeight.w800,
+                                                      ),
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  '${workers.length} worker(s) pending',
+                                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                        color: AppTheme.mediumGray,
+                                                      ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.end,
+                                            children: [
+                                              Text(
+                                                formatCurrency(siteTotal),
+                                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                                      fontWeight: FontWeight.w800,
+                                                      color: AppTheme.primaryBlue,
+                                                    ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              const Icon(Icons.chevron_right, color: AppTheme.mediumGray),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                        );
+                      }
+
+                      void showOvertimeDetails() {
+                        final Map<String, double> overtimeByWorker = {};
+                        for (final projectEntry in aggregatedByProject.entries) {
+                          for (final e in projectEntry.value.values) {
+                            final h = e.item.overtimeHours;
+                            if (h <= 0) continue;
+                            overtimeByWorker[e.workerKey] = (overtimeByWorker[e.workerKey] ?? 0) + h;
+                          }
+                        }
+                        final rows = overtimeByWorker.entries.toList()
+                          ..sort((a, b) => b.value.compareTo(a.value));
+
+                        showSummarySheet(
+                          title: 'Overtime hours',
+                          child: rows.isEmpty
+                              ? const Center(child: Text('No overtime recorded.'))
+                              : ListView.separated(
+                                  shrinkWrap: true,
+                                  itemCount: rows.length,
+                                  separatorBuilder: (_, __) => const Divider(height: 1),
+                                  itemBuilder: (ctx, i) {
+                                    final key = rows[i].key;
+                                    final name = activeWorkerNameByKey[key] ?? key;
+                                    return ListTile(
+                                      contentPadding: EdgeInsets.zero,
+                                      title: Text(
+                                        name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      trailing: Text(
+                                        '${formatHours(rows[i].value)} hrs',
+                                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                              fontWeight: FontWeight.w700,
+                                              color: AppTheme.primaryBlue,
+                                            ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                        );
+                      }
+
                       Widget buildStatCard({
                         required IconData icon,
                         required Color iconColor,
                         required String label,
                         required String value,
+                        VoidCallback? onTap,
                       }) {
                         return AppCard(
                           padding: const EdgeInsets.all(16),
+                          onTap: onTap,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
@@ -323,6 +666,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         iconColor: AppTheme.softGreen,
                         label: 'Total payroll cost',
                         value: formatCurrency(totalPayroll),
+                        onTap: showTotalPayrollDetails,
                       );
 
                       final workersCard = buildStatCard(
@@ -330,6 +674,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         iconColor: AppTheme.primaryBlue,
                         label: 'Active workers',
                         value: activeWorkerIds.length.toString(),
+                        onTap: showActiveWorkersDetails,
                       );
 
                       final pendingCard = buildStatCard(
@@ -337,6 +682,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         iconColor: AppTheme.warningOrange,
                         label: 'Pending payouts',
                         value: formatCurrency(pendingPayoutTotal),
+                        onTap: showPendingPayoutsDetails,
                       );
 
                       final overtimeCard = buildStatCard(
@@ -344,6 +690,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         iconColor: AppTheme.accentYellow,
                         label: 'Overtime hours',
                         value: '${formatHours(totalOvertimeHours)} hrs',
+                        onTap: showOvertimeDetails,
                       );
 
                       final isNarrow = constraints.maxWidth < 700;
@@ -411,7 +758,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                               children: [
                                 Expanded(
                                   child: Text(
-                                    'Site: ${shortProjectId(entry.key)}',
+                                    'Site: ${siteLabel(entry.key)}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .titleSmall
@@ -482,6 +829,14 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         label: const Text('Generate payroll from attendance'),
                       ),
                     ),
+                  if (attendanceSummary.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _buildAttendanceSummarySection(
+                      context,
+                      summaries: attendanceSummary.values.toList(),
+                      siteLabel: siteLabel,
+                    ),
+                  ],
                   if (attendanceForPayroll.isEmpty)
                     Text(
                       'No attendance data available to generate payroll.',
@@ -490,11 +845,79 @@ class _AdminPayrollState extends State<AdminPayroll> {
                           ),
                     ),
                   _buildRecentPayrollPayoutsSection(context, visiblePayouts),
-                ],
-              ),
-            ),
+                    ],
+                  ),
+                ),
+              );
+                },
+              );
+            },
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildAttendanceSummarySection(
+    BuildContext context, {
+    required List<_AttendanceWorkerSummary> summaries,
+    required String Function(String projectId) siteLabel,
+  }) {
+    final sorted = [...summaries]
+      ..sort((a, b) {
+        final siteA = siteLabel(a.projectId);
+        final siteB = siteLabel(b.projectId);
+        final bySite = siteA.compareTo(siteB);
+        if (bySite != 0) return bySite;
+        return a.workerName.toLowerCase().compareTo(b.workerName.toLowerCase());
+      });
+
+    return GlassCard(
+      borderRadius: 16,
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Attendance summary (this month)',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: const [
+                DataColumn(label: Text('Site')),
+                DataColumn(label: Text('Worker')),
+                DataColumn(label: Text('Days')),
+                DataColumn(label: Text('Rate')),
+                DataColumn(label: Text('Dates')),
+              ],
+              rows: [
+                for (final s in sorted)
+                  DataRow(
+                    cells: [
+                      DataCell(Text(siteLabel(s.projectId))),
+                      DataCell(Text(s.workerName)),
+                      DataCell(Text(s.attendedDays.length.toString())),
+                      DataCell(Text(s.rate > 0 ? formatCurrency(s.rate) : '-')),
+                      DataCell(
+                        Text(
+                          (s.attendedDays.toList()..sort())
+                              .map((d) => '${d.month}/${d.day}')
+                              .join(', '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -903,7 +1326,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                   Row(
                     children: [
                       Text(
-                        'Worker payroll  Site: ${shortProjectId(projectId)}',
+                        'Worker payroll - Site: ${shortProjectId(projectId)}',
                         style: Theme.of(sheetContext).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
@@ -937,6 +1360,24 @@ class _WorkerPayrollEntry {
     required this.item,
     required this.payrollStatus,
     required this.workerKey,
+  });
+}
+
+class _AttendanceWorkerSummary {
+  final String projectId;
+  String workerId;
+  String workerName;
+  String position;
+  double rate;
+  final Set<DateTime> attendedDays;
+
+  _AttendanceWorkerSummary({
+    required this.projectId,
+    required this.workerId,
+    required this.workerName,
+    required this.position,
+    required this.rate,
+    required this.attendedDays,
   });
 }
 
@@ -1450,7 +1891,9 @@ Widget _buildRecentPayrollPayoutsSection(
         Align(
           alignment: Alignment.centerLeft,
           child: OutlinedButton.icon(
-            onPressed: payouts.isEmpty ? null : () {},
+            onPressed: payouts.isEmpty
+                ? null
+                : () => _showAllTransactionsSheet(context, payouts),
             icon: const Icon(Icons.receipt_long),
             label: const Text('View all transactions'),
           ),
@@ -1467,59 +1910,229 @@ Widget _buildRecentPayoutRow(BuildContext context, _RecentPayout payout) {
       '${date.month.toString().padLeft(2, '0')}-'
       '${date.day.toString().padLeft(2, '0')}';
 
-  return Row(
-    children: [
-      Container(
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(
-          color: AppTheme.deepBlue.withAlpha(16),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: const Icon(Icons.person, size: 18, color: AppTheme.deepBlue),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              payout.workerName,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyMedium,
+  return InkWell(
+    onTap: () => _showPayoutDetailsSheet(context, payout),
+    borderRadius: BorderRadius.circular(12),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppTheme.deepBlue.withAlpha(16),
+              borderRadius: BorderRadius.circular(8),
             ),
-            const SizedBox(height: 2),
-            Text(
-              dateText,
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+            child:
+                const Icon(Icons.person, size: 18, color: AppTheme.deepBlue),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  payout.workerName,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  dateText,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppTheme.softGreen.withAlpha(32),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              'Paid',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppTheme.softGreen,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            formatCurrency(payout.amount),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppTheme.primaryBlue,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
-      const SizedBox(width: 8),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        decoration: BoxDecoration(
-          color: AppTheme.softGreen.withAlpha(32),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          'Paid',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: AppTheme.softGreen,
-            fontWeight: FontWeight.w500,
+    ),
+  );
+}
+
+void _showPayoutDetailsSheet(BuildContext context, _RecentPayout payout) {
+  final date = payout.date;
+  final dateText =
+      '${date.year.toString().padLeft(4, '0')}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Payout details',
+                      style: Theme.of(sheetContext)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(sheetContext).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const CircleAvatar(
+                  backgroundColor: AppTheme.lightGray,
+                  child: Icon(Icons.person, color: AppTheme.deepBlue),
+                ),
+                title: Text(payout.workerName),
+                subtitle: Text(dateText),
+                trailing: Text(
+                  formatCurrency(payout.amount),
+                  style: Theme.of(sheetContext)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.primaryBlue,
+                      ),
+                ),
+              ),
+              const Divider(height: 16),
+              Text(
+                'Status: Paid',
+                style: Theme.of(sheetContext)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ],
           ),
         ),
-      ),
-      const SizedBox(width: 8),
-      Text(
-        formatCurrency(payout.amount),
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: AppTheme.primaryBlue,
-          fontWeight: FontWeight.w600,
+      );
+    },
+  );
+}
+
+void _showAllTransactionsSheet(
+  BuildContext context,
+  List<_RecentPayout> payouts,
+) {
+  final sorted = [...payouts]..sort((a, b) => b.date.compareTo(a.date));
+
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: SizedBox(
+          height: MediaQuery.of(sheetContext).size.height * 0.75,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'All transactions',
+                        style: Theme.of(sheetContext)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: sorted.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, i) {
+                      final payout = sorted[i];
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          payout.workerName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '${payout.date.year.toString().padLeft(4, '0')}-'
+                          '${payout.date.month.toString().padLeft(2, '0')}-'
+                          '${payout.date.day.toString().padLeft(2, '0')}',
+                        ),
+                        trailing: Text(
+                          formatCurrency(payout.amount),
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.primaryBlue,
+                              ),
+                        ),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _showPayoutDetailsSheet(context, payout);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
-      ),
-    ],
+      );
+    },
   );
 }

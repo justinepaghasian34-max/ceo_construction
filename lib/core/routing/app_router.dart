@@ -30,6 +30,7 @@ import '../../views/admin/admin_history.dart';
 import '../../views/admin/admin_audit_trail.dart';
 import '../../views/admin/admin_material_monitoring.dart';
 import '../../views/admin/admin_financial_monitoring.dart';
+import '../../views/admin/admin_weather_forecast.dart';
 import '../../views/ceo/ceo_home.dart';
 import '../../views/ceo/ceo_dashboard.dart';
 import '../../views/ceo/ceo_analytics.dart';
@@ -222,6 +223,10 @@ class AppRouter {
             GoRoute(
               path: 'dashboard',
               builder: (context, state) => const AdminDashboard(),
+            ),
+            GoRoute(
+              path: 'weather-forecast',
+              builder: (context, state) => const AdminWeatherForecastScreen(),
             ),
             GoRoute(
               path: 'progress-reports',

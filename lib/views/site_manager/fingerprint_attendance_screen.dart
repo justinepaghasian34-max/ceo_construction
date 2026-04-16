@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
@@ -65,6 +66,12 @@ class _FingerprintAttendanceScreenState
     );
     _glow = CurvedAnimation(parent: _glowController, curve: Curves.easeInOut);
     _glowController.repeat(reverse: true);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.worker == null) return;
+      _startMockScan();
+    });
   }
 
   @override
@@ -152,6 +159,17 @@ class _FingerprintAttendanceScreenState
     }
   }
 
+  DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  DateTime _atTime(DateTime day, int hour, int minute) {
+    return DateTime(day.year, day.month, day.day, hour, minute);
+  }
+
+  double _hoursBetween(DateTime start, DateTime end) {
+    if (end.isBefore(start)) return 0.0;
+    return end.difference(start).inMinutes / 60.0;
+  }
+
   Future<void> _markPresentForSelectedWorker(DateTime timeIn) async {
     final selectedName = widget.worker?.workerName.trim();
     if (selectedName == null || selectedName.isEmpty) return;
@@ -162,22 +180,41 @@ class _FingerprintAttendanceScreenState
         ? hive.getAllAttendance()
         : hive.getAttendanceByRecorder(user.id);
 
-    if (allAttendance.isEmpty) return;
-
     bool isSameDay(DateTime a, DateTime b) {
       return a.year == b.year && a.month == b.month && a.day == b.day;
     }
 
-    final today = DateTime.now();
-    final todayAttendance = allAttendance.firstWhere(
-      (a) => isSameDay(a.attendanceDate, today),
-      orElse: () {
-        allAttendance.sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
-        return allAttendance.first;
-      },
-    );
+    final today = _normalizeDate(DateTime.now());
+    AttendanceModel? activeAttendance;
 
-    final activeAttendance = todayAttendance;
+    for (final a in allAttendance) {
+      if (isSameDay(a.attendanceDate, today)) {
+        activeAttendance = a;
+        break;
+      }
+    }
+
+    if (activeAttendance == null) {
+      final userId = user?.id;
+      final projectId = (user != null && user.assignedProjects.isNotEmpty)
+          ? user.assignedProjects.first
+          : '';
+
+      if (userId == null || projectId.isEmpty) return;
+
+      activeAttendance = AttendanceModel(
+        id: const Uuid().v4(),
+        projectId: projectId,
+        recorderId: userId,
+        attendanceDate: today,
+        records: <AttendanceRecord>[],
+        status: 'draft',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        syncStatus: 'pending',
+      );
+      allAttendance.add(activeAttendance);
+    }
 
     final record = activeAttendance.records.firstWhere(
       (r) => r.workerName.trim().toLowerCase() == selectedName.toLowerCase(),
@@ -194,8 +231,22 @@ class _FingerprintAttendanceScreenState
     }
 
     record.isPresent = true;
-    record.timeIn = timeIn;
-    _setWeekdayPresence(record, DateTime.now());
+    final day = _normalizeDate(timeIn);
+    final amIn = _atTime(day, 7, 0);
+    final amOut = _atTime(day, 11, 30);
+    final pmIn = _atTime(day, 13, 0);
+    final pmOut = _atTime(day, 16, 30);
+
+    record.amTimeIn = amIn;
+    record.amTimeOut = amOut;
+    record.pmTimeIn = pmIn;
+    record.pmTimeOut = pmOut;
+
+    record.timeIn = amIn;
+    record.timeOut = pmOut;
+    record.hoursWorked = _hoursBetween(amIn, amOut) + _hoursBetween(pmIn, pmOut);
+
+    _setWeekdayPresence(record, day);
     activeAttendance.updatedAt = DateTime.now();
 
     await hive.saveAttendance(activeAttendance);

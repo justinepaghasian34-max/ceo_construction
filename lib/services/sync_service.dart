@@ -1,9 +1,13 @@
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../core/constants/app_constants.dart';
 import 'firebase_service.dart';
 import 'hive_service.dart';
+import 'geo_tag_service.dart';
+import 'local_notification_service.dart';
 
 class SyncService {
   static SyncService? _instance;
@@ -14,6 +18,19 @@ class SyncService {
   final HiveService _hiveService = HiveService.instance;
   final Connectivity _connectivity = Connectivity();
   final Uuid _uuid = const Uuid();
+  final GeoTagService _geoTagService = GeoTagService.instance;
+
+  bool _isFirestoreUnreachableError(Object e) {
+    final errorText = e.toString().toLowerCase();
+    final looksLikeDns = errorText.contains('unknownhostexception') ||
+        errorText.contains('unable to resolve host') ||
+        errorText.contains('eai_nodata') ||
+        errorText.contains('firestore.googleapis.com');
+    final looksUnavailable = errorText.contains('status{code=unavailable') ||
+        errorText.contains('code=unavailable') ||
+        errorText.contains('unavailable');
+    return looksLikeDns || looksUnavailable;
+  }
 
   bool _isSyncing = false;
   Timer? _syncTimer;
@@ -92,6 +109,11 @@ class SyncService {
       totalSynced += materialUsageResult.synced;
       totalFailed += materialUsageResult.failed;
 
+      // Sync material requests
+      final materialRequestsResult = await _syncMaterialRequests();
+      totalSynced += materialRequestsResult.synced;
+      totalFailed += materialRequestsResult.failed;
+
       // Sync deliveries
       final deliveriesResult = await _syncDeliveries();
       totalSynced += deliveriesResult.synced;
@@ -117,6 +139,35 @@ class SyncService {
       );
 
     } catch (e) {
+      final errorText = e.toString().toLowerCase();
+      final looksLikeDns = errorText.contains('unknownhostexception') ||
+          errorText.contains('unable to resolve host') ||
+          errorText.contains('eai_nodata') ||
+          errorText.contains('firestore.googleapis.com');
+      final looksUnavailable = errorText.contains('status{code=unavailable') ||
+          errorText.contains('code=unavailable') ||
+          errorText.contains('unavailable');
+
+      if (looksLikeDns || looksUnavailable) {
+        if (!kIsWeb) {
+          try {
+            await LocalNotificationService.instance.showNotification(
+              id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
+              title: 'Sync queued',
+              body:
+                  'Unable to reach Firestore. Your submission is saved locally and will sync when the network works.',
+            );
+          } catch (_) {}
+        }
+
+        _syncStatusController.add(SyncStatus.failed);
+        return SyncResult(
+          success: false,
+          message:
+              'Unable to reach Firestore (DNS/network issue). Submission saved locally and queued for sync.',
+        );
+      }
+
       _syncStatusController.add(SyncStatus.failed);
       return SyncResult(success: false, message: 'Sync error: $e');
     } finally {
@@ -132,14 +183,17 @@ class SyncService {
 
     for (final report in pendingReports) {
       try {
-        // Update sync status to syncing
+        // Update sync status
         final updatedReport = report.copyWith(syncStatus: AppConstants.syncStatusSyncing);
         await _hiveService.saveDailyReport(updatedReport);
+
+        final payload = updatedReport.toJson();
+        payload['geoTag'] ??= await _geoTagService.captureGeoTag();
 
         // Upload to Firestore
         await _firebaseService.dailyReportsCollection(report.projectId)
             .doc(report.id)
-            .set(report.toJson());
+            .set(payload);
 
         // Update sync status to completed
         final completedReport = report.copyWith(
@@ -160,6 +214,94 @@ class SyncService {
     return SyncItemResult(synced: synced, failed: failed);
   }
 
+  // Sync material requests
+  Future<SyncItemResult> _syncMaterialRequests() async {
+    final requests = _hiveService
+        .getAllMaterialRequests()
+        .where((r) {
+          final status = (r['syncStatus']?.toString() ?? '').toLowerCase();
+          return status == AppConstants.syncStatusPending ||
+              status == AppConstants.syncStatusFailed;
+        })
+        .toList();
+    if (requests.isEmpty) {
+      return SyncItemResult(synced: 0, failed: 0);
+    }
+
+    int synced = 0;
+    int failed = 0;
+
+    for (final req in requests) {
+      try {
+        final projectId = req['projectId']?.toString();
+        final id = req['id']?.toString();
+        if (projectId == null || id == null || id.isEmpty) {
+          continue;
+        }
+
+        req['geoTag'] ??= await _geoTagService.captureGeoTag();
+        // Mark as completed before writing. We must not call update() after set()
+        // because material_requests updates are admin-only in Firestore rules.
+        req['syncStatus'] = AppConstants.syncStatusCompleted;
+        req['syncedAt'] ??= DateTime.now().toIso8601String();
+        await _hiveService.saveMaterialRequest(id, req);
+
+        await _firebaseService
+            .projectsCollection
+            .doc(projectId)
+            .collection('material_requests')
+            .doc(id)
+            .set(req);
+
+        final notifId = 'notif_material_request_$id';
+        await _firebaseService.notificationsCollection.doc(notifId).set({
+          'id': notifId,
+          'type': AppConstants.notificationMaterialRequest,
+          'audienceRole': 'admin',
+          'title': 'New material request',
+          'message': (req['subject'] ?? 'Material request').toString(),
+          'projectId': projectId,
+          'projectName': (req['projectName'] ?? projectId).toString(),
+          'materialRequestId': id,
+          'createdAt': DateTime.now().toIso8601String(),
+          // Keep userId for backwards compatibility; admins read by audienceRole.
+          'userId': 'admin',
+          'createdByUid': req['createdBy'] ?? '',
+          'createdByName': req['createdByName'] ?? '',
+          'isRead': false,
+        });
+
+        // Ensure local copy stays consistent
+        await _hiveService.saveMaterialRequest(id, req);
+
+        synced++;
+      } catch (e) {
+        if (_isFirestoreUnreachableError(e)) {
+          // Keep pending so it retries later, and propagate up so the user gets
+          // the queued message + local notification.
+          req['syncStatus'] = AppConstants.syncStatusPending;
+          req.remove('syncedAt');
+          final id = req['id']?.toString();
+          if (id != null && id.isNotEmpty) {
+            await _hiveService.saveMaterialRequest(id, req);
+          }
+          rethrow;
+        } else {
+          req['syncStatus'] = AppConstants.syncStatusFailed;
+          req['lastError'] = e.toString();
+          req['lastErrorAt'] = DateTime.now().toIso8601String();
+          final id = req['id']?.toString();
+          if (id != null && id.isNotEmpty) {
+            await _hiveService.saveMaterialRequest(id, req);
+          }
+          failed++;
+        }
+      }
+    }
+
+    return SyncItemResult(synced: synced, failed: failed);
+  }
+
   // Sync attendance records
   Future<SyncItemResult> _syncAttendance() async {
     final pendingAttendance = _hiveService.getPendingSyncAttendance();
@@ -172,10 +314,16 @@ class SyncService {
         final updatedAttendance = attendance.copyWith(syncStatus: AppConstants.syncStatusSyncing);
         await _hiveService.saveAttendance(updatedAttendance);
 
+        final payload = updatedAttendance.toJson();
+        payload['geoTag'] ??= await _geoTagService.captureGeoTag();
+        payload['attendanceDateTs'] = Timestamp.fromDate(updatedAttendance.attendanceDate);
+        payload['createdAtTs'] = Timestamp.fromDate(updatedAttendance.createdAt);
+        payload['updatedAtTs'] = Timestamp.fromDate(updatedAttendance.updatedAt);
+
         // Upload to Firestore
         await _firebaseService.attendanceCollection(attendance.projectId)
             .doc(attendance.id)
-            .set(attendance.toJson());
+            .set(payload);
 
         // Update sync status to completed
         final completedAttendance = attendance.copyWith(
@@ -186,10 +334,16 @@ class SyncService {
 
         synced++;
       } catch (e) {
-        // Update sync status to failed
-        final failedAttendance = attendance.copyWith(syncStatus: AppConstants.syncStatusFailed);
-        await _hiveService.saveAttendance(failedAttendance);
-        failed++;
+        if (_isFirestoreUnreachableError(e)) {
+          final pending = attendance.copyWith(syncStatus: AppConstants.syncStatusPending);
+          await _hiveService.saveAttendance(pending);
+          rethrow;
+        } else {
+          final failedAttendance =
+              attendance.copyWith(syncStatus: AppConstants.syncStatusFailed);
+          await _hiveService.saveAttendance(failedAttendance);
+          failed++;
+        }
       }
     }
 
@@ -198,40 +352,109 @@ class SyncService {
 
   // Sync material usage
   Future<SyncItemResult> _syncMaterialUsage() async {
-    final allMaterialUsage = _hiveService.getAllMaterialUsage();
-    final pendingMaterialUsage = allMaterialUsage
-        .where((item) => item['syncStatus'] == AppConstants.syncStatusPending)
+    final usageItems = _hiveService
+        .getAllMaterialUsage()
+        .where((u) {
+          final status = (u['syncStatus']?.toString() ?? '').toLowerCase();
+          return status == AppConstants.syncStatusPending ||
+              status == AppConstants.syncStatusFailed;
+        })
         .toList();
+    if (usageItems.isEmpty) {
+      return SyncItemResult(synced: 0, failed: 0);
+    }
 
     int synced = 0;
     int failed = 0;
 
-    for (final usage in pendingMaterialUsage) {
+    for (final usage in usageItems) {
       try {
-        final id = usage['id'] as String;
-        final projectId = usage['projectId'] as String;
-        final reportId = usage['reportId'] as String;
+        final projectId = usage['projectId']?.toString();
+        final reportId = usage['reportId']?.toString();
+        final id = usage['id']?.toString();
+        if (projectId == null || reportId == null || id == null) {
+          continue;
+        }
 
-        // Update sync status
-        usage['syncStatus'] = AppConstants.syncStatusSyncing;
+        final inventoryItemId = usage['inventoryItemId']?.toString();
+        final quantityRaw = usage['quantity'];
+        final usedQuantity = quantityRaw is num
+            ? quantityRaw.toDouble()
+            : double.tryParse(quantityRaw?.toString() ?? '0') ?? 0.0;
+
+        usage['geoTag'] ??= await _geoTagService.captureGeoTag();
         await _hiveService.saveMaterialUsage(id, usage);
 
         // Upload to Firestore
-        await _firebaseService.materialUsageCollection(projectId, reportId)
+        await _firebaseService
+            .materialUsageCollection(projectId, reportId)
             .doc(id)
             .set(usage);
+
+        // Best-effort: decrement inventory stock when usage is linked to an
+        // inventory item.
+        if (inventoryItemId != null &&
+            inventoryItemId.isNotEmpty &&
+            usedQuantity > 0) {
+          try {
+            await _firebaseService.firestore.runTransaction((tx) async {
+              final invRef = _firebaseService
+                  .materialInventoryCollection(projectId)
+                  .doc(inventoryItemId);
+              final invSnap = await tx.get(invRef);
+              if (!invSnap.exists) return;
+
+              final invData =
+                  (invSnap.data() as Map?)?.cast<String, dynamic>() ??
+                      <String, dynamic>{};
+              final stockRaw = invData['stock'];
+              final currentStock = stockRaw is num
+                  ? stockRaw.toDouble()
+                  : double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
+
+              final newStock =
+                  (currentStock - usedQuantity).clamp(0.0, double.infinity);
+              tx.update(invRef, {
+                'stock': newStock,
+                'updatedAt': FieldValue.serverTimestamp(),
+              });
+            });
+          } catch (_) {
+            // Ignore inventory update errors; usage upload already succeeded.
+          }
+        }
 
         // Update sync status to completed
         usage['syncStatus'] = AppConstants.syncStatusCompleted;
         usage['syncedAt'] = DateTime.now().toIso8601String();
         await _hiveService.saveMaterialUsage(id, usage);
 
+        // Keep Firestore in sync with local status so Admin sees correct status.
+        await _firebaseService
+            .materialUsageCollection(projectId, reportId)
+            .doc(id)
+            .update({
+          'syncStatus': AppConstants.syncStatusCompleted,
+          'syncedAt': usage['syncedAt'],
+        });
+
         synced++;
       } catch (e) {
-        // Update sync status to failed
-        usage['syncStatus'] = AppConstants.syncStatusFailed;
-        await _hiveService.saveMaterialUsage(usage['id'], usage);
-        failed++;
+        if (_isFirestoreUnreachableError(e)) {
+          usage['syncStatus'] = AppConstants.syncStatusPending;
+          final id = usage['id']?.toString();
+          if (id != null && id.isNotEmpty) {
+            await _hiveService.saveMaterialUsage(id, usage);
+          }
+          rethrow;
+        } else {
+          usage['syncStatus'] = AppConstants.syncStatusFailed;
+          final id = usage['id']?.toString();
+          if (id != null && id.isNotEmpty) {
+            await _hiveService.saveMaterialUsage(id, usage);
+          }
+          failed++;
+        }
       }
     }
 

@@ -44,9 +44,15 @@ dependencies:
   
   # Charts & Analytics
   fl_chart: ^0.69.0
+
+  # Maps (for Weather Maps)
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  flutter_map_cancellable_tile_provider: ^3.0.2
   
   # Notifications
   flutter_local_notifications: ^17.2.3
+  timezone: ^0.9.4
 
 dev_dependencies:
   flutter_test:

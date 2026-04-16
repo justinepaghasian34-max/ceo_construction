@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'services/firebase_service.dart';
 import 'services/hive_service.dart';
+import 'services/local_notification_service.dart';
 import 'services/sync_service.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
@@ -42,6 +43,9 @@ void main() async {
     await FirebaseService.initialize().timeout(const Duration(seconds: 10));
     await HiveService.initialize().timeout(const Duration(seconds: 20));
     await SyncService.instance.initialize().timeout(const Duration(seconds: 10));
+    await LocalNotificationService.instance
+        .initialize()
+        .timeout(const Duration(seconds: 10));
   } catch (e, st) {
     startupError = e;
     startupStack = st;

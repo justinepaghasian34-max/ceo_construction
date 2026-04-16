@@ -3,6 +3,8 @@ class AppConstants {
   static const String appName = 'CEO Construction Monitoring';
   static const String appVersion = '1.0.0';
 
+  static const String warehouseProjectId = 'WAREHOUSE';
+
   // User Roles
   static const String roleSiteManager = 'site_manager';
   static const String roleAdmin = 'admin';
@@ -34,6 +36,7 @@ class AppConstants {
   static const String attendanceBox = 'attendance_box';
   static const String materialUsageBox = 'material_usage_box';
   static const String materialInventoryBox = 'material_inventory_box';
+  static const String materialRequestsBox = 'material_requests_box';
   static const String deliveriesBox = 'deliveries_box';
   static const String syncQueueBox = 'sync_queue_box';
   static const String settingsBox = 'settings_box';
@@ -130,6 +133,7 @@ class RouteNames {
   static const String adminAuditTrail = '/admin/audit-trail';
   static const String adminMaterialMonitoring = '/admin/material-monitoring';
   static const String adminFinancialMonitoring = '/admin/financial-monitoring';
+  static const String adminWeatherForecast = '/admin/weather-forecast';
 
   // Common Routes
   static const String profile = '/profile';

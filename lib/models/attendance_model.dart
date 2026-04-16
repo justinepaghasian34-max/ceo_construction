@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 part 'attendance_model.g.dart';
 
@@ -55,20 +56,30 @@ class AttendanceModel extends HiveObject {
   bool get isPendingSync => syncStatus == 'pending';
   bool get isSynced => syncStatus == 'completed';
 
+  static DateTime _parseDateTime(dynamic value) {
+    if (value == null) return DateTime.now();
+    if (value is DateTime) return value;
+    if (value is Timestamp) return value.toDate();
+    if (value is String) {
+      return DateTime.tryParse(value) ?? DateTime.now();
+    }
+    return DateTime.now();
+  }
+
   factory AttendanceModel.fromJson(Map<String, dynamic> json) {
     return AttendanceModel(
       id: json['id'] ?? '',
       projectId: json['projectId'] ?? '',
       recorderId: json['recorderId'] ?? '',
-      attendanceDate: DateTime.parse(json['attendanceDate'] ?? DateTime.now().toIso8601String()),
+      attendanceDate: _parseDateTime(json['attendanceDate']),
       records: (json['records'] as List<dynamic>?)
           ?.map((e) => AttendanceRecord.fromJson(e))
           .toList() ?? [],
       status: json['status'] ?? 'draft',
-      createdAt: DateTime.parse(json['createdAt'] ?? DateTime.now().toIso8601String()),
-      updatedAt: DateTime.parse(json['updatedAt'] ?? DateTime.now().toIso8601String()),
+      createdAt: _parseDateTime(json['createdAt']),
+      updatedAt: _parseDateTime(json['updatedAt']),
       syncStatus: json['syncStatus'] ?? 'pending',
-      syncedAt: json['syncedAt'] != null ? DateTime.parse(json['syncedAt']) : null,
+      syncedAt: json['syncedAt'] != null ? _parseDateTime(json['syncedAt']) : null,
     );
   }
 
@@ -211,15 +222,26 @@ class AttendanceRecord extends HiveObject {
       workerName: json['workerName'] ?? '',
       position: json['position'] ?? '',
       isPresent: json['isPresent'] ?? false,
-      timeIn: json['timeIn'] != null ? DateTime.parse(json['timeIn']) : null,
-      timeOut: json['timeOut'] != null ? DateTime.parse(json['timeOut']) : null,
+      timeIn:
+          json['timeIn'] != null ? AttendanceModel._parseDateTime(json['timeIn']) : null,
+      timeOut: json['timeOut'] != null
+          ? AttendanceModel._parseDateTime(json['timeOut'])
+          : null,
       hoursWorked: (json['hoursWorked'] ?? 0).toDouble(),
       overtimeHours: (json['overtimeHours'] ?? 0).toDouble(),
       remarks: json['remarks'],
-      amTimeIn: json['amTimeIn'] != null ? DateTime.parse(json['amTimeIn']) : null,
-      amTimeOut: json['amTimeOut'] != null ? DateTime.parse(json['amTimeOut']) : null,
-      pmTimeIn: json['pmTimeIn'] != null ? DateTime.parse(json['pmTimeIn']) : null,
-      pmTimeOut: json['pmTimeOut'] != null ? DateTime.parse(json['pmTimeOut']) : null,
+      amTimeIn: json['amTimeIn'] != null
+          ? AttendanceModel._parseDateTime(json['amTimeIn'])
+          : null,
+      amTimeOut: json['amTimeOut'] != null
+          ? AttendanceModel._parseDateTime(json['amTimeOut'])
+          : null,
+      pmTimeIn: json['pmTimeIn'] != null
+          ? AttendanceModel._parseDateTime(json['pmTimeIn'])
+          : null,
+      pmTimeOut: json['pmTimeOut'] != null
+          ? AttendanceModel._parseDateTime(json['pmTimeOut'])
+          : null,
       workerType: (json['workerType'] ?? 'labor').toString(),
       rate: json['rate'] is num
           ? (json['rate'] as num).toDouble()

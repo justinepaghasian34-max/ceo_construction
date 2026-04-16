@@ -11,6 +11,8 @@ const visionClient = new vision.ImageAnnotatorClient();
 const geminiApiKey = defineSecret('GEMINI_API_KEY');
 const geminiModel = defineString('GEMINI_MODEL', { default: 'gemini-1.5-flash-latest' });
 
+const visualCrossingApiKey = defineSecret('VISUAL_CROSSING_API_KEY');
+
 let _geminiModelCache = {
   model: null,
   expiresAtMs: 0,
@@ -318,6 +320,37 @@ async function requireGovtrackRole(auth) {
   return role;
 }
 
+async function requireProjectAccess({ auth, role, projectId }) {
+  if (!auth || !auth.uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  if (typeof projectId !== 'string' || !projectId.trim()) {
+    throw new functions.https.HttpsError('invalid-argument', 'projectId is required');
+  }
+
+  const normalizedRole = typeof role === 'string' ? role.trim() : '';
+  const isPrivileged = normalizedRole === 'admin' || normalizedRole === 'ceo_head';
+  if (isPrivileged) return;
+
+  const uid = auth.uid;
+  const projectRef = admin.firestore().collection('projects').doc(projectId);
+  const projectSnap = await projectRef.get();
+  if (!projectSnap.exists) {
+    throw new functions.https.HttpsError('not-found', 'Project not found.');
+  }
+  const projectData = projectSnap.data() || {};
+
+  const siteManagerId = typeof projectData.siteManagerId === 'string' ? projectData.siteManagerId : '';
+  if (siteManagerId && siteManagerId === uid) return;
+
+  const userSnap = await admin.firestore().collection('users').doc(uid).get();
+  const userData = userSnap.exists ? (userSnap.data() || {}) : {};
+  const assigned = Array.isArray(userData.assignedProjects) ? userData.assignedProjects : [];
+  if (assigned.includes(projectId)) return;
+
+  throw new functions.https.HttpsError('permission-denied', 'You do not have access to this project.');
+}
+
 // AI Analytics Cloud Function
 exports.analyzeProjectProgress = functions.firestore
   .document('projects/{projectId}/daily_reports/{reportId}')
@@ -506,7 +539,8 @@ exports.revalidatePayrollOnAttendanceChange = functions.firestore
 // AI Progress Image Verification (Cloud Vision MVP)
 exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   try {
-    const auth = await resolveAuthOptional(context, data);
+    const auth = await resolveAuth(context, data);
+    const role = await requireGovtrackRole(auth);
 
     const isEmulator =
       process.env.FUNCTIONS_EMULATOR === 'true' ||
@@ -518,6 +552,15 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     const fileName = typeof data?.fileName === 'string' ? data.fileName : null;
     const projectId = typeof data?.projectId === 'string' ? data.projectId : null;
     const projectName = typeof data?.projectName === 'string' ? data.projectName : null;
+
+    if (!projectId) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'projectId is required.'
+      );
+    }
+
+    await requireProjectAccess({ auth, role, projectId });
 
     if (!imageUrl && !storagePath) {
       throw new functions.https.HttpsError(
@@ -536,7 +579,7 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
       const status = 'on_track';
 
       const doc = {
-        userId: auth?.auth?.uid || null,
+        userId: auth.uid,
         projectId: projectId || null,
         projectName: projectName || null,
         imageUrl: imageUrl || null,
@@ -633,7 +676,7 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     const status = pass ? 'on_track' : 'high_risk';
 
     const doc = {
-      userId: auth?.auth?.uid || null,
+      userId: auth.uid,
       projectId: projectId || null,
       projectName: projectName || null,
       imageUrl: imageUrl || null,
@@ -686,6 +729,71 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   }
 });
 
+exports.visualCrossingMonthlyForecast = functions
+  .runWith({ secrets: [visualCrossingApiKey], timeoutSeconds: 60 })
+  .https.onCall(async (data, context) => {
+    if (!context || !context.auth || !context.auth.uid) {
+      throw new functions.https.HttpsError(
+        'unauthenticated',
+        'User must be authenticated.'
+      );
+    }
+
+    const city = typeof data?.city === 'string' ? data.city.trim() : '';
+    const start = typeof data?.start === 'string' ? data.start.trim() : '';
+    const end = typeof data?.end === 'string' ? data.end.trim() : '';
+    if (!city || !start || !end) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'city, start, and end are required.'
+      );
+    }
+
+    const apiKey = visualCrossingApiKey.value();
+    if (!apiKey) {
+      throw new functions.https.HttpsError(
+        'failed-precondition',
+        'VISUAL_CROSSING_API_KEY is not configured on the server.'
+      );
+    }
+
+    const base = 'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline';
+    const url = `${base}/${encodeURIComponent(city)}/${encodeURIComponent(start)}/${encodeURIComponent(end)}?unitGroup=metric&include=days&key=${encodeURIComponent(apiKey)}&contentType=json`;
+
+    let res;
+    let json;
+    try {
+      res = await fetch(url, { method: 'GET' });
+      json = await res.json().catch(() => ({}));
+    } catch (e) {
+      throw new functions.https.HttpsError(
+        'unavailable',
+        'Unable to reach weather provider. Please try again later.'
+      );
+    }
+
+    if (!res.ok) {
+      const msg =
+        (json && (json.error?.message || json.message)) ||
+        `Weather provider error (${res.status})`;
+      const code = res.status === 401 || res.status === 403 ? 'failed-precondition' : 'unavailable';
+      throw new functions.https.HttpsError(code, msg);
+    }
+
+    const days = Array.isArray(json?.days) ? json.days : [];
+    const mapped = days.map((d) => ({
+      datetime: d?.datetime,
+      tempmin: d?.tempmin,
+      tempmax: d?.tempmax,
+      humidity: d?.humidity,
+      windspeed: d?.windspeed,
+      precipprob: d?.precipprob,
+      conditions: d?.conditions,
+    }));
+
+    return { days: mapped };
+  });
+
 exports.govtrackChatGemini = functions
   .runWith({ secrets: [geminiApiKey], timeoutSeconds: 180 })
   .https.onCall(async (data, context) => {
@@ -714,17 +822,18 @@ exports.govtrackChatGemini = functions
     const projectId = typeof data?.projectId === 'string' ? data.projectId.trim() : '';
     const projectName = typeof data?.projectName === 'string' ? data.projectName.trim() : '';
 
-    // If the caller is asking for project-aware intelligence, require auth and verify access.
-    const auth = projectId ? await resolveAuth(context, data) : await resolveAuthOptional(context, data);
+    const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl.trim() : '';
+    const storagePath = typeof data?.storagePath === 'string' ? data.storagePath.trim() : '';
+
+    // Require auth if the caller wants project context OR is providing an image (Vision/GCS access).
+    const requiresAuth = Boolean(projectId) || Boolean(imageUrl || storagePath);
+    const auth = requiresAuth ? await resolveAuth(context, data) : await resolveAuthOptional(context, data);
     let role = null;
     if (auth) {
       role = await requireGovtrackRole(auth);
     } else if (projectId) {
       throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated to use project context.');
     }
-
-    const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl.trim() : '';
-    const storagePath = typeof data?.storagePath === 'string' ? data.storagePath.trim() : '';
 
     let ocrText = '';
     let ocrLabels = [];
@@ -1186,13 +1295,23 @@ exports.estimateProgressPercent = functions.https.onCall(async (data, context) =
       hasContextAuth: Boolean(context && context.auth),
       hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
     });
-    await resolveAuthOptional(context, data);
+    const auth = await resolveAuth(context, data);
+    const role = await requireGovtrackRole(auth);
 
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl : null;
     const storagePath = typeof data?.storagePath === 'string' ? data.storagePath : null;
     const fileName = typeof data?.fileName === 'string' ? data.fileName : null;
     const projectId = typeof data?.projectId === 'string' ? data.projectId : null;
     const projectName = typeof data?.projectName === 'string' ? data.projectName : null;
+
+    if (!projectId) {
+      throw new functions.https.HttpsError(
+        'invalid-argument',
+        'projectId is required.'
+      );
+    }
+
+    await requireProjectAccess({ auth, role, projectId });
 
     if (!imageUrl && !storagePath) {
       throw new functions.https.HttpsError(

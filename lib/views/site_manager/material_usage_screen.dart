@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
+import '../../services/geo_tag_service.dart';
 import '../../services/firebase_service.dart';
 import '../../services/hive_service.dart';
 import '../../services/sync_service.dart';
@@ -133,6 +134,7 @@ class _MaterialUsageScreenState extends State<MaterialUsageScreen> {
 
     final id = const Uuid().v4();
     final nowIso = DateTime.now().toIso8601String();
+    final geoTag = await GeoTagService.instance.captureGeoTag();
     final data = <String, dynamic>{
       'id': id,
       'projectId': projectId,
@@ -146,6 +148,7 @@ class _MaterialUsageScreenState extends State<MaterialUsageScreen> {
       'status': 'used',
       'syncStatus': AppConstants.syncStatusPending,
       'date': nowIso,
+      'geoTag': geoTag,
     };
 
     await HiveService.instance.saveMaterialUsage(id, data);
@@ -185,15 +188,29 @@ class _MaterialUsageScreenState extends State<MaterialUsageScreen> {
       final result = await SyncService.instance.syncPendingData();
       if (!mounted) return;
 
+      final reportId = _todayReportId(projectId);
+      final remainingUnsynced = HiveService.instance
+          .getAllMaterialUsage()
+          .where((u) => (u['reportId'] ?? '').toString() == reportId)
+          .where((u) {
+            final status = (u['syncStatus']?.toString() ?? '').toLowerCase();
+            return status == AppConstants.syncStatusPending ||
+                status == AppConstants.syncStatusFailed;
+          })
+          .isNotEmpty;
+      final isSynced = !remainingUnsynced;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            result.success
+            isSynced
                 ? 'Material usage submitted successfully'
-                : 'Material usage queued for sync when online',
+                : (result.message.isNotEmpty
+                    ? result.message
+                    : 'Material usage queued for sync when online'),
           ),
           backgroundColor:
-              result.success ? AppTheme.softGreen : AppTheme.warningOrange,
+              isSynced ? AppTheme.softGreen : AppTheme.warningOrange,
         ),
       );
 

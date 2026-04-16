@@ -332,10 +332,10 @@ class _AiDashboardState extends State<_AiDashboard> {
   String? _selectedProjectId;
   String? _selectedProjectName;
 
-  Uint8List? _selectedImageBytes;
-  String? _selectedImageName;
+  final List<Uint8List> _selectedImageBytesList = <Uint8List>[];
+  final List<String> _selectedImageNames = <String>[];
 
-  String? _lastAnalyzedImageUrl;
+  final List<String> _lastAnalyzedImageUrls = <String>[];
   double? _lastAnalyzedProgressPercent;
 
   double? _lastPhotoLat;
@@ -628,6 +628,11 @@ class _AiDashboardState extends State<_AiDashboard> {
         );
       }
 
+      analysis = <String, dynamic>{
+        ...analysis,
+        'progressPercent': progressPercent,
+      };
+
       await FirebaseService.instance.projectsCollection.doc(projectId).collection('govtrack_reports').add(
         <String, dynamic>{
           'projectId': projectId,
@@ -674,23 +679,35 @@ class _AiDashboardState extends State<_AiDashboard> {
   }
 
   double _calculateProgressPercent(List<Map<String, dynamic>> reports) {
-    var total = 0.0;
-    var count = 0;
+    final Map<String, double> maxPctByWorkItem = {};
+
     for (final r in reports) {
-      final accomplishments = (r['workAccomplishments'] as List?)?.cast<dynamic>() ?? const [];
+      final accomplishments =
+          (r['workAccomplishments'] as List?)?.cast<dynamic>() ?? const [];
       for (final raw in accomplishments) {
-        final item = (raw as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+        final item = (raw as Map?)?.cast<String, dynamic>() ??
+            const <String, dynamic>{};
         final pct = item['percentageComplete'];
-        if (pct is num) {
-          total += pct.toDouble();
-          count += 1;
+        if (pct is! num) continue;
+
+        final wbs = (item['wbsCode'] ?? '').toString().trim();
+        final desc = (item['description'] ?? '').toString().trim();
+        final key = wbs.isNotEmpty ? wbs : desc;
+        if (key.isEmpty) continue;
+
+        final value = pct.toDouble().clamp(0.0, 100.0).toDouble();
+        final current = maxPctByWorkItem[key];
+        if (current == null || value > current) {
+          maxPctByWorkItem[key] = value;
         }
       }
     }
-    if (count == 0) return 0;
-    final avg = total / count;
+
+    if (maxPctByWorkItem.isEmpty) return 0;
+    final total = maxPctByWorkItem.values.fold<double>(0, (a, b) => a + b);
+    final avg = total / maxPctByWorkItem.length;
     if (avg.isNaN) return 0;
-    return avg.clamp(0, 100);
+    return avg.clamp(0.0, 100.0).toDouble();
   }
 
   Future<String> _tryGetUserEmail(String userId) async {
@@ -838,7 +855,7 @@ class _AiDashboardState extends State<_AiDashboard> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 _UploadDropzone(
-                  bytes: _selectedImageBytes,
+                  bytesList: _selectedImageBytesList,
                   onPick: _pickDailyProgressImage,
                   stampText: _buildGpsStampText(),
                 ),
@@ -853,7 +870,12 @@ class _AiDashboardState extends State<_AiDashboard> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                     ),
                     icon: const Icon(Icons.upload_rounded, size: 18),
-                    label: const Text('Upload Photo', style: TextStyle(fontWeight: FontWeight.w900)),
+                    label: Text(
+                      _selectedImageBytesList.isEmpty
+                          ? 'Upload Photo'
+                          : 'Upload Photos (${_selectedImageBytesList.length})',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -960,7 +982,7 @@ class _AiDashboardState extends State<_AiDashboard> {
         final docs = snapshot.data?.docs ?? const [];
         if (docs.isEmpty) {
           if (_lastAnalysis == null) {
-            return const _EmptyHint(text: 'No GovTrack reports generated yet.');
+            return const SizedBox.shrink();
           }
           return _GovTrackReportCard(
             projectName: _selectedProjectName ?? 'Selected Project',
@@ -1330,15 +1352,36 @@ class _AiDashboardState extends State<_AiDashboard> {
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         final picker = ImagePicker();
-        final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 92);
-        if (file == null) return;
-        final bytes = await file.readAsBytes();
+        final files = await picker.pickMultiImage(imageQuality: 92);
+        if (files.isEmpty) return;
+        if (files.length > 15) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Please select up to 15 images only.')),
+          );
+          return;
+        }
+
+        final bytesList = <Uint8List>[];
+        final names = <String>[];
+        for (final f in files) {
+          final b = await f.readAsBytes();
+          if (b.isEmpty) continue;
+          bytesList.add(Uint8List.fromList(b));
+          names.add(f.name);
+        }
+        if (bytesList.isEmpty) return;
+
         if (!mounted) return;
         setState(() {
-          _selectedImageBytes = Uint8List.fromList(bytes);
-          _selectedImageName = file.name;
+          _selectedImageBytesList
+            ..clear()
+            ..addAll(bytesList);
+          _selectedImageNames
+            ..clear()
+            ..addAll(names);
           _lastAnalyzedProgressPercent = null;
-          _lastAnalyzedImageUrl = null;
+          _lastAnalyzedImageUrls.clear();
           _lastPhotoLat = null;
           _lastPhotoLng = null;
           _lastPhotoAddress = null;
@@ -1347,17 +1390,39 @@ class _AiDashboardState extends State<_AiDashboard> {
         return;
       }
 
-      final result = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        withData: true,
+        allowMultiple: true,
+      );
       if (result == null || result.files.isEmpty) return;
-      final picked = result.files.first;
-      final bytes = picked.bytes;
-      if (bytes == null || bytes.isEmpty) return;
+      if (result.files.length > 15) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please select up to 15 images only.')),
+        );
+        return;
+      }
+
+      final bytesList = <Uint8List>[];
+      final names = <String>[];
+      for (final picked in result.files) {
+        final bytes = picked.bytes;
+        if (bytes == null || bytes.isEmpty) continue;
+        bytesList.add(Uint8List.fromList(bytes));
+        names.add(picked.name);
+      }
+      if (bytesList.isEmpty) return;
       if (!mounted) return;
       setState(() {
-        _selectedImageBytes = Uint8List.fromList(bytes);
-        _selectedImageName = picked.name;
+        _selectedImageBytesList
+          ..clear()
+          ..addAll(bytesList);
+        _selectedImageNames
+          ..clear()
+          ..addAll(names);
         _lastAnalyzedProgressPercent = null;
-        _lastAnalyzedImageUrl = null;
+        _lastAnalyzedImageUrls.clear();
         _lastPhotoLat = null;
         _lastPhotoLng = null;
         _lastPhotoAddress = null;
@@ -1454,10 +1519,13 @@ class _AiDashboardState extends State<_AiDashboard> {
         final bytes = await file.readAsBytes();
         if (!mounted) return;
         setState(() {
-          _selectedImageBytes = Uint8List.fromList(bytes);
-          _selectedImageName = file.name;
+          if (_selectedImageBytesList.length >= 15) {
+            return;
+          }
+          _selectedImageBytesList.add(Uint8List.fromList(bytes));
+          _selectedImageNames.add(file.name);
           _lastAnalyzedProgressPercent = null;
-          _lastAnalyzedImageUrl = null;
+          _lastAnalyzedImageUrls.clear();
         });
         return;
       }
@@ -1479,18 +1547,13 @@ class _AiDashboardState extends State<_AiDashboard> {
 
     final direct = analysis['progressPercent'] ?? analysis['progress_percent'] ?? analysis['progress'];
     if (direct is num) {
-      return direct.toDouble().clamp(0, 100);
+      return direct.toDouble().clamp(0.0, 100.0).toDouble();
     }
 
     final schedule = (analysis['schedule'] as Map?)?.cast<String, dynamic>();
     final schedulePct = schedule?['progressPercent'] ?? schedule?['progress'];
     if (schedulePct is num) {
-      return schedulePct.toDouble().clamp(0, 100);
-    }
-
-    final confidence = analysis['confidence'];
-    if (confidence is num) {
-      return (confidence.toDouble().clamp(0.0, 1.0) * 100).clamp(0, 100);
+      return schedulePct.toDouble().clamp(0.0, 100.0).toDouble();
     }
     return null;
   }
@@ -1498,20 +1561,49 @@ class _AiDashboardState extends State<_AiDashboard> {
   bool _canSubmitProgressToAdmin() {
     return _selectedProjectId != null &&
         _lastAnalysis != null &&
-        _lastAnalyzedProgressPercent != null &&
-        (_lastAnalyzedImageUrl?.isNotEmpty ?? false);
+        _lastAnalyzedImageUrls.isNotEmpty;
   }
 
   Future<void> _submitProgressToAdmin() async {
     final projectId = _selectedProjectId;
     if (projectId == null) return;
     if (_lastAnalysis == null) return;
-    if (_lastAnalyzedProgressPercent == null) return;
+    final progressPercent = (_lastAnalyzedProgressPercent ?? 0.0)
+        .clamp(0.0, 100.0)
+        .toDouble();
 
     try {
       final projectDoc = await FirebaseService.instance.projectsCollection.doc(projectId).get();
       final projectData = (projectDoc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
       _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
+
+      final projectName = _selectedProjectName ?? (projectData['name'] ?? 'Selected Project').toString();
+      final assignedSiteManagerId = (projectData['siteManagerId'] ?? '').toString().trim();
+      final assignedSiteManagerName = (projectData['siteManagerName'] ?? '').toString().trim();
+      final assignedSiteManagerEmail = assignedSiteManagerId.isEmpty
+          ? ''
+          : await _tryGetUserEmail(assignedSiteManagerId);
+
+      final currentUser = AuthService.instance.currentUser;
+      await FirebaseService.instance.aiAnalysisCollection.add(
+        <String, dynamic>{
+          'kind': 'govtrack_progress_report',
+          'projectId': projectId,
+          'projectName': projectName,
+          'imageUrl': _lastAnalyzedImageUrls.isNotEmpty ? _lastAnalyzedImageUrls.first : null,
+          'imageUrls': _lastAnalyzedImageUrls,
+          'progressPercent': progressPercent,
+          'analysis': _lastAnalysis,
+          'assignedSiteManagerId': assignedSiteManagerId,
+          'assignedSiteManagerName': assignedSiteManagerName,
+          'assignedSiteManagerEmail': assignedSiteManagerEmail,
+          'submittedByUid': FirebaseAuth.instance.currentUser?.uid,
+          'submittedById': currentUser?.id,
+          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedByEmail': currentUser?.email,
+          'createdAt': FieldValue.serverTimestamp(),
+        },
+      );
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1532,9 +1624,16 @@ class _AiDashboardState extends State<_AiDashboard> {
       );
       return;
     }
-    if (_selectedImageBytes == null) {
+    if (_selectedImageBytesList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Upload a site photo first.')),
+      );
+      return;
+    }
+
+    if (_selectedImageBytesList.length > 15) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select up to 15 images only.')),
       );
       return;
     }
@@ -1550,34 +1649,93 @@ class _AiDashboardState extends State<_AiDashboard> {
         );
       }
 
-      final idToken = await fbUser.getIdToken(true);
-      final now = DateTime.now();
-      final fileName = (_selectedImageName?.isNotEmpty ?? false) ? _selectedImageName! : 'site_photo.jpg';
-      final safeFileName = fileName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-      final storagePath = 'ai_verifications/${now.millisecondsSinceEpoch}_$safeFileName';
-      final downloadUrl = await FirebaseService.instance.uploadFile(
-        storagePath,
-        _selectedImageBytes!,
-        contentType: _guessContentType(fileName),
-      );
+      await fbUser.getIdToken(true);
+      final verifyCallable = FirebaseFunctions.instance.httpsCallable('verifyProgressImage');
+      final estimateCallable = FirebaseFunctions.instance.httpsCallable('estimateProgressPercent');
 
-      final callable = FirebaseFunctions.instance.httpsCallable('verifyProgressImage');
-      final res = await callable
-          .call(<String, dynamic>{
-        'imageUrl': downloadUrl,
-        'storagePath': storagePath,
-        'fileName': fileName,
-        'projectId': _selectedProjectId,
-        'projectName': _selectedProjectName,
-        'idToken': idToken,
-      })
-          .timeout(const Duration(seconds: 90));
+      final urls = <String>[];
+      final perImage = <Map<String, dynamic>>[];
+      final progressValues = <double>[];
 
-      final data = (res.data as Map?)?.cast<String, dynamic>();
+      for (var i = 0; i < _selectedImageBytesList.length; i++) {
+        final now = DateTime.now();
+        final rawName = (i < _selectedImageNames.length && _selectedImageNames[i].trim().isNotEmpty)
+            ? _selectedImageNames[i]
+            : 'site_photo_${i + 1}.jpg';
+        final safeFileName = rawName.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+        final storagePath = 'ai_verifications/${now.millisecondsSinceEpoch}_${i + 1}_$safeFileName';
+
+        final downloadUrl = await FirebaseService.instance.uploadFile(
+          storagePath,
+          _selectedImageBytesList[i],
+          contentType: _guessContentType(rawName),
+        );
+        urls.add(downloadUrl);
+
+        final results = await Future.wait<dynamic>([
+          verifyCallable
+              .call(<String, dynamic>{
+            'imageUrl': downloadUrl,
+            'projectId': _selectedProjectId,
+            'projectName': _selectedProjectName,
+            'fileName': rawName,
+          })
+              .timeout(const Duration(seconds: 60)),
+          estimateCallable
+              .call(<String, dynamic>{
+            'imageUrl': downloadUrl,
+            'storagePath': storagePath,
+            'projectId': _selectedProjectId,
+            'projectName': _selectedProjectName,
+            'fileName': rawName,
+          })
+              .timeout(const Duration(seconds: 60)),
+        ]);
+
+        final verifyData = (results[0] as HttpsCallableResult).data;
+        final estimateData = (results[1] as HttpsCallableResult).data;
+
+        final verifyMap = (verifyData as Map?)?.cast<String, dynamic>();
+        final estimateMap = (estimateData as Map?)?.cast<String, dynamic>();
+
+        final ocrProgress = estimateMap == null ? null : estimateMap['progressPercent'];
+        final ocrProgressPercent = (ocrProgress is num)
+            ? ocrProgress.toDouble().clamp(0.0, 100.0).toDouble()
+            : null;
+
+        final fallbackPercent = _extractProgressPercentFromAnalysis(verifyMap);
+        final pct = ocrProgressPercent ?? fallbackPercent;
+        if (pct != null) {
+          progressValues.add(pct);
+        }
+
+        perImage.add(<String, dynamic>{
+          'imageUrl': downloadUrl,
+          'fileName': rawName,
+          'storagePath': storagePath,
+          'analysis': verifyMap,
+          'ocr': estimateMap,
+          'progressPercent': pct,
+        });
+      }
+
+      final avg = progressValues.isEmpty
+          ? null
+          : (progressValues.reduce((a, b) => a + b) / progressValues.length)
+              .clamp(0.0, 100.0)
+              .toDouble();
+
+      final mergedAnalysis = <String, dynamic>{
+        'progressPercent': avg,
+        'imagesAnalyzed': perImage,
+      };
+
       setState(() {
-        _lastAnalysis = data ?? <String, dynamic>{};
-        _lastAnalyzedImageUrl = downloadUrl;
-        _lastAnalyzedProgressPercent = _extractProgressPercentFromAnalysis(data);
+        _lastAnalysis = mergedAnalysis;
+        _lastAnalyzedImageUrls
+          ..clear()
+          ..addAll(urls);
+        _lastAnalyzedProgressPercent = avg;
       });
 
       final currentUser = AuthService.instance.currentUser;
@@ -1587,16 +1745,21 @@ class _AiDashboardState extends State<_AiDashboard> {
           'kind': 'govtrack_image_analysis',
           'projectId': _selectedProjectId,
           'projectName': _selectedProjectName,
-          'imageUrl': downloadUrl,
-          'fileName': fileName,
-          'storagePath': storagePath,
-          'analysis': data,
-          'submittedById': currentUser?.id,
+          'imageUrl': urls.isNotEmpty ? urls.first : null,
+          'imageUrls': urls,
+          'progressPercent': avg,
           'submittedByUid': fbAuthUser?.uid,
-          'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
+          'submittedById': currentUser?.id,
+          'submittedByName': currentUser?.displayName,
           'submittedByEmail': currentUser?.email,
+          'analysis': mergedAnalysis,
           'createdAt': FieldValue.serverTimestamp(),
         },
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Analysis complete.')),
       );
     } catch (e) {
       final msg = e is FirebaseFunctionsException
@@ -2197,11 +2360,11 @@ class _Card extends StatelessWidget {
 
 class _UploadDropzone extends StatelessWidget {
   const _UploadDropzone({
-    required this.bytes,
+    required this.bytesList,
     required this.onPick,
     this.stampText,
   });
-  final Uint8List? bytes;
+  final List<Uint8List> bytesList;
   final VoidCallback onPick;
   final String? stampText;
 
@@ -2217,7 +2380,7 @@ class _UploadDropzone extends StatelessWidget {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: _AiDashboardState._blue, width: 1.2),
         ),
-        child: bytes == null
+        child: bytesList.isEmpty
             ? Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -2240,36 +2403,69 @@ class _UploadDropzone extends StatelessWidget {
                             color: _AiDashboardState._title,
                           ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 4),
                     Text(
                       'Drag & drop or click to browse',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: _AiDashboardState._subtitle,
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 6),
                     Text(
                       'JPG, PNG • Max 10MB • Geo-tag preferred',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._navMuted),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: _AiDashboardState._subtitle,
+                          ),
                     ),
                   ],
                 ),
               )
-            : ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.memory(bytes!, fit: BoxFit.cover),
-                    if (stampText != null && stampText!.trim().isNotEmpty)
-                      Positioned(
-                        left: 10,
-                        right: 10,
-                        bottom: 10,
-                        child: Container(
+            : Stack(
+                children: [
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: Image.memory(bytesList.first, fit: BoxFit.cover),
+                    ),
+                  ),
+                  if (bytesList.length > 1)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: (stampText ?? '').trim().isNotEmpty ? 88 : 12,
+                      child: SizedBox(
+                        height: 62,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: bytesList.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (context, index) {
+                            return ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Container(
+                                width: 62,
+                                height: 62,
+                                color: Colors.white.withValues(alpha: 0.12),
+                                child: Image.memory(bytesList[index], fit: BoxFit.cover),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  if ((stampText ?? '').trim().isNotEmpty)
+                    Positioned(
+                      left: 12,
+                      bottom: 12,
+                      right: 12,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Padding(
                           padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
                           child: Text(
                             stampText!,
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -2279,22 +2475,10 @@ class _UploadDropzone extends StatelessWidget {
                           ),
                         ),
                       ),
-                  ],
-                ),
+                    ),
+                ],
               ),
       ),
-    );
-  }
-}
-
-class _EmptyHint extends StatelessWidget {
-  const _EmptyHint({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Text(text, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: _AiDashboardState._subtitle)),
     );
   }
 }
@@ -2403,9 +2587,30 @@ class _GovTrackReportCard extends StatelessWidget {
     final dateText = '${_monthName(date.month)} ${date.day}, ${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
 
     final stages = _inferStages(analysis);
-    final scheduleDelta = pass ? '+1%' : '-2%';
-    final scheduleOk = pass;
-    final estCompletion = (confidence * 40).clamp(0, 100).round();
+    final schedule = (analysis['schedule'] as Map?)?.cast<String, dynamic>();
+    final scheduleDelta = (schedule?['deltaPercent'] ?? (pass ? '+1%' : '-2%')).toString();
+    final scheduleStatus = (schedule?['status'] ?? (pass ? 'On Schedule' : 'Behind Schedule')).toString();
+    final scheduleOk = scheduleDelta.trim().startsWith('+') || scheduleStatus.toLowerCase().contains('on');
+    final rawProgress = analysis['progressPercent'] ??
+        analysis['progress_percent'] ??
+        analysis['progress'];
+    final progressPercent = rawProgress is num
+        ? rawProgress.toDouble().clamp(0.0, 100.0).toDouble()
+        : 0.0;
+    final estCompletion = progressPercent.round();
+
+    final plannedRaw = analysis['plannedPercent'] ??
+        analysis['planned_percent'] ??
+        analysis['planned'] ??
+        35;
+    final plannedPercent = plannedRaw is num
+        ? plannedRaw.toDouble().clamp(0.0, 100.0).toDouble()
+        : 35.0;
+
+    final daysRaw = analysis['daysRemaining'] ?? analysis['days_remaining'];
+    final daysRemaining = daysRaw is num ? daysRaw.toInt() : null;
+
+    final summary = (analysis['summary'] ?? '').toString().trim();
 
     return Container(
       decoration: BoxDecoration(
@@ -2418,7 +2623,7 @@ class _GovTrackReportCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
             decoration: const BoxDecoration(
               color: _AiDashboardState._blue,
               borderRadius: BorderRadius.only(
@@ -2427,26 +2632,42 @@ class _GovTrackReportCard extends StatelessWidget {
               ),
             ),
             child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Icon(Icons.description_outlined, color: Colors.white),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Text(
+                    projectName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        'GOVTRACK AI REPORT',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.white.withValues(alpha: 0.85),
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 0.8,
-                            ),
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: scheduleOk ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(width: 8),
                       Text(
-                        projectName,
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        '$scheduleStatus $scheduleDelta',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Colors.white,
                               fontWeight: FontWeight.w900,
                             ),
@@ -2454,102 +2675,168 @@ class _GovTrackReportCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Text(
-                  dateText,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: Colors.white.withValues(alpha: 0.85)),
-                ),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Expanded(
-                      child: _MiniStatCard(
-                        title: 'ESTIMATED COMPLETION',
-                        value: '$estCompletion% ',
-                        subValue: '/ 35% Planned',
-                        barValue: estCompletion / 100.0,
-                        barColor: _AiDashboardState._blue,
+                    SizedBox(
+                      width: 112,
+                      height: 112,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: 112,
+                            height: 112,
+                            child: CircularProgressIndicator(
+                              value: (estCompletion / 100.0).clamp(0.0, 1.0),
+                              strokeWidth: 10,
+                              backgroundColor: const Color(0xFFE2E8F0),
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                scheduleOk ? const Color(0xFF16A34A) : const Color(0xFFF59E0B),
+                              ),
+                            ),
+                          ),
+                          Text(
+                            '$estCompletion%',
+                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
-                      child: _MiniStatCard(
-                        title: 'SCHEDULE VARIANCE',
-                        value: scheduleDelta,
-                        subValue: scheduleOk ? 'On Schedule' : 'Behind Schedule',
-                        valueColor: scheduleOk ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Overall Progress',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '(${plannedPercent.toStringAsFixed(0)}% planned)',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  color: _AiDashboardState._subtitle,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                          const SizedBox(height: 10),
+                          _PlannedActualBar(
+                            planned: plannedPercent,
+                            actual: progressPercent,
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 18),
-                Text(
-                  'VISIBLE CONSTRUCTION STAGE',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: _AiDashboardState._title,
-                        letterSpacing: 0.4,
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _StatTile(
+                        icon: Icons.schedule,
+                        iconBg: const Color(0xFFEFF6FF),
+                        iconColor: const Color(0xFF16A34A),
+                        title: 'Schedule\nVariance',
+                        value: scheduleDelta,
+                        subValue: scheduleStatus,
+                        valueColor: scheduleOk ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
                       ),
-                ),
-                const SizedBox(height: 10),
-                Container(height: 1, color: _AiDashboardState._border),
-                const SizedBox(height: 12),
-                for (final s in stages)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Row(
-                      children: [
-                        Expanded(child: Text(s.name, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: _AiDashboardState._title))),
-                        Row(
-                          children: [
-                            if (s.isComplete)
-                              const Icon(Icons.check_circle, color: Color(0xFF16A34A), size: 18),
-                            const SizedBox(width: 8),
-                            Text(
-                              s.statusText,
-                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: s.statusColor,
-                                    fontWeight: FontWeight.w800,
-                                  ),
-                            ),
-                          ],
-                        ),
-                      ],
                     ),
-                  ),
-                const SizedBox(height: 14),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _StatTile(
+                        icon: Icons.verified_user,
+                        iconBg: const Color(0xFFF1F5F9),
+                        iconColor: _AiDashboardState._blue,
+                        title: 'Confidence\nScore',
+                        value: '$confPct%',
+                        subValue: 'Structural',
+                        valueColor: pass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _StatTile(
+                        icon: Icons.calendar_month,
+                        iconBg: const Color(0xFFF1F5F9),
+                        iconColor: _AiDashboardState._blue,
+                        title: 'Days\nRemaining',
+                        value: daysRemaining == null ? '—' : '$daysRemaining',
+                        subValue: 'Remaining',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
                 Container(
-                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(16),
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
                     border: Border.all(color: _AiDashboardState._border),
                   ),
-                  child: Row(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          'Structural Confidence Score',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                color: _AiDashboardState._title,
-                              ),
-                        ),
-                      ),
                       Text(
-                        '$confPct%',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        'CONSTRUCTION STAGE',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               fontWeight: FontWeight.w900,
-                              color: pass ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+                              color: _AiDashboardState._title,
+                              letterSpacing: 0.4,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      for (final s in stages) ...[
+                        _StageProgressRow(stage: s),
+                        const SizedBox(height: 10),
+                      ],
+                      const SizedBox(height: 6),
+                      Container(height: 1, color: _AiDashboardState._border),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Icon(Icons.lightbulb_outline, color: _AiDashboardState._blue, size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            'AI Insight',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w900,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        summary.isEmpty ? 'Insufficient data.' : summary,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: _AiDashboardState._subtitle,
+                              height: 1.35,
+                            ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        dateText,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: _AiDashboardState._subtitle,
+                              fontWeight: FontWeight.w700,
                             ),
                       ),
                     ],
@@ -2564,77 +2851,196 @@ class _GovTrackReportCard extends StatelessWidget {
   }
 }
 
-class _MiniStatCard extends StatelessWidget {
-  const _MiniStatCard({
-    required this.title,
-    required this.value,
-    this.subValue = '',
-    this.valueColor,
-    this.barValue,
-    this.barColor,
+class _PlannedActualBar extends StatelessWidget {
+  const _PlannedActualBar({
+    required this.planned,
+    required this.actual,
   });
 
+  final double planned;
+  final double actual;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = (planned / 100.0).clamp(0.0, 1.0);
+    final a = (actual / 100.0).clamp(0.0, 1.0);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: SizedBox(
+            height: 10,
+            child: Stack(
+              children: [
+                Container(color: const Color(0xFFE2E8F0)),
+                FractionallySizedBox(
+                  widthFactor: p,
+                  child: Container(color: const Color(0xFF16A34A)),
+                ),
+                FractionallySizedBox(
+                  widthFactor: a,
+                  child: Container(color: const Color(0xFFFACC15)),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF16A34A), shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text('Planned', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle, fontWeight: FontWeight.w800)),
+            const SizedBox(width: 6),
+            Text('${planned.toStringAsFixed(0)}%', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._title, fontWeight: FontWeight.w900)),
+            const SizedBox(width: 14),
+            Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFFFACC15), shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Text('${actual.toStringAsFixed(0)}%', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._title, fontWeight: FontWeight.w900)),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _StatTile extends StatelessWidget {
+  const _StatTile({
+    required this.icon,
+    required this.iconBg,
+    required this.iconColor,
+    required this.title,
+    required this.value,
+    required this.subValue,
+    this.valueColor,
+  });
+
+  final IconData icon;
+  final Color iconBg;
+  final Color iconColor;
   final String title;
   final String value;
   final String subValue;
   final Color? valueColor;
-  final double? barValue;
-  final Color? barColor;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _AiDashboardState._border),
+        boxShadow: _AiDashboardState._shadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 10),
           Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text(
-                value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w900,
-                      color: valueColor ?? _AiDashboardState._title,
-                    ),
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(color: iconBg, borderRadius: BorderRadius.circular(999)),
+                alignment: Alignment.center,
+                child: Icon(icon, color: iconColor, size: 18),
               ),
-              if (subValue.isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Text(
-                      subValue,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _AiDashboardState._subtitle),
-                    ),
-                  ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: _AiDashboardState._subtitle,
+                        fontWeight: FontWeight.w900,
+                        height: 1.1,
+                      ),
                 ),
-              ],
+              ),
             ],
           ),
-          if (barValue != null) ...[
-            const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                value: barValue!.clamp(0.0, 1.0),
-                minHeight: 6,
-                backgroundColor: const Color(0xFFE2E8F0),
-                valueColor: AlwaysStoppedAnimation<Color>(barColor ?? _AiDashboardState._blue),
-              ),
-            ),
-          ],
+          const SizedBox(height: 10),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  color: valueColor ?? _AiDashboardState._title,
+                ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            subValue,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _AiDashboardState._subtitle,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _StageProgressRow extends StatelessWidget {
+  const _StageProgressRow({required this.stage});
+
+  final _StageItem stage;
+
+  double _progress() {
+    final m = RegExp(r'(\d+)\s*%').firstMatch(stage.statusText);
+    if (m != null) {
+      final pct = double.tryParse(m.group(1) ?? '0') ?? 0.0;
+      return (pct / 100.0).clamp(0.0, 1.0);
+    }
+    return stage.isComplete ? 1.0 : 0.0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = _progress();
+    final isComplete = stage.isComplete;
+    final barColor = isComplete
+        ? const Color(0xFF16A34A)
+        : (p > 0 ? const Color(0xFFFACC15) : const Color(0xFFE2E8F0));
+
+    return Row(
+      children: [
+        Icon(
+          isComplete ? Icons.check_circle : Icons.circle_outlined,
+          size: 18,
+          color: isComplete ? const Color(0xFF16A34A) : const Color(0xFF94A3B8),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 86,
+          child: Text(
+            stage.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: _AiDashboardState._title,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: p,
+              minHeight: 8,
+              backgroundColor: const Color(0xFFE2E8F0),
+              valueColor: AlwaysStoppedAnimation<Color>(barColor),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

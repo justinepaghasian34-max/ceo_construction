@@ -8,6 +8,7 @@ import '../../services/hive_service.dart';
 import '../../services/sync_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
+import '../../services/weather_alert_service.dart';
 import '../../models/user_model.dart';
 import '../../widgets/common/app_button.dart';
 import '../../widgets/common/status_chip.dart';
@@ -206,9 +207,9 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      AppTheme.deepBlueDark.withValues(alpha: 0.82),
-                      AppTheme.deepBlue.withValues(alpha: 0.52),
-                      AppTheme.deepBlue.withValues(alpha: 0.18),
+                      AppTheme.deepBlueDark.withValues(alpha: 0.55),
+                      AppTheme.deepBlue.withValues(alpha: 0.30),
+                      AppTheme.deepBlue.withValues(alpha: 0.10),
                     ],
                     stops: const [0.0, 0.55, 1.0],
                   ),
@@ -286,7 +287,6 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
       future: projectFuture,
       builder: (context, snapshot) {
         String projectName = projectId;
-        double progress = 0;
 
         if (snapshot.hasData && snapshot.data!.exists) {
           final data = snapshot.data!.data() as Map<String, dynamic>?;
@@ -294,16 +294,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
           if (rawName.trim().isNotEmpty) {
             projectName = rawName.trim();
           }
-
-          final rawProgress = data?['progressPercentage'];
-          if (rawProgress is num) progress = rawProgress.toDouble();
-          if (rawProgress is String) {
-            progress =
-                double.tryParse(rawProgress.replaceAll('%', '').trim()) ?? 0;
-          }
         }
-
-        progress = progress.clamp(0, 100);
 
         return SiteManagerCard(
           margin: EdgeInsets.zero,
@@ -365,31 +356,6 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                       fontWeight: FontWeight.w900,
                       color: AppTheme.deepBlueDark,
                     ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(999),
-                      child: LinearProgressIndicator(
-                        value: progress / 100,
-                        minHeight: 10,
-                        backgroundColor: AppTheme.lightGray,
-                        valueColor:
-                            const AlwaysStoppedAnimation(AppTheme.deepBlue),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${progress.toStringAsFixed(0)}%',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          color: AppTheme.deepBlue,
-                        ),
-                  ),
-                ],
               ),
               const SizedBox(height: 10),
               Row(
@@ -753,7 +719,19 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
               final data =
                   (docs.first.data() as Map?)?.cast<String, dynamic>() ?? {};
-              final imageUrl = (data['imageUrl'] ?? '').toString().trim();
+              final imageUrls = <String>[];
+              final listRaw = data['imageUrls'] ?? data['images'] ?? data['image_urls'];
+              if (listRaw is Iterable) {
+                for (final e in listRaw) {
+                  final v = e?.toString().trim() ?? '';
+                  if (v.isNotEmpty) imageUrls.add(v);
+                }
+              }
+              final single = (data['imageUrl'] ?? data['image_url'] ?? '').toString().trim();
+              if (single.isNotEmpty && !imageUrls.contains(single)) {
+                imageUrls.insert(0, single);
+              }
+              final imageUrl = imageUrls.isNotEmpty ? imageUrls.first : '';
               final submittedBy =
                   (data['submittedByName'] ?? '').toString().trim();
               final createdAt = data['createdAt'];
@@ -792,6 +770,69 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                             ),
                     ),
                   ),
+                  if (imageUrls.length > 1) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 54,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: imageUrls.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 6),
+                        itemBuilder: (context, i) {
+                          final url = imageUrls[i];
+                          return InkWell(
+                            onTap: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (dialogContext) {
+                                  return Dialog(
+                                    insetPadding: const EdgeInsets.all(16),
+                                    child: SizedBox(
+                                      width: 860,
+                                      height: 640,
+                                      child: InteractiveViewer(
+                                        minScale: 0.5,
+                                        maxScale: 6,
+                                        child: Container(
+                                          color: Colors.black,
+                                          alignment: Alignment.center,
+                                          child: Image.network(
+                                            url,
+                                            fit: BoxFit.contain,
+                                            errorBuilder: (_, __, ___) => const Center(
+                                              child: Icon(
+                                                Icons.broken_image_outlined,
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Container(
+                                width: 54,
+                                height: 54,
+                                color: AppTheme.lightGray,
+                                child: Image.network(
+                                  url,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Center(
+                                    child: Icon(Icons.broken_image_outlined),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 10),
                   Row(
                     children: [
@@ -1094,10 +1135,18 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
   Future<void> _refreshData() async {
     await _syncData();
-    // Refresh the current user so assignedProjects reflects latest Admin assignments
     await AuthService.instance.refreshUserData();
+
+    try {
+      await WeatherAlertService.instance
+          .scheduleNextRainAlertForCurrentLocation();
+    } catch (_) {
+      // Ignore weather failures; app should still function.
+    }
+
     if (mounted) {
       ref.invalidate(currentUserProvider);
+      setState(() {});
     }
   }
 

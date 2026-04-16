@@ -11,10 +11,64 @@ import '../../utils/png_exporter.dart';
 class AdminProgressReportsScreen extends StatelessWidget {
   const AdminProgressReportsScreen({super.key});
 
+  List<String> _extractImageUrls(Map<String, dynamic> data) {
+    final urls = <String>[];
+
+    final listRaw = data['imageUrls'] ?? data['images'] ?? data['image_urls'];
+    if (listRaw is Iterable) {
+      for (final e in listRaw) {
+        final v = e?.toString().trim() ?? '';
+        if (v.isNotEmpty) urls.add(v);
+      }
+    }
+
+    final single = (data['imageUrl'] ?? data['image_url'] ?? '').toString().trim();
+    if (single.isNotEmpty && !urls.contains(single)) {
+      urls.insert(0, single);
+    }
+
+    return urls;
+  }
+
+  void _showImageViewer(BuildContext context, String url) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: SizedBox(
+            width: 860,
+            height: 640,
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 6,
+              child: Container(
+                color: Colors.black,
+                alignment: Alignment.center,
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const Center(
+                    child: Icon(Icons.broken_image_outlined, color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final query = FirebaseService.instance.aiAnalysisCollection
-        .where('kind', isEqualTo: 'govtrack_progress_report');
+    final query = FirebaseService.instance.aiAnalysisCollection.where(
+      'kind',
+      whereIn: const <String>[
+        'govtrack_progress_report',
+        'govtrack_image_progress_submit',
+      ],
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -87,6 +141,9 @@ class AdminProgressReportsScreen extends StatelessWidget {
                   ? '${progressPercent.toStringAsFixed(1)}%'
                   : '—';
 
+              final imageUrls = _extractImageUrls(data);
+              final coverUrl = imageUrls.isNotEmpty ? imageUrls.first : '';
+
               return Material(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(14),
@@ -98,22 +155,43 @@ class AdminProgressReportsScreen extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: AppTheme.deepBlue.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            (progressPercent is num)
-                                ? progressPercent.round().toString()
-                                : '—',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: AppTheme.deepBlue,
-                                  fontWeight: FontWeight.w900,
-                                ),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            width: 66,
+                            height: 66,
+                            color: AppTheme.lightGray,
+                            child: coverUrl.isEmpty
+                                ? Container(
+                                    color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      (progressPercent is num)
+                                          ? progressPercent.round().toString()
+                                          : '—',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium
+                                          ?.copyWith(
+                                            color: AppTheme.deepBlue,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                    ),
+                                  )
+                                : Image.network(
+                                    coverUrl,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) {
+                                      return Container(
+                                        color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                                        alignment: Alignment.center,
+                                        child: const Icon(
+                                          Icons.broken_image_outlined,
+                                          color: AppTheme.mediumGray,
+                                        ),
+                                      );
+                                    },
+                                  ),
                           ),
                         ),
                         const SizedBox(width: 12),
@@ -157,6 +235,38 @@ class AdminProgressReportsScreen extends StatelessWidget {
                                         color: AppTheme.mediumGray,
                                       ),
                                 ),
+                              if (imageUrls.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  height: 54,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: imageUrls.length,
+                                    separatorBuilder: (_, __) => const SizedBox(width: 6),
+                                    itemBuilder: (context, i) {
+                                      final url = imageUrls[i];
+                                      return InkWell(
+                                        onTap: () => _showImageViewer(context, url),
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Container(
+                                            width: 54,
+                                            height: 54,
+                                            color: AppTheme.lightGray,
+                                            child: Image.network(
+                                              url,
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (_, __, ___) => const Center(
+                                                child: Icon(Icons.broken_image_outlined),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -210,6 +320,8 @@ class AdminProgressReportsScreen extends StatelessWidget {
     final summary = (analysis?['summary'] ?? '').toString().trim();
     final schedule = (analysis?['schedule'] as Map?)?.cast<String, dynamic>();
     final status = schedule == null ? null : schedule['status']?.toString().trim();
+
+    final imageUrls = _extractImageUrls(data);
 
     Future<void> exportPng() async {
       final messenger = ScaffoldMessenger.of(context);
@@ -266,6 +378,41 @@ class AdminProgressReportsScreen extends StatelessWidget {
                   children: [
                     _kv(context, 'Progress', pctText),
                     if (projectId.isNotEmpty) _kv(context, 'Project ID', projectId),
+                    if (imageUrls.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        'Images',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final url in imageUrls)
+                            InkWell(
+                              onTap: () => _showImageViewer(context, url),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Container(
+                                  width: 140,
+                                  height: 92,
+                                  color: AppTheme.lightGray,
+                                  child: Image.network(
+                                    url,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => const Center(
+                                      child: Icon(Icons.broken_image_outlined),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
                     _kv(
                       context,
                       'Assigned Site Manager',

@@ -4,12 +4,15 @@ import 'package:go_router/go_router.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
+import '../../models/attendance_model.dart';
 import '../../services/hive_service.dart';
 import '../../services/auth_service.dart';
+import '../../services/geo_tag_service.dart';
+import '../../services/audit_log_service.dart';
+import '../../services/sync_service.dart';
 import 'fingerprint_attendance_screen.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
-import '../../models/attendance_model.dart';
 
 class AttendanceScreen extends ConsumerStatefulWidget {
   final bool showBottomNav;
@@ -33,6 +36,8 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
   static const String _kLastFingerprintWorkerKey = 'fingerprint_last_worker';
   static const String _kFingerprintRegisteredWorkersKey =
       'fingerprint_registered_workers';
+  static const String _kFingerprintRegisteredWorkersMetaKey =
+      'fingerprint_registered_workers_meta';
 
   DateTime _startOfWeek(DateTime d) {
     final date = DateTime(d.year, d.month, d.day);
@@ -69,14 +74,129 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     return WorkerFingerprintArgs(workerName: name, position: position, rate: rate);
   }
 
+  WorkerFingerprintArgs? _inferWorkerArgsFromAnyAttendance(String workerName) {
+    final normalized = workerName.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+
+    final user = ref.read(currentUserProvider);
+    final hive = HiveService.instance;
+    final allAttendance = user == null
+        ? hive.getAllAttendance()
+        : hive.getAttendanceByRecorder(user.id);
+
+    final sorted = [...allAttendance]
+      ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
+
+    for (final a in sorted) {
+      for (final r in a.records) {
+        if (r.workerName.trim().toLowerCase() == normalized) {
+          final position = r.position.trim();
+          if (position.isEmpty) continue;
+          return WorkerFingerprintArgs(
+            workerName: r.workerName,
+            position: position,
+            rate: r.rate,
+          );
+        }
+      }
+    }
+
+    return null;
+  }
+
+  Future<WorkerFingerprintArgs?> _pickRegisteredWorkerFingerprintArgs(
+    BuildContext context,
+  ) async {
+    final hive = HiveService.instance;
+    final rawRegistered =
+        hive.getSetting<List>(_kFingerprintRegisteredWorkersKey) ?? const [];
+    final registered = rawRegistered
+        .map((e) => e.toString().trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+
+    if (registered.isEmpty) return null;
+
+    return showModalBottomSheet<WorkerFingerprintArgs>(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: AppTheme.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            shrinkWrap: true,
+            itemBuilder: (_, i) {
+              final name = registered[i];
+              final inferred = _inferWorkerArgsFromAnyAttendance(name);
+              final subtitle = inferred == null
+                  ? 'Details missing — register this worker again'
+                  : '${inferred.position} • ₱${inferred.rate.toStringAsFixed(0)}/day';
+
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const CircleAvatar(
+                  backgroundColor: AppTheme.lightGray,
+                  child: Icon(Icons.fingerprint, color: AppTheme.deepBlue),
+                ),
+                title: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(sheetContext).textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.darkGray,
+                      ),
+                ),
+                subtitle: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                enabled: inferred != null,
+                onTap: inferred == null
+                    ? null
+                    : () => Navigator.of(sheetContext).pop(inferred),
+              );
+            },
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemCount: registered.length,
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _openFingerprintDailyAttendance(BuildContext context) async {
     final router = GoRouter.of(context);
     var args = _lastWorkerArgs();
     args ??= await _inferWorkerArgsFromTodayAttendance();
     if (!context.mounted) return;
+
     if (args == null) {
-      await _showRegisterWorkerFingerprintSheet(context);
-      return;
+      final picked = await _pickRegisteredWorkerFingerprintArgs(context);
+      if (!context.mounted) return;
+
+      if (picked == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No registered workers found. Please register first.'),
+            backgroundColor: AppTheme.warningOrange,
+          ),
+        );
+        return;
+      }
+
+      args = picked;
     }
 
     await HiveService.instance.saveSetting(_kLastFingerprintWorkerKey, {
@@ -87,6 +207,51 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
 
     if (!context.mounted) return;
     await router.push(RouteNames.fingerprintAttendance, extra: args);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _openFingerprintForWorker(
+    BuildContext context,
+    AttendanceRecord record,
+  ) async {
+    final name = record.workerName.trim();
+    if (name.isEmpty) return;
+
+    final normalized = name.toLowerCase();
+    final hive = HiveService.instance;
+    final rawRegistered =
+        hive.getSetting<List>(_kFingerprintRegisteredWorkersKey) ?? const [];
+    final registered = rawRegistered.map((e) => e.toString().toLowerCase()).toSet();
+
+    if (!registered.contains(normalized)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please register fingerprint first.'),
+          backgroundColor: AppTheme.warningOrange,
+        ),
+      );
+      await _showRegisterWorkerFingerprintSheet(context);
+      return;
+    }
+
+    final args = WorkerFingerprintArgs(
+      workerName: record.workerName,
+      position: record.position,
+      rate: record.rate,
+    );
+
+    await hive.saveSetting(_kLastFingerprintWorkerKey, {
+      'workerName': args.workerName,
+      'position': args.position,
+      'rate': args.rate,
+    });
+
+    if (!context.mounted) return;
+    await GoRouter.of(context)
+        .push(RouteNames.fingerprintAttendance, extra: args);
     if (mounted) {
       setState(() {});
     }
@@ -113,6 +278,10 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     final rawRegistered =
         hive.getSetting<List>(_kFingerprintRegisteredWorkersKey) ?? const [];
     final registered = rawRegistered.map((e) => e.toString().toLowerCase()).toSet();
+
+    final meta = (hive.getSetting<Map>(_kFingerprintRegisteredWorkersMetaKey)
+                ?.cast<String, dynamic>() ??
+            <String, dynamic>{});
 
     if (!registered.contains(normalizedName)) {
       final allAttendance = hive.getAllAttendance();
@@ -150,6 +319,9 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
       registered.toList()..sort(),
     );
 
+    meta[normalizedName] = _normalizeDate(DateTime.now()).toIso8601String();
+    await hive.saveSetting(_kFingerprintRegisteredWorkersMetaKey, meta);
+
     await HiveService.instance.saveSetting(_kLastFingerprintWorkerKey, {
       'workerName': result.workerName,
       'position': result.position,
@@ -166,6 +338,25 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
   }
 
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  DateTime? _registeredAtForWorker(String workerName) {
+    final normalized = workerName.trim().toLowerCase();
+    if (normalized.isEmpty) return null;
+
+    final meta = HiveService.instance
+        .getSetting<Map>(_kFingerprintRegisteredWorkersMetaKey)
+        ?.cast<String, dynamic>();
+    final raw = meta?[normalized];
+    if (raw is String) {
+      try {
+        final parsed = DateTime.parse(raw);
+        return _normalizeDate(parsed);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
 
   Future<void> _pickAttendanceDate(BuildContext context) async {
     final now = DateTime.now();
@@ -322,6 +513,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
   Future<void> _showWeeklyStatusSheet(
     BuildContext context,
     AttendanceRecord record,
+    DateTime selectedDate,
   ) async {
     String labelFor(int weekday) {
       switch (weekday) {
@@ -342,23 +534,49 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
       }
     }
 
-    bool presentFor(int weekday) {
-      switch (weekday) {
-        case DateTime.monday:
-          return record.monPresent;
-        case DateTime.tuesday:
-          return record.tuePresent;
-        case DateTime.wednesday:
-          return record.wedPresent;
-        case DateTime.thursday:
-          return record.thuPresent;
-        case DateTime.friday:
-          return record.friPresent;
-        case DateTime.saturday:
-          return record.satPresent;
-        default:
-          return false;
+    final normalizedName = record.workerName.trim().toLowerCase();
+    final registeredAt = _registeredAtForWorker(record.workerName);
+    final weekStart = _startOfWeek(selectedDate);
+    final today = _normalizeDate(DateTime.now());
+
+    final user = ref.read(currentUserProvider);
+    final allAttendance = user == null
+        ? HiveService.instance.getAllAttendance()
+        : HiveService.instance.getAttendanceByRecorder(user.id);
+
+    AttendanceRecord? recordForDay(DateTime day) {
+      final model = allAttendance.firstWhere(
+        (a) => _isSameDay(a.attendanceDate, day),
+        orElse: () => AttendanceModel(
+          id: '',
+          projectId: '',
+          recorderId: '',
+          attendanceDate: day,
+          records: const [],
+          createdAt: day,
+          updatedAt: day,
+        ),
+      );
+      if (model.id.isEmpty) return null;
+      return model.records.cast<AttendanceRecord?>().firstWhere(
+            (r) => (r?.workerName.trim().toLowerCase() ?? '') == normalizedName,
+            orElse: () => null,
+          );
+    }
+
+    bool showBlankForDay(DateTime day, AttendanceRecord? rec) {
+      if (registeredAt != null && day.isBefore(registeredAt)) return true;
+      if (day.isAfter(today)) return true;
+      if (_isSameDay(day, today)) {
+        if (rec == null) return true;
+        if (!rec.isPresent && rec.timeIn == null) return true;
       }
+      return false;
+    }
+
+    bool isPresentForDay(AttendanceRecord? rec) {
+      if (rec == null) return false;
+      return rec.isPresent || rec.timeIn != null;
     }
 
     await showModalBottomSheet<void>(
@@ -417,12 +635,23 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
                         const SizedBox(height: 12),
                         ...List.generate(6, (i) {
                           final weekday = DateTime.monday + i;
-                          final isPresent = presentFor(weekday);
-                          final color = isPresent
-                              ? AppTheme.softGreen
-                              : AppTheme.errorRed;
-                          final icon =
-                              isPresent ? Icons.check_circle : Icons.cancel;
+                          final day = _normalizeDate(
+                            weekStart.add(Duration(days: i)),
+                          );
+                          final rec = recordForDay(day);
+                          final blank = showBlankForDay(day, rec);
+                          final isPresent = isPresentForDay(rec);
+
+                          final color = blank
+                              ? AppTheme.mediumGray
+                              : isPresent
+                                  ? AppTheme.softGreen
+                                  : AppTheme.errorRed;
+                          final icon = blank
+                              ? Icons.remove_circle_outline
+                              : isPresent
+                                  ? Icons.check_circle
+                                  : Icons.cancel;
 
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 10),
@@ -456,7 +685,11 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
                                   Icon(icon, color: color, size: 20),
                                   const SizedBox(width: 8),
                                   Text(
-                                    isPresent ? 'Present' : 'Absent',
+                                    blank
+                                        ? ''
+                                        : isPresent
+                                            ? 'Present'
+                                            : 'Absent',
                                     style: Theme.of(sheetContext)
                                         .textTheme
                                         .bodyMedium
@@ -851,12 +1084,52 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
 
   Widget _buildWorkerRow(BuildContext context, AttendanceRecord record) {
     final initials = _initialsFor(record.workerName);
-    final isPresent = record.isPresent;
+    final selectedDate = _normalizeDate(_selectedDate);
+    final today = _normalizeDate(DateTime.now());
+    final registeredAt = _registeredAtForWorker(record.workerName);
 
-    final statusColor = isPresent ? AppTheme.softGreen : AppTheme.errorRed;
-    final statusIcon = isPresent ? Icons.check_circle : Icons.cancel;
+    bool weekdayFlagPresent(AttendanceRecord r, DateTime day) {
+      switch (day.weekday) {
+        case DateTime.monday:
+          return r.monPresent;
+        case DateTime.tuesday:
+          return r.tuePresent;
+        case DateTime.wednesday:
+          return r.wedPresent;
+        case DateTime.thursday:
+          return r.thuPresent;
+        case DateTime.friday:
+          return r.friPresent;
+        case DateTime.saturday:
+          return r.satPresent;
+        default:
+          return false;
+      }
+    }
 
-    String statusText = isPresent ? 'Present' : 'Absent';
+    final hasScan = record.timeIn != null;
+    final flagPresent = weekdayFlagPresent(record, selectedDate);
+    final isPresent = record.isPresent || hasScan || flagPresent;
+
+    final beforeRegistration =
+        registeredAt != null && selectedDate.isBefore(registeredAt);
+    final isFuture = selectedDate.isAfter(today);
+    final isTodayUnscanned = _isSameDay(selectedDate, today) && !isPresent;
+
+    final isBlank = beforeRegistration || isFuture || isTodayUnscanned;
+
+    final statusColor = isBlank
+        ? AppTheme.mediumGray
+        : isPresent
+            ? AppTheme.softGreen
+            : AppTheme.errorRed;
+    final statusIcon = isBlank
+        ? Icons.remove_circle_outline
+        : isPresent
+            ? Icons.check_circle
+            : Icons.cancel;
+
+    String statusText = isBlank ? '' : (isPresent ? 'Present' : 'Absent');
     if (isPresent && record.timeIn != null) {
       final t = TimeOfDay.fromDateTime(record.timeIn!);
       statusText = t.format(context);
@@ -865,7 +1138,80 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     final rateText = '₱${record.rate.toStringAsFixed(2)} / day';
 
     return InkWell(
-      onTap: () => _showWeeklyStatusSheet(context, record),
+      onTap: () async {
+        final action = await showModalBottomSheet<String>(
+          context: context,
+          showDragHandle: true,
+          backgroundColor: AppTheme.white,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+          ),
+          builder: (sheetContext) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      record.workerName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(sheetContext)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: AppTheme.darkGray,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: () => Navigator.of(sheetContext)
+                          .pop('scan_fingerprint'),
+                      icon: const Icon(Icons.fingerprint),
+                      label: const Text('Scan fingerprint (mark Present)'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppTheme.deepBlue,
+                        foregroundColor: AppTheme.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          Navigator.of(sheetContext).pop('weekly_status'),
+                      icon: const Icon(Icons.calendar_month),
+                      label: const Text('View weekly status'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+
+        if (!context.mounted || action == null) return;
+        if (action == 'scan_fingerprint') {
+          await _openFingerprintForWorker(context, record);
+          return;
+        }
+        if (action == 'weekly_status') {
+          await _showWeeklyStatusSheet(context, record, selectedDate);
+          return;
+        }
+      },
       borderRadius: BorderRadius.circular(18),
       child: SiteManagerCard(
         margin: EdgeInsets.zero,
@@ -978,23 +1324,27 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
       child: ElevatedButton.icon(
         onPressed: attendance == null
             ? null
-            : () {
-              final today = DateTime.now();
-              if (today.weekday != DateTime.saturday) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Attendance submission is available on Saturday.'),
-                    backgroundColor: AppTheme.warningOrange,
-                  ),
-                );
-                return;
-              }
+            : () async {
+              final geoTag = await GeoTagService.instance.captureGeoTag();
 
               attendance.status = 'submitted';
               attendance.syncStatus = 'pending';
               attendance.updatedAt = DateTime.now();
-              HiveService.instance.saveAttendance(attendance);
+              await HiveService.instance.saveAttendance(attendance);
 
+              await AuditLogService.instance.logAction(
+                action: 'attendance_submitted',
+                projectId: attendance.projectId,
+                details: {
+                  'attendanceId': attendance.id,
+                  'attendanceDate': attendance.attendanceDate.toIso8601String(),
+                  'totalWorkers': attendance.totalWorkers,
+                  'presentWorkers': attendance.presentWorkers,
+                  'geoTag': geoTag,
+                },
+              );
+
+              if (!context.mounted) return;
               setState(() {});
 
               ScaffoldMessenger.of(context).showSnackBar(
@@ -1003,6 +1353,26 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
                   backgroundColor: AppTheme.softGreen,
                 ),
               );
+
+              try {
+                final result = await SyncService.instance.syncPendingData();
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(result.message),
+                    backgroundColor:
+                        result.success ? AppTheme.softGreen : AppTheme.warningOrange,
+                  ),
+                );
+              } catch (e) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Sync failed: ${e.toString()}'),
+                    backgroundColor: AppTheme.warningOrange,
+                  ),
+                );
+              }
             },
         icon: const Icon(Icons.send, size: 22),
         label: const Text('Submit Attendance to Admin'),

@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
-import '../../services/hive_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
@@ -18,33 +17,66 @@ class AdminMaterialMonitoring extends StatefulWidget {
 }
 
 class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
+  static const List<String> _fallbackMaterials = [
+    'Cement',
+    'Sand',
+    'Gravel',
+    'Concrete',
+    'Hollow Blocks',
+    'Bricks',
+    'Rebar (Steel Bars)',
+    'Tie Wire',
+    'Nails',
+    'Screws',
+    'Plywood',
+    'Lumber (Wood)',
+    'GI Sheet',
+    'Roofing Sheet',
+    'Paint',
+    'Primer',
+    'Thinner',
+    'PVC Pipe',
+    'Electrical Wire',
+    'Conduit',
+    'Tiles',
+    'Adhesive',
+    'Waterproofing',
+  ];
   String? _selectedProjectId;
   String? _selectedProjectName;
 
-  Future<List<Map<String, dynamic>>> _loadMaterialUsageForProjectReports(
-    String projectId,
-    List<QueryDocumentSnapshot> reportDocs,
+  String? _projectsWithInventoryCacheKey;
+  Set<String>? _projectsWithInventoryCache;
+
+  Future<Set<String>> _getProjectsWithInventory(
+    List<QueryDocumentSnapshot> projectDocs,
   ) async {
-    final out = <Map<String, dynamic>>[];
-    for (final r in reportDocs) {
-      final reportId = r.id;
+    final ids = projectDocs.map((d) => d.id).toList()..sort();
+    final key = ids.join('|');
+    final cached = _projectsWithInventoryCache;
+    if (_projectsWithInventoryCacheKey == key && cached != null) {
+      return cached;
+    }
+
+    final result = <String>{};
+    for (final doc in projectDocs) {
+      final projectId = doc.id;
       try {
         final snap = await FirebaseService.instance
-            .materialUsageCollection(projectId, reportId)
-            .limit(500)
+            .materialInventoryCollection(projectId)
+            .limit(1)
             .get();
-        for (final d in snap.docs) {
-          final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
-          out.add(<String, dynamic>{
-            ...data,
-            'reportId': (data['reportId'] ?? reportId).toString(),
-          });
+        if (snap.docs.isNotEmpty) {
+          result.add(projectId);
         }
       } catch (_) {
-        // Ignore individual report failures; continue.
+        // Ignore per-project errors and just don't include it in the list.
       }
     }
-    return out;
+
+    _projectsWithInventoryCacheKey = key;
+    _projectsWithInventoryCache = result;
+    return result;
   }
 
   Future<void> _showAddInventoryItemDialog() async {
@@ -143,13 +175,28 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
   @override
   Widget build(BuildContext context) {
     final projectStream = FirebaseService.instance.projectsCollection
-        .where('status', isEqualTo: 'ongoing')
         .snapshots();
 
     return StreamBuilder<QuerySnapshot>(
       stream: projectStream,
       builder: (context, projectSnap) {
         final projectDocs = projectSnap.data?.docs ?? const [];
+
+        final Map<String, String> siteManagerNameByProject = {};
+        for (final doc in projectDocs) {
+          final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
+              <String, dynamic>{};
+          final name = (data['siteManagerName'] ?? '').toString().trim();
+          if (name.isNotEmpty) {
+            siteManagerNameByProject[doc.id] = name;
+          }
+        }
+
+        String siteLabel(String projectId) {
+          final name = siteManagerNameByProject[projectId];
+          if (name != null && name.isNotEmpty) return name;
+          return projectId;
+        }
 
         if (_selectedProjectId == null && projectDocs.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -171,13 +218,16 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 .orderBy('materialName')
                 .snapshots();
 
-        final usageStream = selectedProjectId == null
-            ? Stream<QuerySnapshot>.empty()
-            : FirebaseService.instance
-                .dailyReportsCollection(selectedProjectId)
-                .orderBy('reportDate', descending: true)
-                .limit(60)
-                .snapshots();
+        final deliveriesStream = FirebaseService.instance.firestore
+            .collectionGroup('deliveries')
+            .where('type', isEqualTo: 'material_request_release')
+            .limit(500)
+            .snapshots();
+
+        final usageStream = FirebaseService.instance.firestore
+            .collectionGroup('material_usage')
+            .limit(500)
+            .snapshots();
 
         return StreamBuilder<QuerySnapshot>(
           stream: inventoryStream,
@@ -240,9 +290,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
             }
 
             return StreamBuilder<QuerySnapshot>(
-              stream: usageStream,
-              builder: (context, reportsSnap) {
-                if (reportsSnap.hasError) {
+              stream: deliveriesStream,
+              builder: (context, deliveriesSnap) {
+                if (deliveriesSnap.hasError) {
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
                     bottomNavigationBar: const AdminBottomNavBar(
@@ -252,7 +302,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Text(
-                          'Failed to load material usage: ${reportsSnap.error}',
+                          'Failed to load deliveries: ${deliveriesSnap.error}',
                           style: Theme.of(context)
                               .textTheme
                               .bodyMedium
@@ -267,31 +317,30 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   );
                 }
 
-                if (selectedProjectId == null) {
+                if (!deliveriesSnap.hasData) {
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
                     bottomNavigationBar: const AdminBottomNavBar(
                       current: AdminNavItem.materialInventory,
                     ),
-                    child: const SizedBox.shrink(),
+                    child: const Center(child: CircularProgressIndicator()),
                   );
                 }
 
-                final reportDocs = reportsSnap.data?.docs ?? const [];
+                final deliveryDocs = deliveriesSnap.data?.docs ?? const [];
+                final deliveryRows = deliveryDocs
+                    .map(
+                      (d) => <String, dynamic>{
+                        ...(d.data() as Map?)?.cast<String, dynamic>() ??
+                            <String, dynamic>{},
+                        'id': d.id,
+                      },
+                    )
+                    .toList();
 
-                return FutureBuilder<List<Map<String, dynamic>>>(
-                  future: _loadMaterialUsageForProjectReports(selectedProjectId, reportDocs),
+                return StreamBuilder<QuerySnapshot>(
+                  stream: usageStream,
                   builder: (context, usageSnap) {
-                    if (usageSnap.connectionState == ConnectionState.waiting) {
-                      return AdminGlassScaffold(
-                        title: 'Material & Inventory Monitoring',
-                        bottomNavigationBar: const AdminBottomNavBar(
-                          current: AdminNavItem.materialInventory,
-                        ),
-                        child: const Center(child: CircularProgressIndicator()),
-                      );
-                    }
-
                     if (usageSnap.hasError) {
                       return AdminGlassScaffold(
                         title: 'Material & Inventory Monitoring',
@@ -317,21 +366,61 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       );
                     }
 
+                    if (!usageSnap.hasData) {
+                      return AdminGlassScaffold(
+                        title: 'Material & Inventory Monitoring',
+                        bottomNavigationBar: const AdminBottomNavBar(
+                          current: AdminNavItem.materialInventory,
+                        ),
+                        child: const Center(child: CircularProgressIndicator()),
+                      );
+                    }
+
+                    final usageDocs = usageSnap.data?.docs ?? const [];
+                    final usageRows = usageDocs
+                        .map(
+                          (d) => <String, dynamic>{
+                            ...(d.data() as Map?)?.cast<String, dynamic>() ??
+                                <String, dynamic>{},
+                            'id': d.id,
+                          },
+                        )
+                        .toList();
+
+                    final combinedDocs = <Map<String, dynamic>>[
+                      ...usageRows,
+                      ...deliveryRows,
+                    ];
+
                     final now = DateTime.now();
                     final startOfMonth = DateTime(now.year, now.month, 1);
                     final endOfMonth = DateTime(now.year, now.month + 1, 1);
 
                     double monthQuantity = 0;
                     final List<_MaterialUsageEntry> usageEntries = [];
+                    final List<_MaterialUsageEntry> monthUsageEntries = [];
 
-                    final usageDocs = usageSnap.data ?? const <Map<String, dynamic>>[];
-                    for (final usage in usageDocs) {
-                      final name = (usage['materialName'] ?? 'Material').toString();
-                      final quantityRaw = usage['quantity'] ?? usage['stock'] ?? 0;
-                      final quantity = double.tryParse(quantityRaw.toString()) ?? 0.0;
+                    for (final usage in combinedDocs) {
+                      final isDelivery =
+                          (usage['type'] ?? '').toString() ==
+                              'material_request_release';
+
+                      final name = (usage['materialName'] ??
+                              usage['name'] ??
+                              usage['subject'] ??
+                              'Material')
+                          .toString();
+
+                      final quantityRaw = isDelivery
+                          ? (usage['quantity'] ?? 0)
+                          : (usage['quantity'] ?? usage['stock'] ?? 0);
+                      final quantity =
+                          double.tryParse(quantityRaw.toString()) ?? 0.0;
 
                       DateTime? usageDate;
-                      final dateRaw = usage['date'] ?? usage['createdAt'];
+                      final dateRaw = isDelivery
+                          ? (usage['approvedAt'] ?? usage['createdAt'])
+                          : (usage['date'] ?? usage['createdAt']);
                       if (dateRaw is String) {
                         try {
                           usageDate = DateTime.parse(dateRaw);
@@ -342,27 +431,43 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                         usageDate = dateRaw;
                       }
 
-                      if (usageDate != null && !usageDate.isBefore(startOfMonth) && usageDate.isBefore(endOfMonth)) {
+                      if (usageDate != null &&
+                          !usageDate.isBefore(startOfMonth) &&
+                          usageDate.isBefore(endOfMonth)) {
                         monthQuantity += quantity;
                       }
 
-                      final status = (usage['status'] ?? usage['syncStatus'] ?? '').toString();
-                      final unitPrice = unitPriceByMaterial[name];
-                      final double? totalCost = unitPrice != null ? unitPrice * quantity : null;
+                      final status = isDelivery
+                          ? (usage['status'] ?? 'released').toString()
+                          : (usage['status'] ?? usage['syncStatus'] ?? '')
+                              .toString();
 
-                      usageEntries.add(
-                        _MaterialUsageEntry(
-                          materialName: name,
-                          quantity: quantity,
-                          unit: (usage['unit'] ?? '').toString(),
-                          status: status,
-                          projectId: (usage['projectId'] ?? '').toString(),
-                          reportId: (usage['reportId'] ?? '').toString(),
-                          date: usageDate,
-                          unitPrice: unitPrice,
-                          totalCost: totalCost,
-                        ),
+                      final unit = (usage['unit'] ?? '').toString();
+                      final unitPrice = unitPriceByMaterial[name];
+                      final double? totalCost =
+                          unitPrice != null ? unitPrice * quantity : null;
+
+                      final entry = _MaterialUsageEntry(
+                        materialName: name,
+                        quantity: quantity,
+                        unit: unit,
+                        status: status,
+                        projectId: (usage['projectId'] ?? '').toString(),
+                        reportId: isDelivery
+                            ? 'delivery:${(usage['id'] ?? '').toString()}'
+                            : (usage['reportId'] ?? '').toString(),
+                        date: usageDate,
+                        unitPrice: unitPrice,
+                        totalCost: totalCost,
                       );
+
+                      usageEntries.add(entry);
+
+                      if (usageDate != null &&
+                          !usageDate.isBefore(startOfMonth) &&
+                          usageDate.isBefore(endOfMonth)) {
+                        monthUsageEntries.add(entry);
+                      }
                     }
 
                     final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
@@ -391,6 +496,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       siteSummaries.add(
                         _SiteDistributionSummary(
                           projectId: projectId,
+                          siteLabel: siteLabel(projectId),
                           materialsCount: siteMaterials.length,
                           totalQuantity: siteTotalQuantity,
                           totalCost: siteTotalCost,
@@ -402,77 +508,77 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
 
                     return AdminGlassScaffold(
-                  title: 'Material & Inventory Monitoring',
-                  actions: [
-        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseService.instance.firestore
-              .collectionGroup('material_requests')
-              .where(
-                'status',
-                isEqualTo: AppConstants.materialRequestPending,
-              )
-              .snapshots(),
-          builder: (context, snapshot) {
-            final count = snapshot.data?.docs.length ?? 0;
+                      title: 'Material & Inventory Monitoring',
+                      actions: [
+                        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                          stream: FirebaseService.instance.firestore
+                              .collectionGroup('material_requests')
+                              .where(
+                                'status',
+                                isEqualTo: AppConstants.materialRequestPending,
+                              )
+                              .snapshots(),
+                          builder: (context, snapshot) {
+                            final count = snapshot.data?.docs.length ?? 0;
 
-            return IconButton(
-              icon: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  const Icon(Icons.notifications_none),
-                  if (count > 0)
-                    Positioned(
-                      right: -4,
-                      top: -4,
-                      child: Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
+                            return IconButton(
+                              icon: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  const Icon(Icons.notifications_none),
+                                  if (count > 0)
+                                    Positioned(
+                                      right: -4,
+                                      top: -4,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(2),
+                                        decoration: const BoxDecoration(
+                                          color: Colors.red,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        constraints: const BoxConstraints(
+                                          minWidth: 16,
+                                          minHeight: 16,
+                                        ),
+                                        child: Center(
+                                          child: Text(
+                                            count > 99 ? '99+' : '$count',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              tooltip: 'Material requests',
+                              onPressed: _showMaterialRequestsBottomSheet,
+                            );
+                          },
                         ),
-                        constraints: const BoxConstraints(
-                          minWidth: 16,
-                          minHeight: 16,
+                        IconButton(
+                          tooltip: 'Add inventory item',
+                          icon: const Icon(Icons.add_box_outlined),
+                          onPressed: _showAddInventoryItemDialog,
                         ),
-                        child: Center(
-                          child: Text(
-                            count > 99 ? '99+' : '$count',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                        IconButton(
+                          icon: const Icon(Icons.person_outline),
+                          onPressed: () => context.push(RouteNames.profile),
                         ),
+                      ],
+                      bottomNavigationBar: const AdminBottomNavBar(
+                        current: AdminNavItem.materialInventory,
                       ),
-                    ),
-                ],
-              ),
-              tooltip: 'Material requests',
-              onPressed: _showMaterialRequestsBottomSheet,
-            );
-          },
-        ),
-        IconButton(
-          tooltip: 'Add inventory item',
-          icon: const Icon(Icons.add_box_outlined),
-          onPressed: _showAddInventoryItemDialog,
-        ),
-        IconButton(
-          icon: const Icon(Icons.person_outline),
-          onPressed: () => context.push(RouteNames.profile),
-        ),
-      ],
-      bottomNavigationBar: const AdminBottomNavBar(
-        current: AdminNavItem.materialInventory,
-      ),
-      child: GlassCard(
-        borderRadius: 18,
-        padding: const EdgeInsets.all(14),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+                      child: GlassCard(
+                        borderRadius: 18,
+                        padding: const EdgeInsets.all(14),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
               Text(
                 'Select project',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -481,32 +587,77 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     ),
               ),
               const SizedBox(height: 6),
-              DropdownButtonFormField<String>(
-                initialValue: selectedProjectId,
-                items: [
-                  for (final d in projectDocs)
-                    () {
-                      final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
-                      final name = (data['name'] ?? d.id).toString();
-                      return DropdownMenuItem<String>(
-                        value: d.id,
-                        child: Text(name, overflow: TextOverflow.ellipsis),
-                      );
-                    }(),
-                ],
-                onChanged: (v) {
-                  if (v == null) return;
-                  final doc = projectDocs.firstWhere((e) => e.id == v, orElse: () => projectDocs.first);
-                  final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
-                  setState(() {
-                    _selectedProjectId = v;
-                    _selectedProjectName = (data['name'] ?? '').toString();
-                  });
+              FutureBuilder<Set<String>>(
+                future: _getProjectsWithInventory(projectDocs),
+                builder: (context, invProjectsSnap) {
+                  final invProjectIds = invProjectsSnap.data ?? <String>{};
+
+                  final filteredProjectDocs = projectDocs
+                      .where((d) => invProjectIds.contains(d.id))
+                      .toList();
+
+                  if (invProjectsSnap.connectionState == ConnectionState.waiting) {
+                    return const SizedBox(
+                      height: 48,
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+
+                  if (filteredProjectDocs.isEmpty) {
+                    return const Text(
+                      'No projects have submitted material inventory yet.',
+                      style: TextStyle(color: Colors.black54),
+                    );
+                  }
+
+                  final currentSelected = selectedProjectId;
+                  final isCurrentValid =
+                      currentSelected != null && invProjectIds.contains(currentSelected);
+
+                  if (!isCurrentValid) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!mounted) return;
+                      final first = filteredProjectDocs.first;
+                      final data = (first.data() as Map?)?.cast<String, dynamic>() ??
+                          <String, dynamic>{};
+                      setState(() {
+                        _selectedProjectId = first.id;
+                        _selectedProjectName = (data['name'] ?? '').toString();
+                      });
+                    });
+                  }
+
+                  return DropdownButtonFormField<String>(
+                    initialValue: isCurrentValid ? currentSelected : filteredProjectDocs.first.id,
+                    items: [
+                      for (final d in filteredProjectDocs)
+                        () {
+                          final data = (d.data() as Map?)?.cast<String, dynamic>() ??
+                              <String, dynamic>{};
+                          final name = (data['name'] ?? d.id).toString();
+                          return DropdownMenuItem<String>(
+                            value: d.id,
+                            child: Text(name, overflow: TextOverflow.ellipsis),
+                          );
+                        }(),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      final doc = filteredProjectDocs
+                          .firstWhere((e) => e.id == v, orElse: () => filteredProjectDocs.first);
+                      final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
+                          <String, dynamic>{};
+                      setState(() {
+                        _selectedProjectId = v;
+                        _selectedProjectName = (data['name'] ?? '').toString();
+                      });
+                    },
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  );
                 },
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
               ),
               SmartInsightCard(
                 title: 'Smart Insight',
@@ -523,8 +674,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     required Color iconColor,
                     required String label,
                     required String value,
+                    VoidCallback? onTap,
                   }) {
-                    return AppCard(
+                    final card = AppCard(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
@@ -571,6 +723,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                         ],
                       ),
                     );
+
+                    if (onTap == null) return card;
+
+                    return GestureDetector(
+                      onTap: onTap,
+                      child: card,
+                    );
                   }
 
                   final totalStockCard = buildStatCard(
@@ -578,6 +737,12 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     iconColor: AppTheme.deepBlue,
                     label: 'Total material in stock',
                     value: totalStock.toStringAsFixed(1),
+                    onTap: inventoryItems.isEmpty
+                        ? null
+                        : () => _showFullInventoryTable(
+                              context,
+                              inventoryItems,
+                            ),
                   );
 
                   final usedThisMonthCard = buildStatCard(
@@ -585,6 +750,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     iconColor: AppTheme.accentYellow,
                     label: 'Material used this month',
                     value: monthQuantity.toStringAsFixed(1),
+                    onTap: monthUsageEntries.isEmpty
+                        ? null
+                        : () => _showFullMaterialUsageTable(
+                              context,
+                              'This month',
+                              monthUsageEntries,
+                            ),
                   );
 
                   if (isNarrow) {
@@ -620,7 +792,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   padding: const EdgeInsets.only(bottom: 4),
                   child: Text(
                     'Top site by material usage: '
-                    '${siteSummaries.first.projectId} '
+                    '${siteSummaries.first.siteLabel} '
                     '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: AppTheme.mediumGray,
@@ -635,31 +807,39 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       ),
                 )
               else
-                GestureDetector(
-                  onTap: () => _showFullSiteDistributionTable(
-                    context,
-                    siteSummaries,
+                for (final summary in siteSummaries) ...[
+                  Text(
+                    'Site: ${summary.siteLabel}',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
-                  child: GlassDataTableTheme(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: DataTable(
-                        columnSpacing: 16,
-                        columns: const [
-                          DataColumn(label: Text('Site')),
-                          DataColumn(label: Text('Materials')),
-                          DataColumn(label: Text('Total qty used')),
-                          DataColumn(label: Text('Total cost')),
-                          DataColumn(label: Text('Last usage')),
-                        ],
-                        rows: [
-                          for (final summary in siteSummaries)
+                  const SizedBox(height: 4),
+                  GestureDetector(
+                    onTap: () => _showFullSiteDistributionTable(
+                      context,
+                      siteSummaries,
+                    ),
+                    child: GlassDataTableTheme(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: DataTable(
+                          columnSpacing: 16,
+                          columns: const [
+                            DataColumn(label: Text('Materials')),
+                            DataColumn(label: Text('Total qty used')),
+                            DataColumn(label: Text('Total cost')),
+                            DataColumn(label: Text('Last usage')),
+                          ],
+                          rows: [
                             _buildSiteDistributionRow(context, summary),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
+                  const SizedBox(height: 12),
+                ],
               const SizedBox(height: 16),
               Text(
                 'Material usage details',
@@ -678,7 +858,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
               if (usageByProject.isNotEmpty) const SizedBox(height: 4),
               for (final entry in usageByProject.entries) ...[
                 Text(
-                  'Site: ${entry.key}',
+                  'Site: ${siteLabel(entry.key)}',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
@@ -687,7 +867,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 GestureDetector(
                   onTap: () => _showFullMaterialUsageTable(
                     context,
-                    entry.key,
+                    siteLabel(entry.key),
                     entry.value,
                   ),
                   child: GlassDataTableTheme(
@@ -740,7 +920,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
       builder: (sheetContext) {
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.8,
+            height: MediaQuery.of(sheetContext).size.height * 0.92,
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -764,29 +944,197 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   ),
                   const SizedBox(height: 12),
                   Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: DataTable(
-                        columnSpacing: 16,
-                        headingTextStyle: Theme.of(sheetContext)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: AppTheme.mediumGray,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final verticalController = ScrollController();
+                        return Scrollbar(
+                          thumbVisibility: true,
+                          controller: verticalController,
+                          child: SingleChildScrollView(
+                            controller: verticalController,
+                            scrollDirection: Axis.vertical,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                for (final summary in siteSummaries) ...[
+                                  Text(
+                                    'Site: ${summary.siteLabel}',
+                                    style: Theme.of(sheetContext)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  GlassDataTableTheme(
+                                    child: SingleChildScrollView(
+                                      scrollDirection: Axis.horizontal,
+                                      child: ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          minWidth: constraints.maxWidth,
+                                        ),
+                                        child: DataTable(
+                                          columnSpacing: 16,
+                                          headingTextStyle: Theme.of(sheetContext)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w600,
+                                                color: AppTheme.mediumGray,
+                                              ),
+                                          columns: const [
+                                            DataColumn(label: Text('Materials')),
+                                            DataColumn(label: Text('Total qty used')),
+                                            DataColumn(label: Text('Total cost')),
+                                            DataColumn(label: Text('Last usage')),
+                                          ],
+                                          rows: [
+                                            _buildSiteDistributionRow(
+                                              sheetContext,
+                                              summary,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
+                              ],
                             ),
-                        columns: const [
-                          DataColumn(label: Text('Site')),
-                          DataColumn(label: Text('Materials')),
-                          DataColumn(label: Text('Total qty used')),
-                          DataColumn(label: Text('Total cost')),
-                          DataColumn(label: Text('Last usage')),
-                        ],
-                        rows: [
-                          for (final summary in siteSummaries)
-                            _buildSiteDistributionRow(sheetContext, summary),
-                        ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showFullInventoryTable(
+    BuildContext context,
+    List<Map<String, dynamic>> inventoryItems,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(sheetContext).size.height * 0.8,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Inventory items',
+                        style: Theme.of(sheetContext)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final verticalController = ScrollController();
+                        return Scrollbar(
+                          thumbVisibility: true,
+                          controller: verticalController,
+                          child: SingleChildScrollView(
+                            controller: verticalController,
+                            scrollDirection: Axis.vertical,
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  minWidth: constraints.maxWidth,
+                                ),
+                                child: DataTable(
+                                  columnSpacing: 16,
+                                  headingTextStyle: Theme.of(sheetContext)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: AppTheme.mediumGray,
+                                      ),
+                                  columns: const [
+                                    DataColumn(label: Text('Material')),
+                                    DataColumn(label: Text('Stock')),
+                                    DataColumn(label: Text('Unit')),
+                                    DataColumn(label: Text('Unit price')),
+                                  ],
+                                  rows: [
+                                    for (final item in inventoryItems)
+                                      () {
+                                        final name =
+                                            (item['materialName'] ?? '')
+                                                .toString();
+                                        final unit =
+                                            (item['unit'] ?? '').toString();
+                                        final stockRaw = item['stock'];
+                                        final stock = stockRaw is num
+                                            ? stockRaw.toDouble()
+                                            : (double.tryParse(
+                                                    stockRaw?.toString() ??
+                                                        '0') ??
+                                                0.0);
+
+                                        final unitPriceRaw =
+                                            item['unitPrice'] ?? item['price'];
+                                        final unitPrice = unitPriceRaw is num
+                                            ? unitPriceRaw.toDouble()
+                                            : double.tryParse(
+                                                unitPriceRaw?.toString() ??
+                                                    '');
+
+                                        return DataRow(
+                                          cells: [
+                                            DataCell(
+                                              SizedBox(
+                                                width: constraints.maxWidth * 0.38,
+                                                child: Text(
+                                                  name.isEmpty ? '-' : name,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ),
+                                            DataCell(
+                                              Text(stock.toStringAsFixed(1)),
+                                            ),
+                                            DataCell(
+                                              Text(unit.isEmpty ? '-' : unit),
+                                            ),
+                                            DataCell(
+                                              Text(unitPrice == null
+                                                  ? '-'
+                                                  : unitPrice.toStringAsFixed(2)),
+                                            ),
+                                          ],
+                                        );
+                                      }(),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -809,7 +1157,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
       builder: (sheetContext) {
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.8,
+            height: MediaQuery.of(sheetContext).size.height * 0.92,
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -833,32 +1181,50 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   ),
                   const SizedBox(height: 12),
                   Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: DataTable(
-                        columnSpacing: 16,
-                        headingTextStyle: Theme.of(sheetContext)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w600,
-                              color: AppTheme.mediumGray,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final verticalController = ScrollController();
+                        return Scrollbar(
+                          thumbVisibility: true,
+                          controller: verticalController,
+                          child: SingleChildScrollView(
+                            controller: verticalController,
+                            scrollDirection: Axis.vertical,
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  minWidth: constraints.maxWidth,
+                                ),
+                                child: DataTable(
+                                  columnSpacing: 16,
+                                  headingTextStyle: Theme.of(sheetContext)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: AppTheme.mediumGray,
+                                      ),
+                                  columns: const [
+                                    DataColumn(label: Text('Material')),
+                                    DataColumn(label: Text('Qty')),
+                                    DataColumn(label: Text('Unit')),
+                                    DataColumn(label: Text('Unit price')),
+                                    DataColumn(label: Text('Cost')),
+                                    DataColumn(label: Text('Status')),
+                                    DataColumn(label: Text('Report ID')),
+                                    DataColumn(label: Text('Date')),
+                                  ],
+                                  rows: [
+                                    for (final usage in usages)
+                                      _buildMaterialUsageRow(sheetContext, usage),
+                                  ],
+                                ),
+                              ),
                             ),
-                        columns: const [
-                          DataColumn(label: Text('Material')),
-                          DataColumn(label: Text('Qty')),
-                          DataColumn(label: Text('Unit')),
-                          DataColumn(label: Text('Unit price')),
-                          DataColumn(label: Text('Cost')),
-                          DataColumn(label: Text('Status')),
-                          DataColumn(label: Text('Report ID')),
-                          DataColumn(label: Text('Date')),
-                        ],
-                        rows: [
-                          for (final usage in usages)
-                            _buildMaterialUsageRow(sheetContext, usage),
-                        ],
-                      ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -1015,7 +1381,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Text(
-                'Failed to load material requests.',
+                'Failed to load material requests: ${snapshot.error}',
                 textAlign: TextAlign.center,
                 style: Theme.of(context)
                     .textTheme
@@ -1194,7 +1560,23 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
     final managerDisplay =
         (createdByName.isNotEmpty ? createdByName : createdBy).trim();
 
-    final inventoryItems = HiveService.instance.getAllMaterialInventory();
+    final inventoryItemsSnap = await FirebaseService.instance
+        .materialInventoryCollection(projectId)
+        .orderBy('materialName')
+        .limit(500)
+        .get();
+
+    final inventoryItems = inventoryItemsSnap.docs
+        .map(
+          (d) => <String, dynamic>{
+            ...(d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{},
+            'id': d.id,
+          },
+        )
+        .toList();
+
+    if (!mounted) return;
+
     final commentController = TextEditingController();
     final quantityController = TextEditingController();
     String? selectedInventoryId;
@@ -1245,271 +1627,508 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
               calculatedAmount = unitPrice * quantity;
             }
 
-            return AlertDialog(
-              title: Text(subject),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Site: $siteLabel',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: AppTheme.mediumGray),
+            final requestedMaterial = (data['materialName'] ?? subject).toString();
+
+            Future<void> rejectAction() async {
+              final comment = commentController.text.trim();
+              Navigator.of(dialogContext).pop();
+              await _updateMaterialRequestStatus(
+                doc,
+                AppConstants.materialRequestRejected,
+                comment,
+              );
+            }
+
+            Future<void> approveAction() async {
+              if (inventoryItems.isEmpty) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'No inventory materials available. Add materials in inventory first.',
                     ),
-                    if (projectName.isNotEmpty && projectName != projectId)
-                      Text(
-                        'Project ID: $projectId',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Site manager: '
-                      '${managerDisplay.isEmpty ? 'Unknown' : managerDisplay}',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(color: AppTheme.mediumGray),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              if (selectedInventoryId == null ||
+                  selectedInventory == null ||
+                  selectedInventory!.isEmpty) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      (selectedInventoryId ?? '').startsWith('manual:')
+                          ? 'Selected material is not in inventory. Add it to inventory first, then release.'
+                          : 'Please select a material from inventory to release.',
                     ),
-                    const SizedBox(height: 8),
-                    if (details.isNotEmpty) ...[
-                      Text(details),
-                      const SizedBox(height: 12),
-                    ],
-                    DropdownButtonFormField<String>(
-                      initialValue: selectedInventoryId,
-                      items: [
-                        for (final item in inventoryItems)
-                          () {
-                            final id = (item['id'] ?? '').toString();
-                            final name =
-                                (item['materialName'] ?? 'Material').toString();
-                            final unit = (item['unit'] ?? '').toString();
-                            final stockRaw = item['stock'];
-                            double stock;
-                            if (stockRaw is num) {
-                              stock = stockRaw.toDouble();
-                            } else {
-                              stock = double.tryParse(
-                                      stockRaw?.toString() ?? '0') ??
-                                  0.0;
-                            }
-                            return DropdownMenuItem<String>(
-                              value: id,
-                              child: Text(
-                                '$name (Stock: ${stock.toStringAsFixed(1)} $unit)',
-                                overflow: TextOverflow.ellipsis,
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              final quantityText =
+                  quantityController.text.trim().replaceAll(',', '');
+              final releaseQuantity = double.tryParse(quantityText);
+              if (releaseQuantity == null || releaseQuantity <= 0) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Enter a valid quantity to release.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              final stockRaw = selectedInventory!['stock'];
+              double currentStock;
+              if (stockRaw is num) {
+                currentStock = stockRaw.toDouble();
+              } else {
+                currentStock =
+                    double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
+              }
+              if (releaseQuantity > currentStock) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Not enough stock. Available: ${currentStock.toStringAsFixed(1)}',
+                    ),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              final priceRaw =
+                  selectedInventory!['unitPrice'] ?? selectedInventory!['price'];
+              double? unitPriceForExpense;
+              if (priceRaw is num) {
+                unitPriceForExpense = priceRaw.toDouble();
+              } else if (priceRaw is String) {
+                final cleaned = priceRaw
+                    .replaceAll(',', '')
+                    .replaceAll('₱', '')
+                    .trim();
+                unitPriceForExpense = double.tryParse(cleaned);
+              }
+              if (unitPriceForExpense == null || unitPriceForExpense <= 0) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Selected material has no valid price per unit. Set a price in the inventory first.',
+                    ),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              final expenseAmount = unitPriceForExpense * releaseQuantity;
+              final comment = commentController.text.trim();
+
+              Navigator.of(dialogContext).pop();
+
+              await _updateMaterialRequestStatus(
+                doc,
+                AppConstants.materialRequestApproved,
+                comment,
+                inventoryItemId: selectedInventoryId,
+                releasedQuantity: releaseQuantity,
+                expenseAmount: expenseAmount,
+                unitPrice: unitPriceForExpense,
+              );
+            }
+
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 980),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: Material(
+                    color: Colors.white,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isNarrow = constraints.maxWidth < 820;
+
+                        final header = Container(
+                          padding: const EdgeInsets.fromLTRB(22, 18, 14, 14),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                Colors.white,
+                                const Color(0xFFF5F6FA),
+                              ],
+                            ),
+                            border: Border(
+                              bottom: BorderSide(
+                                color: Colors.black.withValues(alpha: 0.06),
                               ),
-                            );
-                          }(),
-                      ],
-                      decoration: const InputDecoration(
-                        labelText: 'Material to release',
-                      ),
-                      onChanged: (value) {
-                        setStateDialog(() {
-                          selectedInventoryId = value;
-                          selectedInventory = inventoryItems.firstWhere(
-                            (item) =>
-                                (item['id'] ?? '').toString() == value,
-                            orElse: () => <String, dynamic>{},
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Material Release Request',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleLarge
+                                          ?.copyWith(fontWeight: FontWeight.w800),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      'Site: $siteLabel | Project ID: $projectId',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: AppTheme.mediumGray),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: () => Navigator.of(dialogContext).pop(),
+                                icon: const Icon(Icons.close),
+                                tooltip: 'Close',
+                              ),
+                            ],
+                          ),
+                        );
+
+                        Widget infoRow(IconData icon, String label, String value) {
+                          return Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(icon, size: 18, color: AppTheme.mediumGray),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      label,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: AppTheme.mediumGray),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      value,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(fontWeight: FontWeight.w700),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           );
-                        });
+                        }
+
+                        final leftPanel = Container(
+                          color: const Color(0xFFF5F6FA),
+                          padding: const EdgeInsets.all(18),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Site Details',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 12),
+                              Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                    color: Colors.black.withValues(alpha: 0.06),
+                                  ),
+                                ),
+                                child: Column(
+                                  children: [
+                                    infoRow(
+                                      Icons.person_outline,
+                                      'Site Manager',
+                                      managerDisplay.isEmpty ? 'Unknown' : managerDisplay,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Container(
+                                      height: 1,
+                                      color: Colors.black.withValues(alpha: 0.06),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    infoRow(
+                                      Icons.inventory_2_outlined,
+                                      'Requested Material',
+                                      requestedMaterial,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'Status',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 10),
+                              Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                    color: Colors.black.withValues(alpha: 0.06),
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 26,
+                                      height: 26,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFFFF3CD),
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: const Icon(
+                                        Icons.schedule,
+                                        size: 16,
+                                        color: Color(0xFFB45309),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        'Pending Approval',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(fontWeight: FontWeight.w700),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (details.isNotEmpty) ...[
+                                const SizedBox(height: 16),
+                                Text(
+                                  details,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: AppTheme.mediumGray),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+
+                        final formPanel = Container(
+                          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Material Release',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 12),
+                              DropdownButtonFormField<String>(
+                                initialValue: selectedInventoryId,
+                                items: [
+                                  for (final item in inventoryItems)
+                                    () {
+                                      final id = (item['id'] ?? '').toString();
+                                      final name =
+                                          (item['materialName'] ?? 'Material').toString();
+                                      final unit = (item['unit'] ?? '').toString();
+                                      final stockRaw = item['stock'];
+                                      double stock;
+                                      if (stockRaw is num) {
+                                        stock = stockRaw.toDouble();
+                                      } else {
+                                        stock =
+                                            double.tryParse(stockRaw?.toString() ?? '0') ??
+                                                0.0;
+                                      }
+                                      return DropdownMenuItem<String>(
+                                        value: id,
+                                        child: Text(
+                                          '$name (Stock: ${stock.toStringAsFixed(1)} $unit)',
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      );
+                                    }(),
+                                  ...() {
+                                    final inventoryNames = inventoryItems
+                                        .map((i) => (i['materialName'] ?? '')
+                                            .toString()
+                                            .trim()
+                                            .toLowerCase())
+                                        .where((n) => n.isNotEmpty)
+                                        .toSet();
+
+                                    final extra = _fallbackMaterials
+                                        .where(
+                                          (m) =>
+                                              !inventoryNames.contains(m.toLowerCase()),
+                                        )
+                                        .toList();
+                                    extra.sort(
+                                      (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
+                                    );
+
+                                    return extra
+                                        .map(
+                                          (name) => DropdownMenuItem<String>(
+                                            value: 'manual:$name',
+                                            child: Text(
+                                              '$name (Not in inventory)',
+                                              overflow: TextOverflow.ellipsis,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodyMedium
+                                                  ?.copyWith(color: AppTheme.mediumGray),
+                                            ),
+                                          ),
+                                        )
+                                        .toList();
+                                  }(),
+                                ],
+                                decoration: const InputDecoration(
+                                  labelText: 'Material to Release',
+                                ),
+                                onChanged: (value) {
+                                  setStateDialog(() {
+                                    selectedInventoryId = value;
+                                    if (value != null && value.startsWith('manual:')) {
+                                      selectedInventory = null;
+                                    } else {
+                                      selectedInventory = inventoryItems.firstWhere(
+                                        (item) =>
+                                            (item['id'] ?? '').toString() == value,
+                                        orElse: () => <String, dynamic>{},
+                                      );
+                                    }
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 10),
+                              if (availableStock != null && unitLabel.isNotEmpty)
+                                Text(
+                                  'Available stock: ${availableStock.toStringAsFixed(1)} $unitLabel',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: AppTheme.mediumGray),
+                                ),
+                              if (unitPrice != null)
+                                Text(
+                                  'Unit price: ₱${unitPrice.toStringAsFixed(2)}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: AppTheme.mediumGray),
+                                ),
+                              if (calculatedAmount != null && quantity != null && quantity > 0)
+                                Text(
+                                  'This release cost: ₱${calculatedAmount.toStringAsFixed(2)}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(color: AppTheme.mediumGray),
+                                ),
+                              const SizedBox(height: 14),
+                              TextField(
+                                controller: commentController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Comment / Reply',
+                                ),
+                                maxLines: 3,
+                              ),
+                              const Spacer(),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  OutlinedButton(
+                                    onPressed: rejectAction,
+                                    child: const Text('Reject'),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  FilledButton(
+                                    onPressed: approveAction,
+                                    child: const Text('Approve & Release'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+
+                        final body = isNarrow
+                            ? SingleChildScrollView(
+                                child: Column(
+                                  children: [
+                                    leftPanel,
+                                    const Divider(height: 1),
+                                    SizedBox(height: 520, child: formPanel),
+                                  ],
+                                ),
+                              )
+                            : SizedBox(
+                                height: 520,
+                                child: Row(
+                                  children: [
+                                    SizedBox(width: 320, child: leftPanel),
+                                    Container(
+                                      width: 1,
+                                      color: Colors.black.withValues(alpha: 0.06),
+                                    ),
+                                    Expanded(child: formPanel),
+                                  ],
+                                ),
+                              );
+
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            header,
+                            body,
+                          ],
+                        );
                       },
                     ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: quantityController,
-                      keyboardType: TextInputType.number,
-                      decoration: InputDecoration(
-                        labelText: 'Quantity to release',
-                        hintText:
-                            availableStock != null && unitLabel.isNotEmpty
-                                ? 'Max ${availableStock.toStringAsFixed(1)} $unitLabel'
-                                : null,
-                      ),
-                      onChanged: (_) {
-                        setStateDialog(() {});
-                      },
-                    ),
-                    if (availableStock != null && unitLabel.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        'Available stock: ${availableStock.toStringAsFixed(1)} $unitLabel',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                    if (unitPrice != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        'Unit price: ₱${unitPrice.toStringAsFixed(2)}',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                    if (calculatedAmount != null &&
-                        quantity != null &&
-                        quantity > 0) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        'This release cost: ₱${calculatedAmount.toStringAsFixed(2)}',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: commentController,
-                      decoration: const InputDecoration(
-                        labelText: 'Comment / reply to site manager',
-                        hintText:
-                            'Example: Approved 10 out of 20 bags of cement (remaining stock) or No stock today.',
-                      ),
-                      maxLines: 3,
-                    ),
-                  ],
+                  ),
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Close'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    final comment = commentController.text.trim();
-                    Navigator.of(dialogContext).pop();
-                    await _updateMaterialRequestStatus(
-                      doc,
-                      AppConstants.materialRequestRejected,
-                      comment,
-                    );
-                  },
-                  child: const Text('Reject'),
-                ),
-                FilledButton(
-                  onPressed: () async {
-                    if (inventoryItems.isEmpty) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'No inventory materials available. Add materials in inventory first.',
-                          ),
-                          backgroundColor: AppTheme.errorRed,
-                        ),
-                      );
-                      return;
-                    }
-
-                    if (selectedInventoryId == null ||
-                        selectedInventory == null ||
-                        selectedInventory!.isEmpty) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Please select a material from inventory to release.',
-                          ),
-                          backgroundColor: AppTheme.errorRed,
-                        ),
-                      );
-                      return;
-                    }
-
-                    final quantityText =
-                        quantityController.text.trim().replaceAll(',', '');
-                    final releaseQuantity = double.tryParse(quantityText);
-                    if (releaseQuantity == null || releaseQuantity <= 0) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content:
-                              Text('Enter a valid quantity to release.'),
-                          backgroundColor: AppTheme.errorRed,
-                        ),
-                      );
-                      return;
-                    }
-
-                    final stockRaw = selectedInventory!['stock'];
-                    double currentStock;
-                    if (stockRaw is num) {
-                      currentStock = stockRaw.toDouble();
-                    } else {
-                      currentStock =
-                          double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
-                    }
-                    if (releaseQuantity > currentStock) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Not enough stock. Available: ${currentStock.toStringAsFixed(1)}',
-                          ),
-                          backgroundColor: AppTheme.errorRed,
-                        ),
-                      );
-                      return;
-                    }
-
-                    final priceRaw = selectedInventory!['unitPrice'] ??
-                        selectedInventory!['price'];
-                    double? unitPriceForExpense;
-                    if (priceRaw is num) {
-                      unitPriceForExpense = priceRaw.toDouble();
-                    } else if (priceRaw is String) {
-                      final cleaned = priceRaw
-                          .replaceAll(',', '')
-                          .replaceAll('₱', '')
-                          .trim();
-                      unitPriceForExpense = double.tryParse(cleaned);
-                    }
-                    if (unitPriceForExpense == null ||
-                        unitPriceForExpense <= 0) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Selected material has no valid price per unit. Set a price in the inventory first.',
-                          ),
-                          backgroundColor: AppTheme.errorRed,
-                        ),
-                      );
-                      return;
-                    }
-
-                    final expenseAmount =
-                        unitPriceForExpense * releaseQuantity;
-                    final comment = commentController.text.trim();
-
-                    Navigator.of(dialogContext).pop();
-
-                    await _updateMaterialRequestStatus(
-                      doc,
-                      AppConstants.materialRequestApproved,
-                      comment,
-                      inventoryItemId: selectedInventoryId,
-                      releasedQuantity: releaseQuantity,
-                      expenseAmount: expenseAmount,
-                      unitPrice: unitPriceForExpense,
-                    );
-                  },
-                  child: const Text('Approve & Release'),
-                ),
-              ],
             );
           },
         );
@@ -1533,47 +2152,66 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
       final projectId = (data['projectId'] ?? '').toString();
       final subject = (data['subject'] ?? 'Material request').toString();
 
+      String? inventoryMaterialName;
+      String? inventoryUnit;
+
+      if (status == AppConstants.materialRequestApproved &&
+          projectId.isNotEmpty &&
+          inventoryItemId != null &&
+          inventoryItemId.isNotEmpty &&
+          releasedQuantity != null &&
+          releasedQuantity > 0) {
+        await FirebaseService.instance.firestore.runTransaction((tx) async {
+          final inventoryRef = FirebaseService.instance
+              .materialInventoryCollection(projectId)
+              .doc(inventoryItemId);
+          final invSnap = await tx.get(inventoryRef);
+          if (!invSnap.exists) {
+            throw Exception('Selected inventory item not found.');
+          }
+
+          final invData = (invSnap.data() as Map?)?.cast<String, dynamic>() ??
+              <String, dynamic>{};
+
+          inventoryMaterialName =
+              (invData['materialName'] ?? subject).toString().trim();
+          inventoryUnit = (invData['unit'] ?? '').toString().trim();
+
+          final stockRaw = invData['stock'];
+          final currentStock = stockRaw is num
+              ? stockRaw.toDouble()
+              : double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
+
+          if (releasedQuantity > currentStock) {
+            throw Exception(
+              'Not enough stock. Available: ${currentStock.toStringAsFixed(1)}',
+            );
+          }
+
+          final newStock =
+              (currentStock - releasedQuantity).clamp(0.0, double.infinity);
+          tx.update(inventoryRef, {
+            'stock': newStock,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        });
+      }
+
       await doc.reference.update({
         'status': status,
         'adminComment': comment,
         'handledAt': nowIso,
+        if (status == AppConstants.materialRequestApproved) 'approvedAt': nowIso,
         if (status == AppConstants.materialRequestApproved)
           'release': {
             'inventoryItemId': inventoryItemId,
             'releasedQuantity': releasedQuantity,
             'expenseAmount': expenseAmount,
             'unitPrice': unitPrice,
+            'materialName': inventoryMaterialName,
+            'unit': inventoryUnit,
           },
       });
-
-      Map<String, dynamic>? inventorySnapshot;
-
-      if (status == AppConstants.materialRequestApproved &&
-          inventoryItemId != null &&
-          releasedQuantity != null &&
-          releasedQuantity > 0) {
-        final hive = HiveService.instance;
-        final existing = hive.getMaterialInventory(inventoryItemId);
-        if (existing != null) {
-          inventorySnapshot = Map<String, dynamic>.from(existing);
-
-          final updated = Map<String, dynamic>.from(existing);
-          final stockRaw = updated['stock'];
-          double currentStock;
-          if (stockRaw is num) {
-            currentStock = stockRaw.toDouble();
-          } else {
-            currentStock =
-                double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
-          }
-          final newStock =
-              (currentStock - releasedQuantity).clamp(0.0, double.infinity);
-          updated['stock'] = newStock;
-          updated['status'] = newStock <= 0 ? 'lowstock' : 'instock';
-
-          await hive.saveMaterialInventory(inventoryItemId, updated);
-        }
-      }
 
       if (status == AppConstants.materialRequestApproved &&
           projectId.isNotEmpty &&
@@ -1601,30 +2239,51 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           releasedQuantity > 0 &&
           expenseAmount != null &&
           expenseAmount > 0) {
-        final hive = HiveService.instance;
+        final deliveryId = 'delivery_${doc.id}_${now.millisecondsSinceEpoch}';
 
-        final materialName =
-            (inventorySnapshot?['materialName'] ?? subject).toString();
-        final unit = (inventorySnapshot?['unit'] ?? '').toString();
+        await FirebaseService.instance
+            .deliveriesCollection(projectId)
+            .doc(deliveryId)
+            .set({
+          'id': deliveryId,
+          'type': 'material_request_release',
+          'projectId': projectId,
+          'materialRequestId': doc.id,
+          'materialName': (inventoryMaterialName ?? subject).toString(),
+          'inventoryItemId': inventoryItemId,
+          'quantity': releasedQuantity,
+          'unit': (inventoryUnit ?? '').toString(),
+          'status': 'released',
+          'approvedAt': nowIso,
+          'createdAt': nowIso,
+        });
 
-        final usageId =
-            'mr_${doc.id}_${now.millisecondsSinceEpoch.toString()}';
+        await doc.reference.update({'deliveryId': deliveryId});
+
+        final dayKey =
+            '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+        final reportId = 'admin_release_${projectId}_$dayKey';
+        final usageId = 'mr_${doc.id}_${now.millisecondsSinceEpoch.toString()}';
 
         final usage = <String, dynamic>{
           'id': usageId,
-          'materialName': materialName,
+          'materialName': (inventoryMaterialName ?? subject).toString(),
           'quantity': releasedQuantity,
-          'unit': unit,
+          'unit': (inventoryUnit ?? '').toString(),
           'projectId': projectId,
-          'reportId': 'material_request:${doc.id}',
+          'reportId': reportId,
           'status': 'released',
           'syncStatus': AppConstants.syncStatusCompleted,
           'materialRequestId': doc.id,
           'inventoryItemId': inventoryItemId,
           'date': nowIso,
+          'createdAt': nowIso,
         };
 
-        await hive.saveMaterialUsage(usageId, usage);
+        await FirebaseService.instance
+            .materialUsageCollection(projectId, reportId)
+            .doc(usageId)
+            .set(usage);
       }
 
       final logDetails = <String, dynamic>{
@@ -1710,6 +2369,7 @@ class _MaterialUsageEntry {
 
 class _SiteDistributionSummary {
   final String projectId;
+  final String siteLabel;
   final int materialsCount;
   final double totalQuantity;
   final double totalCost;
@@ -1717,6 +2377,7 @@ class _SiteDistributionSummary {
 
   _SiteDistributionSummary({
     required this.projectId,
+    required this.siteLabel,
     required this.materialsCount,
     required this.totalQuantity,
     required this.totalCost,
@@ -1738,16 +2399,6 @@ DataRow _buildSiteDistributionRow(
 
   return DataRow(
     cells: [
-      DataCell(
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 160),
-          child: Text(
-            summary.projectId,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      ),
       DataCell(
         Text(
           summary.materialsCount.toString(),

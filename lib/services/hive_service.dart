@@ -35,6 +35,7 @@ class HiveService {
     await Hive.openBox<AttendanceModel>(AppConstants.attendanceBox);
     await Hive.openBox<Map>(AppConstants.materialUsageBox);
     await Hive.openBox<Map>(AppConstants.materialInventoryBox);
+    await Hive.openBox<Map>(AppConstants.materialRequestsBox);
     await Hive.openBox<Map>(AppConstants.deliveriesBox);
     await Hive.openBox<Map>(AppConstants.syncQueueBox);
     await Hive.openBox<Map>(AppConstants.settingsBox);
@@ -46,6 +47,7 @@ class HiveService {
   Box<AttendanceModel> get attendanceBox => Hive.box<AttendanceModel>(AppConstants.attendanceBox);
   Box<Map> get materialUsageBox => Hive.box<Map>(AppConstants.materialUsageBox);
   Box<Map> get materialInventoryBox => Hive.box<Map>(AppConstants.materialInventoryBox);
+  Box<Map> get materialRequestsBox => Hive.box<Map>(AppConstants.materialRequestsBox);
   Box<Map> get deliveriesBox => Hive.box<Map>(AppConstants.deliveriesBox);
   Box<Map> get syncQueueBox => Hive.box<Map>(AppConstants.syncQueueBox);
   Box<Map> get settingsBox => Hive.box<Map>(AppConstants.settingsBox);
@@ -218,6 +220,25 @@ class HiveService {
 
   Future<void> deleteDelivery(String id) async {
     await deliveriesBox.delete(id);
+  }
+
+  // Material Requests operations
+  Future<void> saveMaterialRequest(String id, Map<String, dynamic> data) async {
+    await materialRequestsBox.put(id, data);
+  }
+
+  Map<String, dynamic>? getMaterialRequest(String id) {
+    return materialRequestsBox.get(id)?.cast<String, dynamic>();
+  }
+
+  List<Map<String, dynamic>> getAllMaterialRequests() {
+    return materialRequestsBox.values
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
+  }
+
+  Future<void> deleteMaterialRequest(String id) async {
+    await materialRequestsBox.delete(id);
   }
 
   // Sync Queue operations

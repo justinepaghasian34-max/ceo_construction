@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
+import '../../services/geo_tag_service.dart';
 import '../../services/firebase_service.dart';
 import '../../widgets/common/app_button.dart';
 
@@ -104,9 +105,11 @@ class _ProjectProgressUpdateScreenState extends State<ProjectProgressUpdateScree
     });
 
     try {
+      final geoTag = await GeoTagService.instance.captureGeoTag();
       await FirebaseService.instance.projectsCollection.doc(_projectId).update({
         'status': _status,
         'updatedAt': DateTime.now().toIso8601String(),
+        if (geoTag != null) 'lastUpdateGeoTag': geoTag,
       });
 
       if (!mounted) {

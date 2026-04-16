@@ -7,6 +7,8 @@ import '../../models/daily_report_model.dart';
 import '../../services/hive_service.dart';
 import '../../services/sync_service.dart';
 import '../../services/auth_service.dart';
+import '../../services/geo_tag_service.dart';
+import '../../services/audit_log_service.dart';
 import '../../models/user_model.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
@@ -815,6 +817,8 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
     try {
       UserModel? currentUser = ref.read(currentUserProvider);
 
+      final geoTag = await GeoTagService.instance.captureGeoTag();
+
       // If no assignment is found locally, try to refresh from Firestore in
       // case Admin has just assigned this Site Manager to a project.
       if (currentUser == null || currentUser.assignedProjects.isEmpty) {
@@ -860,6 +864,16 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
       );
 
       await HiveService.instance.saveDailyReport(report);
+
+      await AuditLogService.instance.logAction(
+        action: 'daily_report_submitted',
+        projectId: projectId,
+        details: {
+          'reportId': report.id,
+          'reportDate': report.reportDate.toIso8601String(),
+          'geoTag': geoTag,
+        },
+      );
 
       // Try to sync immediately
       final syncResult = await SyncService.instance.syncPendingData();
