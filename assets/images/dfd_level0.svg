@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700">
+  <style>
+    .box { fill:#ffffff; stroke:#1e3a8a; stroke-width:3; rx:8; }
+    .store { fill:#f3f4f6; stroke:#10b981; stroke-width:3; rx:6; }
+    .text { font-family: Arial, Helvetica, sans-serif; font-size:16px; fill:#0b1220; }
+    .title { font-size:18px; font-weight:700; }
+    .arrow { fill:none; stroke:#0b1220; stroke-width:2.2; marker-end:url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#0b1220" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="600" y="34" text-anchor="middle" class="text title">Data Flow Diagram - Level 0 (High-level Processes & Data Stores)</text>
+
+  <!-- External Entities -->
+  <rect class="box" x="40" y="100" width="220" height="70" />
+  <text x="150" y="140" text-anchor="middle" class="text">Site Manager</text>
+
+  <rect class="box" x="940" y="100" width="220" height="70" />
+  <text x="1050" y="140" text-anchor="middle" class="text">Admin / CEO</text>
+
+  <!-- Processes -->
+  <rect class="box" x="320" y="90" width="260" height="90" />
+  <text x="450" y="135" text-anchor="middle" class="text">1.0 Attendance Monitoring</text>
+
+  <rect class="box" x="320" y="210" width="260" height="90" />
+  <text x="450" y="255" text-anchor="middle" class="text">2.0 Material Management</text>
+
+  <rect class="box" x="320" y="330" width="260" height="90" />
+  <text x="450" y="375" text-anchor="middle" class="text">3.0 Reporting & Analytics</text>
+
+  <!-- Data Stores -->
+  <rect class="store" x="660" y="110" width="220" height="80" />
+  <text x="770" y="150" text-anchor="middle" class="text">D1: Projects</text>
+
+  <rect class="store" x="660" y="220" width="220" height="80" />
+  <text x="770" y="260" text-anchor="middle" class="text">D2: Attendance</text>
+
+  <rect class="store" x="660" y="330" width="220" height="80" />
+  <text x="770" y="370" text-anchor="middle" class="text">D3: Materials</text>
+
+  <!-- Firebase / Cloud Functions (External Services) -->
+  <rect class="box" x="940" y="320" width="220" height="70" />
+  <text x="1050" y="355" text-anchor="middle" class="text">Firebase / Cloud Functions</text>
+
+  <!-- Arrows from Site Manager to processes -->
+  <line class="arrow" x1="260" y1="135" x2="320" y2="135" />
+  <line class="arrow" x1="260" y1="135" x2="320" y2="255" />
+
+  <!-- Processes to Data Stores -->
+  <line class="arrow" x1="580" y1="135" x2="660" y2="150" />
+  <line class="arrow" x1="580" y1="255" x2="660" y2="260" />
+  <line class="arrow" x1="580" y1="375" x2="660" y2="370" />
+
+  <!-- Processes to Firebase -->
+  <line class="arrow" x1="580" y1="135" x2="940" y2="355" />
+  <line class="arrow" x1="580" y1="255" x2="940" y2="355" />
+  <line class="arrow" x1="580" y1="375" x2="940" y2="355" />
+
+  <!-- Admin/CEO interactions -->
+  <line class="arrow" x1="940" y1="140" x2="580" y2="135" />
+  <line class="arrow" x1="940" y1="140" x2="580" y2="375" />
+
+  <!-- Data store flows back to processes (read) -->
+  <line class="arrow" x1="880" y1="150" x2="760" y2="150" />
+  <line class="arrow" x1="880" y1="260" x2="760" y2="260" />
+  <line class="arrow" x1="880" y1="370" x2="760" y2="370" />
+
+  <!-- Footer caption -->
+  <text x="600" y="680" text-anchor="middle" class="text">Figure: Level 0 DFD — shows internal processes (attendance, materials, reporting), data stores (Projects, Attendance, Materials), and service integrations.</text>
+
+</svg>

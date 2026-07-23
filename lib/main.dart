@@ -5,6 +5,7 @@ import 'services/firebase_service.dart';
 import 'services/hive_service.dart';
 import 'services/local_notification_service.dart';
 import 'services/sync_service.dart';
+import 'services/audit_log_service.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
 import 'core/routing/app_router.dart';
@@ -46,6 +47,8 @@ void main() async {
     await LocalNotificationService.instance
         .initialize()
         .timeout(const Duration(seconds: 10));
+
+    AuditLogService.instance.startSessionTracking();
   } catch (e, st) {
     startupError = e;
     startupStack = st;

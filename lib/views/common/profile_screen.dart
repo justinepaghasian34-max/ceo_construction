@@ -106,6 +106,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final firebaseUser = AuthService.instance.currentFirebaseUser;
     final maxWidth = MediaQuery.of(context).size.width >= 1400 ? 1200.0 : 1100.0;
     final isNarrow = MediaQuery.of(context).size.width < 980;
+    final canGoBack = Navigator.of(context).canPop();
 
     Widget buildCard({required Widget child}) {
       return Container(
@@ -552,6 +553,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             padding: const EdgeInsets.all(14),
                             child: Row(
                               children: [
+                                IconButton(
+                                  onPressed: () {
+                                    if (canGoBack) {
+                                      context.pop();
+                                    } else {
+                                      context.go(RouteNames.adminHome);
+                                    }
+                                  },
+                                  icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                                  tooltip: 'Back',
+                                ),
                                 Text(
                                   'My Account',
                                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -722,6 +734,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                                   child: Row(
                                     children: [
+                                      IconButton(
+                                        onPressed: () {
+                                          if (canGoBack) {
+                                            context.pop();
+                                          } else {
+                                            context.go(RouteNames.adminHome);
+                                          }
+                                        },
+                                        icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                                        tooltip: 'Back',
+                                      ),
                                       Text(
                                         'My Account',
                                         style: Theme.of(context).textTheme.titleMedium?.copyWith(

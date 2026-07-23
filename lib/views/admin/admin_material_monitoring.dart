@@ -5,18 +5,33 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
 import '../../services/audit_log_service.dart';
+import '../../services/sync_service.dart';
+import '../../services/hive_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 
 class AdminMaterialMonitoring extends StatefulWidget {
-  const AdminMaterialMonitoring({super.key});
+  const AdminMaterialMonitoring({
+    super.key,
+    this.initialProjectId,
+    this.initialProjectName,
+    this.showSidebar = true,
+    this.showBottomNav = true,
+    this.sidebarMode = AdminSidebarMode.full,
+  });
+
+  final String? initialProjectId;
+  final String? initialProjectName;
+  final bool showSidebar;
+  final bool showBottomNav;
+  final AdminSidebarMode sidebarMode;
 
   @override
   State<AdminMaterialMonitoring> createState() => _AdminMaterialMonitoringState();
 }
 
-class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
+class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with SingleTickerProviderStateMixin {
   static const List<String> _fallbackMaterials = [
     'Cement',
     'Sand',
@@ -45,8 +60,36 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
   String? _selectedProjectId;
   String? _selectedProjectName;
 
+  List<Map<String, String>> _projectOptions = const [];
+  List<Map<String, String>> _allProjectOptions = const [];
+
   String? _projectsWithInventoryCacheKey;
   Set<String>? _projectsWithInventoryCache;
+
+  @override
+  void initState() {
+    super.initState();
+    final pid = widget.initialProjectId;
+    if (pid != null && pid.trim().isNotEmpty) {
+      _selectedProjectId = pid.trim();
+      final pn = widget.initialProjectName;
+      if (pn != null && pn.trim().isNotEmpty) {
+        _selectedProjectName = pn.trim();
+      }
+    }
+  }
+
+  bool _isFirestoreUnreachableError(Object e) {
+    final errorText = e.toString().toLowerCase();
+    final looksLikeDns = errorText.contains('unknownhostexception') ||
+        errorText.contains('unable to resolve host') ||
+        errorText.contains('eai_nodata') ||
+        errorText.contains('firestore.googleapis.com');
+    final looksUnavailable = errorText.contains('status{code=unavailable') ||
+        errorText.contains('code=unavailable') ||
+        errorText.contains('unavailable');
+    return looksLikeDns || looksUnavailable;
+  }
 
   Future<Set<String>> _getProjectsWithInventory(
     List<QueryDocumentSnapshot> projectDocs,
@@ -79,6 +122,268 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
     return result;
   }
 
+  Future<void> _showSyncInventoryToBudgetDialog() async {
+    final projectId = _selectedProjectId;
+    if (projectId == null || projectId.isEmpty) return;
+
+    final rootMessenger = ScaffoldMessenger.of(context);
+
+    try {
+      final invSnap = await FirebaseService.instance
+          .materialInventoryCollection(projectId)
+          .orderBy('materialName')
+          .get();
+      final allocSnap = await FirebaseService.instance
+          .materialAllocationsCollection(projectId)
+          .orderBy('materialName')
+          .get();
+
+      String norm(String s) => s.trim().toLowerCase();
+
+      final existingAllocNames = <String>{
+        for (final d in allocSnap.docs)
+          norm(((d.data() as Map?)?.cast<String, dynamic>() ?? const {})['materialName']?.toString() ?? ''),
+      }..remove('');
+
+      final inventoryItems = <Map<String, dynamic>>[];
+      for (final d in invSnap.docs) {
+        final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        final name = (data['materialName'] ?? '').toString();
+        final unit = (data['unit'] ?? '').toString();
+        final unitPrice = data['unitPrice'] ?? data['price'];
+        if (norm(name).isEmpty) continue;
+        if (existingAllocNames.contains(norm(name))) continue;
+        inventoryItems.add(<String, dynamic>{
+          'materialName': name,
+          'unit': unit,
+          if (unitPrice != null) 'unitPrice': unitPrice,
+        });
+      }
+
+      if (!mounted) return;
+
+      if (inventoryItems.isEmpty) {
+        rootMessenger.showSnackBar(
+          const SnackBar(
+            content: Text('All inventory materials are already assigned/budgeted for this project.'),
+            backgroundColor: AppTheme.softGreen,
+          ),
+        );
+        return;
+      }
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (dialogContext, setStateDialog) {
+              bool isSaving = false;
+
+              final controllers = <String, TextEditingController>{
+                for (final it in inventoryItems)
+                  norm((it['materialName'] ?? '').toString()): TextEditingController(),
+              };
+
+              Future<void> save() async {
+                if (isSaving) return;
+                setStateDialog(() => isSaving = true);
+
+                final navigator = Navigator.of(dialogContext);
+                try {
+                  final nowIso = DateTime.now().toIso8601String();
+                  final batch = FirebaseService.instance.firestore.batch();
+                  final queued = <Map<String, dynamic>>[];
+                  int added = 0;
+
+                  for (final it in inventoryItems) {
+                    final name = (it['materialName'] ?? '').toString().trim();
+                    final unit = (it['unit'] ?? '').toString().trim();
+                    final unitPrice = it['unitPrice'];
+                    final key = norm(name);
+                    final text = controllers[key]?.text.trim() ?? '';
+                    final budget = double.tryParse(text.replaceAll(',', ''));
+                    if (budget == null || budget <= 0) continue;
+
+                    final ref = FirebaseService.instance
+                        .materialAllocationsCollection(projectId)
+                        .doc();
+                    final payload = <String, dynamic>{
+                      'id': ref.id,
+                      'materialName': name,
+                      'unit': unit,
+                      'budgetQuantity': budget,
+                      'requiredQuantity': budget,
+                      'usedQuantity': 0,
+                      if (unitPrice != null) 'unitPrice': unitPrice,
+                      'projectId': projectId,
+                      'projectName': _selectedProjectName,
+                      'createdAt': FieldValue.serverTimestamp(),
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    };
+                    batch.set(ref, payload);
+                    queued.add(<String, dynamic>{
+                      ...payload,
+                      'createdAt': nowIso,
+                      'updatedAt': nowIso,
+                    });
+                    added++;
+                  }
+
+                  if (added == 0) {
+                    setStateDialog(() => isSaving = false);
+                    rootMessenger.showSnackBar(
+                      const SnackBar(
+                        content: Text('Enter a valid budget quantity for at least one material.'),
+                        backgroundColor: AppTheme.errorRed,
+                      ),
+                    );
+                    return;
+                  }
+
+                  try {
+                    await batch.commit();
+                    navigator.pop();
+                    rootMessenger.showSnackBar(
+                      SnackBar(
+                        content: Text('Added $added materials to site budget (assigned materials).'),
+                        backgroundColor: AppTheme.softGreen,
+                      ),
+                    );
+                  } catch (e) {
+                    if (!_isFirestoreUnreachableError(e)) rethrow;
+                    for (final p in queued) {
+                      final docId = (p['id'] ?? '').toString();
+                      if (docId.isEmpty) continue;
+                      await SyncService.instance.addToSyncQueue(
+                        'material_allocation_upsert',
+                        <String, dynamic>{
+                          'projectId': projectId,
+                          'docId': docId,
+                          'payload': p,
+                        },
+                      );
+                    }
+                    navigator.pop();
+                    rootMessenger.showSnackBar(
+                      SnackBar(
+                        content: Text('Saved offline ($added). Will sync to Firestore when online.'),
+                        backgroundColor: AppTheme.warningOrange,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  setStateDialog(() => isSaving = false);
+                  rootMessenger.showSnackBar(
+                    SnackBar(
+                      content: Text('Sync failed: $e'),
+                      backgroundColor: AppTheme.errorRed,
+                    ),
+                  );
+                }
+              }
+
+              return AlertDialog(
+                title: const Text('Sync Inventory → Site Budget'),
+                content: SizedBox(
+                  width: 520,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'These inventory materials are not yet assigned/budgeted for this project. Enter the budget quantity to add them to Assigned materials.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 340),
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: inventoryItems.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 10),
+                          itemBuilder: (context, i) {
+                            final it = inventoryItems[i];
+                            final name = (it['materialName'] ?? '').toString();
+                            final unit = (it['unit'] ?? '').toString();
+                            final key = norm(name);
+                            return Row(
+                              children: [
+                                Expanded(
+                                  flex: 3,
+                                  child: Text(
+                                    name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontWeight: FontWeight.w800),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  flex: 2,
+                                  child: Text(
+                                    unit.isEmpty ? '-' : unit,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(color: AppTheme.mediumGray),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  flex: 3,
+                                  child: TextField(
+                                    controller: controllers[key],
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    enabled: !isSaving,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Budget qty',
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: isSaving ? null : save,
+                    child: isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Save'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } catch (e) {
+      rootMessenger.showSnackBar(
+        SnackBar(
+          content: Text('Failed to load inventory/assigned materials: $e'),
+          backgroundColor: AppTheme.errorRed,
+        ),
+      );
+    }
+  }
+
   Future<void> _showAddInventoryItemDialog() async {
     final projectId = _selectedProjectId;
     if (projectId == null || projectId.isEmpty) return;
@@ -87,86 +392,277 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
     final unitController = TextEditingController();
     final stockController = TextEditingController();
     final unitPriceController = TextEditingController();
+    final budgetController = TextEditingController();
 
     final rootMessenger = ScaffoldMessenger.of(context);
 
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Add Inventory Item'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: 'Material name'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: unitController,
-                  decoration: const InputDecoration(labelText: 'Unit (e.g. bag, pcs)'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: stockController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Initial stock'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: unitPriceController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Unit price (₱)'),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final navigator = Navigator.of(dialogContext);
-                final name = nameController.text.trim();
-                final unit = unitController.text.trim();
-                final stock = double.tryParse(stockController.text.trim().replaceAll(',', ''));
-                final unitPrice = double.tryParse(unitPriceController.text.trim().replaceAll(',', ''));
+        return StatefulBuilder(
+          builder: (dialogContext, setStateDialog) {
+            bool saveToInventory = true;
+            bool saveToBudget = false;
+            bool isSaving = false;
 
-                if (name.isEmpty || unit.isEmpty || stock == null || stock < 0) {
-                  if (!mounted) return;
-                  rootMessenger.showSnackBar(
-                    const SnackBar(
-                      content: Text('Please enter material name, unit, and a valid stock.'),
-                      backgroundColor: AppTheme.errorRed,
-                    ),
-                  );
-                  return;
+            Future<void> save() async {
+              if (isSaving) return;
+              setStateDialog(() => isSaving = true);
+
+              final navigator = Navigator.of(dialogContext);
+              final name = nameController.text.trim();
+              final unit = unitController.text.trim();
+              final stock = double.tryParse(
+                stockController.text.trim().replaceAll(',', ''),
+              );
+              final unitPrice = double.tryParse(
+                unitPriceController.text.trim().replaceAll(',', ''),
+              );
+              final budget = double.tryParse(
+                budgetController.text.trim().replaceAll(',', ''),
+              );
+
+              if (!saveToInventory && !saveToBudget) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Please select where to save: Inventory and/or Site budget.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              if (name.isEmpty || unit.isEmpty) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter material name and unit.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              if (saveToInventory && (stock == null || stock < 0)) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter material name, unit, and a valid stock.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              if (saveToBudget && (budget == null || budget <= 0)) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter a valid budget quantity.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              try {
+                if (saveToInventory) {
+                  final nowIso = DateTime.now().toIso8601String();
+                  final docRef = FirebaseService.instance
+                      .materialInventoryCollection(projectId)
+                      .doc();
+                  final payload = <String, dynamic>{
+                    'id': docRef.id,
+                    'materialName': name,
+                    'unit': unit,
+                    'stock': stock,
+                    if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                    'projectId': projectId,
+                    'projectName': _selectedProjectName,
+                    'createdAt': FieldValue.serverTimestamp(),
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  };
+                  try {
+                    await docRef.set(payload);
+                  } catch (e) {
+                    if (_isFirestoreUnreachableError(e)) {
+                      final queuedPayload = <String, dynamic>{
+                        ...payload,
+                        'createdAt': nowIso,
+                        'updatedAt': nowIso,
+                      };
+                      await HiveService.instance.saveMaterialInventory(docRef.id, queuedPayload);
+                      await SyncService.instance.addToSyncQueue(
+                        'material_inventory_upsert',
+                        <String, dynamic>{
+                          'projectId': projectId,
+                          'docId': docRef.id,
+                          'payload': queuedPayload,
+                        },
+                      );
+                    } else {
+                      rethrow;
+                    }
+                  }
                 }
 
-                await FirebaseService.instance.materialInventoryCollection(projectId).add({
-                  'materialName': name,
-                  'unit': unit,
-                  'stock': stock,
-                  if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
-                  'projectId': projectId,
-                  'projectName': _selectedProjectName,
-                  'createdAt': FieldValue.serverTimestamp(),
-                  'updatedAt': FieldValue.serverTimestamp(),
-                });
+                if (saveToBudget) {
+                  final nowIso = DateTime.now().toIso8601String();
+                  final docRef = FirebaseService.instance
+                      .materialAllocationsCollection(projectId)
+                      .doc();
+                  final payload = <String, dynamic>{
+                    'id': docRef.id,
+                    'materialName': name,
+                    'unit': unit,
+                    'budgetQuantity': budget,
+                    'requiredQuantity': budget,
+                    'usedQuantity': 0,
+                    if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                    'projectId': projectId,
+                    'projectName': _selectedProjectName,
+                    'createdAt': FieldValue.serverTimestamp(),
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  };
+                  try {
+                    await docRef.set(payload);
+                  } catch (e) {
+                    if (_isFirestoreUnreachableError(e)) {
+                      final queuedPayload = <String, dynamic>{
+                        ...payload,
+                        'createdAt': nowIso,
+                        'updatedAt': nowIso,
+                      };
+                      await SyncService.instance.addToSyncQueue(
+                        'material_allocation_upsert',
+                        <String, dynamic>{
+                          'projectId': projectId,
+                          'docId': docRef.id,
+                          'payload': queuedPayload,
+                        },
+                      );
+                    } else {
+                      rethrow;
+                    }
+                  }
+                }
 
-                if (!mounted) return;
                 navigator.pop();
+                if (!mounted) return;
                 rootMessenger.showSnackBar(
-                  const SnackBar(content: Text('Inventory item added.')),
+                  SnackBar(
+                    content: Text(
+                      saveToInventory && saveToBudget
+                          ? 'Saved to inventory and site budget.'
+                          : (saveToBudget
+                              ? 'Saved to site budget.'
+                              : 'Saved to inventory. Assign/budget this material to allow site requests.'),
+                    ),
+                    backgroundColor: AppTheme.softGreen,
+                  ),
                 );
-              },
-              child: const Text('Save'),
-            ),
-          ],
+              } catch (e) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Failed to add item: $e'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Add Inventory Item'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: saveToInventory,
+                      onChanged: isSaving
+                          ? null
+                          : (v) => setStateDialog(() => saveToInventory = v ?? false),
+                      title: const Text('Save to inventory'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: saveToBudget,
+                      onChanged: isSaving
+                          ? null
+                          : (v) => setStateDialog(() => saveToBudget = v ?? false),
+                      title: const Text('Save to site budget (Assigned materials)'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    TextField(
+                      controller: nameController,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Material name'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: unitController,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Unit (e.g. bag, pcs)'),
+                    ),
+                    const SizedBox(height: 8),
+                    if (saveToInventory) ...[
+                      TextField(
+                        controller: stockController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(labelText: 'Initial stock'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: unitPriceController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(labelText: 'Unit price (₱)'),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (saveToBudget) ...[
+                      TextField(
+                        controller: budgetController,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => save(),
+                        decoration: const InputDecoration(labelText: 'Budget quantity'),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: isSaving ? null : save,
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -181,6 +677,21 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
       stream: projectStream,
       builder: (context, projectSnap) {
         final projectDocs = projectSnap.data?.docs ?? const [];
+        _allProjectOptions = [
+          for (final d in projectDocs)
+            () {
+              final data = (d.data() as Map?)?.cast<String, dynamic>() ??
+                  <String, dynamic>{};
+              final name = (data['name'] ?? d.id).toString();
+              return <String, String>{
+                'id': d.id,
+                'name': name,
+              };
+            }(),
+        ];
+        _allProjectOptions.sort(
+          (a, b) => (a['name'] ?? '').compareTo((b['name'] ?? '')),
+        );
 
         final Map<String, String> siteManagerNameByProject = {};
         for (final doc in projectDocs) {
@@ -235,9 +746,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
             if (invSnap.hasError) {
               return AdminGlassScaffold(
                 title: 'Material & Inventory Monitoring',
-                bottomNavigationBar: const AdminBottomNavBar(
-                  current: AdminNavItem.materialInventory,
-                ),
+                showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                bottomNavigationBar: widget.showBottomNav
+                    ? const AdminBottomNavBar(
+                        current: AdminNavItem.materialInventory,
+                      )
+                    : null,
                 child: Center(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
@@ -295,9 +810,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 if (deliveriesSnap.hasError) {
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
-                    bottomNavigationBar: const AdminBottomNavBar(
-                      current: AdminNavItem.materialInventory,
-                    ),
+                    showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                    bottomNavigationBar: widget.showBottomNav
+                        ? const AdminBottomNavBar(
+                            current: AdminNavItem.materialInventory,
+                          )
+                        : null,
                     child: Center(
                       child: Padding(
                         padding: const EdgeInsets.all(16),
@@ -320,9 +839,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 if (!deliveriesSnap.hasData) {
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
-                    bottomNavigationBar: const AdminBottomNavBar(
-                      current: AdminNavItem.materialInventory,
-                    ),
+                    showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                    bottomNavigationBar: widget.showBottomNav
+                        ? const AdminBottomNavBar(
+                            current: AdminNavItem.materialInventory,
+                          )
+                        : null,
                     child: const Center(child: CircularProgressIndicator()),
                   );
                 }
@@ -344,9 +867,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     if (usageSnap.hasError) {
                       return AdminGlassScaffold(
                         title: 'Material & Inventory Monitoring',
-                        bottomNavigationBar: const AdminBottomNavBar(
-                          current: AdminNavItem.materialInventory,
-                        ),
+                        showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                        bottomNavigationBar: widget.showBottomNav
+                            ? const AdminBottomNavBar(
+                                current: AdminNavItem.materialInventory,
+                              )
+                            : null,
                         child: Center(
                           child: Padding(
                             padding: const EdgeInsets.all(16),
@@ -369,9 +896,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     if (!usageSnap.hasData) {
                       return AdminGlassScaffold(
                         title: 'Material & Inventory Monitoring',
-                        bottomNavigationBar: const AdminBottomNavBar(
-                          current: AdminNavItem.materialInventory,
-                        ),
+                        showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                        bottomNavigationBar: widget.showBottomNav
+                            ? const AdminBottomNavBar(
+                                current: AdminNavItem.materialInventory,
+                              )
+                            : null,
                         child: const Center(child: CircularProgressIndicator()),
                       );
                     }
@@ -519,59 +1050,35 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                               )
                               .snapshots(),
                           builder: (context, snapshot) {
-                            final count = snapshot.data?.docs.length ?? 0;
-
                             return IconButton(
-                              icon: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  const Icon(Icons.notifications_none),
-                                  if (count > 0)
-                                    Positioned(
-                                      right: -4,
-                                      top: -4,
-                                      child: Container(
-                                        padding: const EdgeInsets.all(2),
-                                        decoration: const BoxDecoration(
-                                          color: Colors.red,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        constraints: const BoxConstraints(
-                                          minWidth: 16,
-                                          minHeight: 16,
-                                        ),
-                                        child: Center(
-                                          child: Text(
-                                            count > 99 ? '99+' : '$count',
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
+                              icon: const Icon(Icons.notifications_none),
                               tooltip: 'Material requests',
                               onPressed: _showMaterialRequestsBottomSheet,
                             );
                           },
                         ),
                         IconButton(
-                          tooltip: 'Add inventory item',
-                          icon: const Icon(Icons.add_box_outlined),
-                          onPressed: _showAddInventoryItemDialog,
+                          tooltip: 'Assign/budget material',
+                          icon: const Icon(Icons.playlist_add_rounded),
+                          onPressed: _showAddAllocationDialog,
+                        ),
+                        IconButton(
+                          tooltip: 'Sync inventory to site budget',
+                          icon: const Icon(Icons.sync_alt_rounded),
+                          onPressed: _showSyncInventoryToBudgetDialog,
                         ),
                         IconButton(
                           icon: const Icon(Icons.person_outline),
                           onPressed: () => context.push(RouteNames.profile),
                         ),
                       ],
-                      bottomNavigationBar: const AdminBottomNavBar(
-                        current: AdminNavItem.materialInventory,
-                      ),
+                      showSidebar: widget.showSidebar,
+                sidebarMode: widget.sidebarMode,
+                      bottomNavigationBar: widget.showBottomNav
+                          ? const AdminBottomNavBar(
+                              current: AdminNavItem.materialInventory,
+                            )
+                          : null,
                       child: GlassCard(
                         borderRadius: 18,
                         padding: const EdgeInsets.all(14),
@@ -587,37 +1094,44 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     ),
               ),
               const SizedBox(height: 6),
-              FutureBuilder<Set<String>>(
-                future: _getProjectsWithInventory(projectDocs),
-                builder: (context, invProjectsSnap) {
-                  final invProjectIds = invProjectsSnap.data ?? <String>{};
+              Builder(
+                builder: (context) {
+                  final typedProjectDocs = projectDocs
+                      .cast<QueryDocumentSnapshot<Map<String, dynamic>>>();
 
-                  final filteredProjectDocs = projectDocs
-                      .where((d) => invProjectIds.contains(d.id))
+                  final options = typedProjectDocs
+                      .map((d) {
+                        final data = (d.data() as Map?)?.cast<String, dynamic>() ??
+                            <String, dynamic>{};
+                        return <String, String>{
+                          'id': d.id,
+                          'name': (data['name'] ?? d.id).toString(),
+                        };
+                      })
                       .toList();
 
-                  if (invProjectsSnap.connectionState == ConnectionState.waiting) {
-                    return const SizedBox(
-                      height: 48,
-                      child: Center(child: CircularProgressIndicator()),
-                    );
-                  }
+                  options.sort((a, b) =>
+                      (a['name'] ?? '').compareTo((b['name'] ?? '')));
+                  _projectOptions = options;
 
-                  if (filteredProjectDocs.isEmpty) {
+                  if (typedProjectDocs.isEmpty) {
                     return const Text(
-                      'No projects have submitted material inventory yet.',
+                      'No projects found.',
                       style: TextStyle(color: Colors.black54),
                     );
                   }
 
                   final currentSelected = selectedProjectId;
-                  final isCurrentValid =
-                      currentSelected != null && invProjectIds.contains(currentSelected);
+                  final isCurrentValid = currentSelected != null &&
+                      typedProjectDocs.any((d) => d.id == currentSelected);
+
+                  final effectiveId =
+                      isCurrentValid ? currentSelected : typedProjectDocs.first.id;
 
                   if (!isCurrentValid) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (!mounted) return;
-                      final first = filteredProjectDocs.first;
+                      final first = typedProjectDocs.first;
                       final data = (first.data() as Map?)?.cast<String, dynamic>() ??
                           <String, dynamic>{};
                       setState(() {
@@ -628,9 +1142,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   }
 
                   return DropdownButtonFormField<String>(
-                    initialValue: isCurrentValid ? currentSelected : filteredProjectDocs.first.id,
+                    initialValue: effectiveId,
                     items: [
-                      for (final d in filteredProjectDocs)
+                      for (final d in typedProjectDocs)
                         () {
                           final data = (d.data() as Map?)?.cast<String, dynamic>() ??
                               <String, dynamic>{};
@@ -643,8 +1157,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     ],
                     onChanged: (v) {
                       if (v == null) return;
-                      final doc = filteredProjectDocs
-                          .firstWhere((e) => e.id == v, orElse: () => filteredProjectDocs.first);
+                      final doc = typedProjectDocs.firstWhere(
+                        (e) => e.id == v,
+                        orElse: () => typedProjectDocs.first,
+                      );
                       final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
                           <String, dynamic>{};
                       setState(() {
@@ -659,12 +1175,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                   );
                 },
               ),
-              SmartInsightCard(
-                title: 'Smart Insight',
-                message:
-                    'Keep material stock and monthly usage visible to prevent site delays.',
-              ),
-              const SizedBox(height: 16),
+
               LayoutBuilder(
                 builder: (context, constraints) {
                   final isNarrow = constraints.maxWidth < 700;
@@ -821,20 +1332,28 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                       siteSummaries,
                     ),
                     child: GlassDataTableTheme(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: DataTable(
-                          columnSpacing: 16,
-                          columns: const [
-                            DataColumn(label: Text('Materials')),
-                            DataColumn(label: Text('Total qty used')),
-                            DataColumn(label: Text('Total cost')),
-                            DataColumn(label: Text('Last usage')),
-                          ],
-                          rows: [
-                            _buildSiteDistributionRow(context, summary),
-                          ],
-                        ),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: ConstrainedBox(
+                              constraints:
+                                  BoxConstraints(minWidth: constraints.maxWidth),
+                              child: DataTable(
+                                columnSpacing: 16,
+                                columns: const [
+                                  DataColumn(label: Text('Materials')),
+                                  DataColumn(label: Text('Total qty used')),
+                                  DataColumn(label: Text('Total cost')),
+                                  DataColumn(label: Text('Last usage')),
+                                ],
+                                rows: [
+                                  _buildSiteDistributionRow(context, summary),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -871,25 +1390,34 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                     entry.value,
                   ),
                   child: GlassDataTableTheme(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: DataTable(
-                        columnSpacing: 16,
-                        columns: const [
-                          DataColumn(label: Text('Material')),
-                          DataColumn(label: Text('Qty')),
-                          DataColumn(label: Text('Unit')),
-                          DataColumn(label: Text('Unit price')),
-                          DataColumn(label: Text('Cost')),
-                          DataColumn(label: Text('Status')),
-                          DataColumn(label: Text('Report ID')),
-                          DataColumn(label: Text('Date')),
-                        ],
-                        rows: [
-                          for (final usage in entry.value)
-                            _buildMaterialUsageRow(context, usage),
-                        ],
-                      ),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        return SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              minWidth: constraints.maxWidth,
+                            ),
+                            child: DataTable(
+                              columnSpacing: 16,
+                              columns: const [
+                                DataColumn(label: Text('Material')),
+                                DataColumn(label: Text('Qty')),
+                                DataColumn(label: Text('Unit')),
+                                DataColumn(label: Text('Unit price')),
+                                DataColumn(label: Text('Cost')),
+                                DataColumn(label: Text('Status')),
+                                DataColumn(label: Text('Report ID')),
+                                DataColumn(label: Text('Date')),
+                              ],
+                              rows: [
+                                for (final usage in entry.value)
+                                  _buildMaterialUsageRow(context, usage),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -1555,10 +2083,26 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
     final projectName = (data['projectName'] ?? '').toString();
     final createdBy = (data['createdBy'] ?? '').toString();
     final createdByName = (data['createdByName'] ?? '').toString();
+    final allocationId = (data['allocationId'] ?? '').toString().trim();
 
     final siteLabel = projectName.isNotEmpty ? projectName : projectId;
     final managerDisplay =
         (createdByName.isNotEmpty ? createdByName : createdBy).trim();
+
+    Map<String, dynamic>? allocationData;
+    if (projectId.isNotEmpty && projectId != 'Unknown site' && allocationId.isNotEmpty) {
+      try {
+        final allocSnap = await FirebaseService.instance
+            .materialAllocationsCollection(projectId)
+            .doc(allocationId)
+            .get();
+        if (allocSnap.exists) {
+          allocationData = (allocSnap.data() as Map?)?.cast<String, dynamic>();
+        }
+      } catch (_) {
+        allocationData = null;
+      }
+    }
 
     final inventoryItemsSnap = await FirebaseService.instance
         .materialInventoryCollection(projectId)
@@ -1591,6 +2135,17 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
             double? unitPrice;
             String unitLabel = '';
 
+            double? allocationUnitPrice;
+            if (allocationData != null) {
+              final raw = allocationData['unitPrice'] ?? allocationData['price'];
+              if (raw is num) {
+                allocationUnitPrice = raw.toDouble();
+              } else if (raw is String) {
+                final cleaned = raw.replaceAll(',', '').replaceAll('₱', '').trim();
+                allocationUnitPrice = double.tryParse(cleaned);
+              }
+            }
+
             if (selectedInventory != null) {
               final stockRaw = selectedInventory!['stock'];
               if (stockRaw is num) {
@@ -1615,6 +2170,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
               unitLabel = (selectedInventory!['unit'] ?? '').toString();
             }
 
+            final chosenUnitPrice = (allocationUnitPrice != null && allocationUnitPrice > 0)
+                ? allocationUnitPrice
+                : unitPrice;
+
             double? calculatedAmount;
             final quantityText = quantityController.text.trim();
             final quantity = double.tryParse(
@@ -1622,9 +2181,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
             );
             if (quantity != null &&
                 quantity > 0 &&
-                unitPrice != null &&
-                unitPrice > 0) {
-              calculatedAmount = unitPrice * quantity;
+                chosenUnitPrice != null &&
+                chosenUnitPrice > 0) {
+              calculatedAmount = chosenUnitPrice * quantity;
             }
 
             final requestedMaterial = (data['materialName'] ?? subject).toString();
@@ -1684,45 +2243,28 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
                 return;
               }
 
-              final stockRaw = selectedInventory!['stock'];
-              double currentStock;
-              if (stockRaw is num) {
-                currentStock = stockRaw.toDouble();
-              } else {
-                currentStock =
-                    double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
-              }
-              if (releaseQuantity > currentStock) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Not enough stock. Available: ${currentStock.toStringAsFixed(1)}',
-                    ),
-                    backgroundColor: AppTheme.errorRed,
-                  ),
-                );
-                return;
-              }
-
               final priceRaw =
                   selectedInventory!['unitPrice'] ?? selectedInventory!['price'];
               double? unitPriceForExpense;
-              if (priceRaw is num) {
-                unitPriceForExpense = priceRaw.toDouble();
-              } else if (priceRaw is String) {
-                final cleaned = priceRaw
-                    .replaceAll(',', '')
-                    .replaceAll('₱', '')
-                    .trim();
-                unitPriceForExpense = double.tryParse(cleaned);
+              if (allocationUnitPrice != null && allocationUnitPrice > 0) {
+                unitPriceForExpense = allocationUnitPrice;
+              } else {
+                if (priceRaw is num) {
+                  unitPriceForExpense = priceRaw.toDouble();
+                } else if (priceRaw is String) {
+                  final cleaned = priceRaw
+                      .replaceAll(',', '')
+                      .replaceAll('₱', '')
+                      .trim();
+                  unitPriceForExpense = double.tryParse(cleaned);
+                }
               }
               if (unitPriceForExpense == null || unitPriceForExpense <= 0) {
                 if (!mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text(
-                      'Selected material has no valid price per unit. Set a price in the inventory first.',
+                      'Selected material has no valid price per unit. Set a unit price in assigned materials or inventory first.',
                     ),
                     backgroundColor: AppTheme.errorRed,
                   ),
@@ -2151,6 +2693,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
       final data = doc.data();
       final projectId = (data['projectId'] ?? '').toString();
       final subject = (data['subject'] ?? 'Material request').toString();
+      final allocationId = (data['allocationId'] ?? '').toString().trim();
 
       String? inventoryMaterialName;
       String? inventoryUnit;
@@ -2162,6 +2705,34 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           releasedQuantity != null &&
           releasedQuantity > 0) {
         await FirebaseService.instance.firestore.runTransaction((tx) async {
+          if (allocationId.isNotEmpty) {
+            final allocationRef = FirebaseService.instance
+                .materialAllocationsCollection(projectId)
+                .doc(allocationId);
+            final allocSnap = await tx.get(allocationRef);
+            if (!allocSnap.exists) {
+              throw Exception('Assigned material allocation not found. Ask admin to re-assign/budget materials.');
+            }
+            final allocData = (allocSnap.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+
+            double readNum(dynamic v) {
+              if (v is num) return v.toDouble();
+              return double.tryParse((v ?? '').toString().replaceAll(',', '')) ?? 0.0;
+            }
+
+            final budget = readNum(allocData['budgetQuantity']);
+            final used = readNum(allocData['usedQuantity']);
+            final remaining = (budget - used).clamp(0.0, double.infinity);
+            if (releasedQuantity > remaining) {
+              throw Exception('Release exceeds remaining allocation. Remaining: ${remaining.toStringAsFixed(1)}');
+            }
+
+            tx.update(allocationRef, {
+              'usedQuantity': used + releasedQuantity,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+          }
+
           final inventoryRef = FirebaseService.instance
               .materialInventoryCollection(projectId)
               .doc(inventoryItemId);
@@ -2176,24 +2747,6 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
           inventoryMaterialName =
               (invData['materialName'] ?? subject).toString().trim();
           inventoryUnit = (invData['unit'] ?? '').toString().trim();
-
-          final stockRaw = invData['stock'];
-          final currentStock = stockRaw is num
-              ? stockRaw.toDouble()
-              : double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
-
-          if (releasedQuantity > currentStock) {
-            throw Exception(
-              'Not enough stock. Available: ${currentStock.toStringAsFixed(1)}',
-            );
-          }
-
-          final newStock =
-              (currentStock - releasedQuantity).clamp(0.0, double.infinity);
-          tx.update(inventoryRef, {
-            'stock': newStock,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
         });
       }
 
@@ -2340,6 +2893,252 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> {
         ),
       );
     }
+  }
+
+  Future<void> _showAddAllocationDialog() async {
+    final projectId = _selectedProjectId;
+    if (projectId == null || projectId.isEmpty) return;
+
+    final nameController = TextEditingController();
+    final unitController = TextEditingController();
+    final unitPriceController = TextEditingController();
+    final budgetController = TextEditingController();
+
+    final rootMessenger = ScaffoldMessenger.of(context);
+
+    final options = _allProjectOptions;
+    String selectedProjectId = projectId;
+    String? selectedProjectName = _selectedProjectName;
+
+    String nameForProject(String id) {
+      for (final p in options) {
+        if ((p['id'] ?? '') == id) return (p['name'] ?? id).toString();
+      }
+      return id;
+    }
+
+    if (options.isNotEmpty) {
+      final ok = options.any((p) => (p['id'] ?? '') == selectedProjectId);
+      if (!ok) {
+        selectedProjectId =
+            (options.first['id'] ?? selectedProjectId).toString();
+        selectedProjectName = nameForProject(selectedProjectId);
+      }
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setStateDialog) {
+            bool isSaving = false;
+
+            Future<void> save() async {
+              if (isSaving) return;
+              setStateDialog(() => isSaving = true);
+
+              final navigator = Navigator.of(dialogContext);
+              final name = nameController.text.trim();
+              final unit = unitController.text.trim();
+              final unitPrice = double.tryParse(
+                unitPriceController.text.trim().replaceAll(',', ''),
+              );
+              final budget = double.tryParse(
+                budgetController.text.trim().replaceAll(',', ''),
+              );
+
+              if (name.isEmpty || unit.isEmpty || budget == null || budget <= 0) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter material name, unit, and a valid budget quantity.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              try {
+                final nowIso = DateTime.now().toIso8601String();
+                final docRef = FirebaseService.instance
+                    .materialAllocationsCollection(selectedProjectId)
+                    .doc();
+                final payload = <String, dynamic>{
+                  'id': docRef.id,
+                  'materialName': name,
+                  'unit': unit,
+                  'budgetQuantity': budget,
+                  'requiredQuantity': budget,
+                  'usedQuantity': 0,
+                  if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                  'projectId': selectedProjectId,
+                  'projectName':
+                      (selectedProjectName ?? nameForProject(selectedProjectId)),
+                  'createdAt': FieldValue.serverTimestamp(),
+                  'updatedAt': FieldValue.serverTimestamp(),
+                };
+                try {
+                  await docRef.set(payload);
+
+                  try {
+                    final invQuery = await FirebaseService.instance
+                        .materialInventoryCollection(selectedProjectId)
+                        .where('materialName', isEqualTo: name)
+                        .where('unit', isEqualTo: unit)
+                        .limit(1)
+                        .get();
+
+                    if (invQuery.docs.isEmpty) {
+                      final invRef = FirebaseService.instance
+                          .materialInventoryCollection(selectedProjectId)
+                          .doc();
+
+                      await invRef.set({
+                        'id': invRef.id,
+                        'materialName': name,
+                        'unit': unit,
+                        'stock': budget,
+                        if (unitPrice != null && unitPrice >= 0)
+                          'unitPrice': unitPrice,
+                        'projectId': selectedProjectId,
+                        'projectName':
+                            (selectedProjectName ?? nameForProject(selectedProjectId)),
+                        'createdAt': FieldValue.serverTimestamp(),
+                        'updatedAt': FieldValue.serverTimestamp(),
+                      });
+                    }
+                  } catch (_) {
+                    // ignore
+                  }
+                } catch (e) {
+                  if (_isFirestoreUnreachableError(e)) {
+                    final queuedPayload = <String, dynamic>{
+                      ...payload,
+                      'createdAt': nowIso,
+                      'updatedAt': nowIso,
+                    };
+                    await SyncService.instance.addToSyncQueue(
+                      'material_allocation_upsert',
+                      <String, dynamic>{
+                        'projectId': selectedProjectId,
+                        'docId': docRef.id,
+                        'payload': queuedPayload,
+                      },
+                    );
+                  } else {
+                    rethrow;
+                  }
+                }
+
+                navigator.pop();
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('Material assigned/budgeted for this project.'),
+                    backgroundColor: AppTheme.softGreen,
+                  ),
+                );
+              } catch (e) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Failed to assign/budget material: $e'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+              }
+            }
+
+            return AlertDialog(
+              title: const Text('Assign/Budget Material'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (options.isNotEmpty) ...[
+                      DropdownButtonFormField<String>(
+                        initialValue: selectedProjectId,
+                        items: [
+                          for (final p in options)
+                            DropdownMenuItem<String>(
+                              value: (p['id'] ?? '').toString(),
+                              child: Text(
+                                (p['name'] ?? p['id'] ?? '').toString(),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: isSaving
+                            ? null
+                            : (v) {
+                                if (v == null || v.isEmpty) return;
+                                setStateDialog(() {
+                                  selectedProjectId = v;
+                                  selectedProjectName = nameForProject(v);
+                                });
+                              },
+                        decoration: const InputDecoration(
+                          labelText: 'Project',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ] else ...[
+                      const Text('No projects found.'),
+                      const SizedBox(height: 12),
+                    ],
+                    TextField(
+                      controller: nameController,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Material name'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: unitController,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Unit (e.g. bag, m³)'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: unitPriceController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: 'Unit price (₱)'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: budgetController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => save(),
+                      decoration: const InputDecoration(labelText: 'Budget quantity'),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: isSaving ? null : save,
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 }
 

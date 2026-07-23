@@ -9,6 +9,8 @@ class AppConstants {
   static const String roleSiteManager = 'site_manager';
   static const String roleAdmin = 'admin';
   static const String roleCeo = 'ceo';
+  static const String rolePayroll = 'payroll';
+  static const String roleMaterials = 'materials';
 
   // Privileged account emails
   static const String adminEmail = 'cherryantipuesto23@gmail.com';
@@ -106,6 +108,7 @@ class RouteNames {
 
   // Site Manager Routes
   static const String siteManagerHome = '/site-manager';
+  static const String siteManagerOtp = '/site-manager/otp';
   static const String siteManagerTasks = '/site-manager/tasks';
   static const String siteManagerMaterials = '/site-manager/materials';
   static const String dailyReport = '/site-manager/daily-report';
@@ -114,6 +117,7 @@ class RouteNames {
       '/site-manager/fingerprint-attendance';
   static const String materialUsage = '/site-manager/material-usage';
   static const String materialDelivery = '/site-manager/material-delivery';
+  static const String materialInventory = '/site-manager/material-inventory';
   static const String materialRequest = '/site-manager/material-request';
   static const String issues = '/site-manager/issues';
   static const String projectProgressUpdate =
@@ -134,6 +138,15 @@ class RouteNames {
   static const String adminMaterialMonitoring = '/admin/material-monitoring';
   static const String adminFinancialMonitoring = '/admin/financial-monitoring';
   static const String adminWeatherForecast = '/admin/weather-forecast';
+  static const String adminDemoScript = '/admin/demo-script';
+
+  // Payroll Routes
+  static const String payrollHome = '/payroll';
+  static const String payrollMonitoring = '/payroll/monitoring';
+
+  // Materials Routes
+  static const String materialsHome = '/materials';
+  static const String materialsMonitoring = '/materials/monitoring';
 
   // Common Routes
   static const String profile = '/profile';

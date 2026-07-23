@@ -101,6 +101,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
           case AppConstants.roleAdmin:
             homeRoute = RouteNames.adminHome;
             break;
+          case AppConstants.rolePayroll:
+            homeRoute = RouteNames.payrollHome;
+            break;
+          case AppConstants.roleMaterials:
+            homeRoute = RouteNames.materialsHome;
+            break;
+          case AppConstants.roleCeo:
+            homeRoute = RouteNames.ceoHome;
+            break;
           default:
             homeRoute = RouteNames.login;
         }

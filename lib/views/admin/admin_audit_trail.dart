@@ -96,7 +96,7 @@ class _AdminAuditTrailState extends State<AdminAuditTrail> {
       );
     }
 
-    query = query.limit(200);
+    query = query.limit(1000);
 
     return Scaffold(
       appBar: AppBar(

@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'dart:developer' as developer;
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -18,6 +18,7 @@ import '../../core/constants/app_constants.dart';
 import '../../models/daily_report_model.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
+import '../../services/archive_service.dart';
 import '../../services/govtrack_ai_service.dart';
 import '../../widgets/common/status_chip.dart';
 import 'widgets/admin_bottom_nav.dart';
@@ -328,6 +329,7 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   bool _isAnalyzing = false;
   bool _isGeneratingReport = false;
+  bool _isChatSending = false;
 
   String? _selectedProjectId;
   String? _selectedProjectName;
@@ -351,19 +353,25 @@ class _AiDashboardState extends State<_AiDashboard> {
   final List<_ChatMessage> _messages = <_ChatMessage>[
     const _ChatMessage(
       isUser: false,
-      text: 'I can help you monitor infrastructure projects. You can ask me to:\n\n'
-          '• Identify delayed projects\n'
-          '• Analyze specific sites\n'
-          '• Show a risk heatmap of all active contracts\n'
-          '• Verify recent milestone submissions',
+      text: 'Tell me what you want to check. I can analyze project progress, materials/inventory, deliveries, attendance, delays, and site risks.',
     ),
   ];
+
+  String _fallbackText() {
+    return 'Limited data available for full analysis.';
+  }
 
   @override
   void initState() {
     super.initState();
+    _autoSelectSiteManagerProject();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _autoSelectSiteManagerProject();
+      Future<void>.delayed(const Duration(milliseconds: 600), () {
+        if (!mounted) return;
+        _autoSelectSiteManagerProject();
+      });
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -372,6 +380,81 @@ class _AiDashboardState extends State<_AiDashboard> {
         context.go(RouteNames.login);
       }
     });
+  }
+
+  Future<void> _autoSelectSiteManagerProject() async {
+    if (widget.showBottomNav != true) return;
+    final user = AuthService.instance.currentUser;
+    if (user == null) return;
+    if ((_selectedProjectId ?? '').trim().isNotEmpty) return;
+
+    String? projectId;
+    if (user.assignedProjects.isNotEmpty) {
+      projectId = user.assignedProjects.first;
+    } else if (user.isSiteManager) {
+      return;
+    }
+
+    if (projectId == null || projectId.trim().isEmpty) return;
+
+    if (mounted) {
+      setState(() {
+        _selectedProjectId = projectId;
+        _selectedProjectName ??= projectId;
+      });
+    }
+
+    try {
+      final snap = await FirebaseService.instance.projectsCollection.doc(projectId).get();
+      final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      final name = (data['name'] ?? data['projectName'] ?? '').toString().trim();
+      if (!mounted) return;
+      setState(() {
+        _selectedProjectName = name.isEmpty ? projectId : name;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _selectedProjectName = projectId;
+      });
+    }
+  }
+
+  Future<({String? id, String? name})> _resolveChatProject() async {
+    var projectId = (_selectedProjectId ?? '').trim();
+    var projectName = (_selectedProjectName ?? '').trim();
+
+    if (projectId.isEmpty) {
+      await _autoSelectSiteManagerProject();
+      projectId = (_selectedProjectId ?? '').trim();
+      projectName = (_selectedProjectName ?? '').trim();
+    }
+
+    if (projectId.isEmpty) {
+      final user = AuthService.instance.currentUser;
+      if (user != null && user.assignedProjects.isNotEmpty) {
+        projectId = user.assignedProjects.first;
+        if (mounted) {
+          setState(() {
+            _selectedProjectId = projectId;
+            _selectedProjectName ??= projectId;
+          });
+        }
+        try {
+          final snap = await FirebaseService.instance.projectsCollection.doc(projectId).get();
+          final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+          final name = (data['name'] ?? data['projectName'] ?? '').toString().trim();
+          projectName = name.isEmpty ? projectId : name;
+          if (mounted) {
+            setState(() => _selectedProjectName = projectName);
+          }
+        } catch (_) {
+          projectName = projectId;
+        }
+      }
+    }
+
+    return (id: projectId.isEmpty ? null : projectId, name: projectName.isEmpty ? null : projectName);
   }
 
   @override
@@ -721,13 +804,44 @@ class _AiDashboardState extends State<_AiDashboard> {
   }
 
   Widget _buildChat(BuildContext context) {
+    final isMobileSiteManager =
+        widget.showBottomNav == true && (AuthService.instance.currentUser?.isSiteManager ?? false);
+    final projectLabel = (_selectedProjectName ?? _selectedProjectId ?? '').trim();
+
     return LayoutBuilder(
       builder: (context, constraints) {
-        final showFooter = constraints.maxHeight >= 720;
-
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (isMobileSiteManager && projectLabel.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _blue.withValues(alpha: 0.25)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.apartment_outlined, size: 18, color: _blue),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Project: $projectLabel',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: _title,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             Expanded(
               child: _Card(
                 child: Column(
@@ -744,6 +858,7 @@ class _AiDashboardState extends State<_AiDashboard> {
                     _ChatComposer(
                       controller: _chatController,
                       onSend: _sendChat,
+                      isSending: _isChatSending,
                       onPickImage: _pickChatImage,
                       attachmentBytes: _chatImageBytes,
                       attachmentName: _chatImageName,
@@ -758,14 +873,6 @@ class _AiDashboardState extends State<_AiDashboard> {
                 ),
               ),
             ),
-            if (showFooter) ...[
-              const SizedBox(height: 10),
-              Text(
-                'GovTrack AI uses simulated structural confidence scores. Always verify critical alerts on-site.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: _subtitle),
-                textAlign: TextAlign.center,
-              ),
-            ],
           ],
         );
       },
@@ -1013,7 +1120,12 @@ class _AiDashboardState extends State<_AiDashboard> {
           return const SizedBox(height: 56, child: Center(child: CircularProgressIndicator()));
         }
 
-        final docs = snapshot.data?.docs ?? const [];
+        final docs = (snapshot.data?.docs ?? const [])
+            .where((d) {
+              final data = (d.data() as Map?)?.cast<String, dynamic>() ?? {};
+              return !ArchiveService.isArchived(data);
+            })
+            .toList();
         final items = docs
             .map((d) {
               final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
@@ -1074,7 +1186,24 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   Future<void> _sendChat() async {
     final text = _chatController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || _isChatSending) return;
+
+    final isMobileSiteManager =
+        widget.showBottomNav == true && (AuthService.instance.currentUser?.isSiteManager ?? false);
+
+    final resolved = await _resolveChatProject();
+    if (isMobileSiteManager && (resolved.id ?? '').trim().isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No project assigned to your account. Ask an admin to assign a project first.'),
+        ),
+      );
+      return;
+    }
+
+    final chatProjectId = resolved.id ?? _selectedProjectId;
+    final chatProjectName = resolved.name ?? _selectedProjectName;
 
     final pendingImageBytes = _chatImageBytes;
     final pendingImageName = _chatImageName;
@@ -1096,6 +1225,7 @@ class _AiDashboardState extends State<_AiDashboard> {
     }
 
     setState(() {
+      _isChatSending = true;
       _messages.add(_ChatMessage(
         isUser: true,
         text: text,
@@ -1213,8 +1343,8 @@ class _AiDashboardState extends State<_AiDashboard> {
           'imageUrl': attachmentUrl,
           'storagePath': attachmentStoragePath,
           'fileName': attachmentFileName,
-          'projectId': _selectedProjectId,
-          'projectName': _selectedProjectName,
+          'projectId': chatProjectId,
+          'projectName': chatProjectName,
         })
             .timeout(const Duration(seconds: 120));
         debugPrint('govtrack: govtrackChatGemini returned');
@@ -1255,6 +1385,7 @@ class _AiDashboardState extends State<_AiDashboard> {
       }
 
       final reply = (data['reply'] ?? '').toString().trim();
+      final assistantText = reply.isEmpty ? _fallbackText() : reply;
 
       final currentUser = AuthService.instance.currentUser;
       final fbUser = FirebaseAuth.instance.currentUser;
@@ -1266,8 +1397,8 @@ class _AiDashboardState extends State<_AiDashboard> {
           'imageUrl': attachmentUrl,
           'storagePath': attachmentStoragePath,
           'fileName': attachmentFileName,
-          'projectId': _selectedProjectId,
-          'projectName': _selectedProjectName,
+          'projectId': chatProjectId,
+          'projectName': chatProjectName,
           'submittedById': currentUser?.id,
           'submittedByUid': fbUser?.uid,
           'submittedByName': '${currentUser?.firstName ?? ''} ${currentUser?.lastName ?? ''}'.trim(),
@@ -1283,26 +1414,42 @@ class _AiDashboardState extends State<_AiDashboard> {
         }
         _messages.add(_ChatMessage(
           isUser: false,
-          text: reply.isEmpty ? 'No response received. Please try again.' : reply,
+          text: assistantText,
         ));
+        _isChatSending = false;
       });
     } catch (e) {
       final u = FirebaseAuth.instance.currentUser;
       final uid = u?.uid;
-      final msg = e is FirebaseFunctionsException
+      final rawMsg = e is FirebaseFunctionsException
           ? 'Chat failed (${e.code}): message=${e.message ?? 'null'} details=${e.details ?? 'null'} (uid: ${uid ?? 'null'})'
           : 'Chat failed: $e (uid: ${uid ?? 'null'})';
-      debugPrint('govtrack: $msg');
+      debugPrint('govtrack: $rawMsg');
       developer.log(
         'GovTrack chat failed',
         name: 'govtrack',
-        error: msg,
+        error: rawMsg,
       );
       if (!mounted) return;
+
+      final lower = rawMsg.toLowerCase();
+      final isQuota = lower.contains('exceeded your current quota') ||
+          lower.contains('insufficient_quota') ||
+          lower.contains('billing');
+      final isRateLimit = lower.contains('rate limit') ||
+          lower.contains('too many requests') ||
+          lower.contains('429');
+      final userFacing = isQuota
+          ? 'AI service quota reached. Please check your AI provider billing/plan, then try again.'
+          : (isRateLimit
+              ? 'AI service is busy right now. Please wait a moment and try again.'
+              : 'AI service is temporarily unavailable. Please try again.');
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg)),
+        SnackBar(content: Text(userFacing)),
       );
       setState(() {
+        _isChatSending = false;
         _chatImageBytes = null;
         _chatImageName = null;
         if (_messages.isNotEmpty &&
@@ -1310,7 +1457,7 @@ class _AiDashboardState extends State<_AiDashboard> {
             _messages.last.text == 'Thinking…') {
           _messages.removeLast();
         }
-        _messages.add(_ChatMessage(isUser: false, text: msg));
+        _messages.add(_ChatMessage(isUser: false, text: userFacing));
       });
     }
   }
@@ -1350,21 +1497,26 @@ class _AiDashboardState extends State<_AiDashboard> {
 
   Future<void> _pickDailyProgressImageFromGallery() async {
     try {
+      // On Android/iOS, FilePicker may crash while trying to compress/copy
+      // images to a temp file. Use ImagePicker there.
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-        final picker = ImagePicker();
-        final files = await picker.pickMultiImage(imageQuality: 92);
-        if (files.isEmpty) return;
-        if (files.length > 15) {
+        final remaining = 10 - _selectedImageBytesList.length;
+        if (remaining <= 0) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please select up to 15 images only.')),
+            const SnackBar(content: Text('You already selected 10 images.')),
           );
           return;
         }
 
+        final picker = ImagePicker();
+        final files = await picker.pickMultiImage(imageQuality: 92);
+        if (files.isEmpty) return;
+
         final bytesList = <Uint8List>[];
         final names = <String>[];
         for (final f in files) {
+          if (bytesList.length >= remaining) break;
           final b = await f.readAsBytes();
           if (b.isEmpty) continue;
           bytesList.add(Uint8List.fromList(b));
@@ -1374,12 +1526,8 @@ class _AiDashboardState extends State<_AiDashboard> {
 
         if (!mounted) return;
         setState(() {
-          _selectedImageBytesList
-            ..clear()
-            ..addAll(bytesList);
-          _selectedImageNames
-            ..clear()
-            ..addAll(names);
+          _selectedImageBytesList.addAll(bytesList);
+          _selectedImageNames.addAll(names);
           _lastAnalyzedProgressPercent = null;
           _lastAnalyzedImageUrls.clear();
           _lastPhotoLat = null;
@@ -1396,10 +1544,11 @@ class _AiDashboardState extends State<_AiDashboard> {
         allowMultiple: true,
       );
       if (result == null || result.files.isEmpty) return;
-      if (result.files.length > 15) {
+
+      if (result.files.length > 10) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please select up to 15 images only.')),
+          const SnackBar(content: Text('Please select up to 10 images only.')),
         );
         return;
       }
@@ -1519,7 +1668,7 @@ class _AiDashboardState extends State<_AiDashboard> {
         final bytes = await file.readAsBytes();
         if (!mounted) return;
         setState(() {
-          if (_selectedImageBytesList.length >= 15) {
+          if (_selectedImageBytesList.length >= 10) {
             return;
           }
           _selectedImageBytesList.add(Uint8List.fromList(bytes));
@@ -1626,14 +1775,14 @@ class _AiDashboardState extends State<_AiDashboard> {
     }
     if (_selectedImageBytesList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upload a site photo first.')),
+        const SnackBar(content: Text('Upload 1 to 10 site photos first.')),
       );
       return;
     }
 
-    if (_selectedImageBytesList.length > 15) {
+    if (_selectedImageBytesList.length > 10) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select up to 15 images only.')),
+        const SnackBar(content: Text('Please select up to 10 images only.')),
       );
       return;
     }
@@ -1656,6 +1805,15 @@ class _AiDashboardState extends State<_AiDashboard> {
       final urls = <String>[];
       final perImage = <Map<String, dynamic>>[];
       final progressValues = <double>[];
+      final labelsUnion = <String>{};
+      final objectsUnion = <String>{};
+      final stageTotals = <String, double>{
+        'foundation': 0.0,
+        'structural': 0.0,
+        'roofing': 0.0,
+        'walls': 0.0,
+      };
+      int stageCount = 0;
 
       for (var i = 0; i < _selectedImageBytesList.length; i++) {
         final now = DateTime.now();
@@ -1698,6 +1856,25 @@ class _AiDashboardState extends State<_AiDashboard> {
         final verifyMap = (verifyData as Map?)?.cast<String, dynamic>();
         final estimateMap = (estimateData as Map?)?.cast<String, dynamic>();
 
+        final verifyLabels = (verifyMap?['labels'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+        final verifyObjects = (verifyMap?['objects'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+        labelsUnion.addAll(verifyLabels);
+        objectsUnion.addAll(verifyObjects);
+
+        final stageProgress = (verifyMap?['stageProgress'] as Map?)?.cast<String, dynamic>();
+        if (stageProgress != null && stageProgress.isNotEmpty) {
+          double readNum(dynamic v) {
+            if (v is num) return v.toDouble();
+            return double.tryParse(v?.toString() ?? '') ?? 0.0;
+          }
+
+          stageTotals['foundation'] = (stageTotals['foundation'] ?? 0) + readNum(stageProgress['foundation']);
+          stageTotals['structural'] = (stageTotals['structural'] ?? 0) + readNum(stageProgress['structural']);
+          stageTotals['roofing'] = (stageTotals['roofing'] ?? 0) + readNum(stageProgress['roofing']);
+          stageTotals['walls'] = (stageTotals['walls'] ?? 0) + readNum(stageProgress['walls']);
+          stageCount++;
+        }
+
         final ocrProgress = estimateMap == null ? null : estimateMap['progressPercent'];
         final ocrProgressPercent = (ocrProgress is num)
             ? ocrProgress.toDouble().clamp(0.0, 100.0).toDouble()
@@ -1725,8 +1902,37 @@ class _AiDashboardState extends State<_AiDashboard> {
               .clamp(0.0, 100.0)
               .toDouble();
 
+      Map<String, dynamic>? aggregatedStageProgress;
+      if (stageCount > 0) {
+        double mean(String k) => ((stageTotals[k] ?? 0.0) / stageCount).clamp(0.0, 100.0).toDouble();
+        aggregatedStageProgress = <String, dynamic>{
+          'foundation': mean('foundation'),
+          'structural': mean('structural'),
+          'roofing': mean('roofing'),
+          'walls': mean('walls'),
+        };
+      }
+
+      double? overall;
+      if (avg != null) {
+        overall = avg;
+      } else if (aggregatedStageProgress != null) {
+        final values = <double>[
+          (aggregatedStageProgress['foundation'] as num).toDouble(),
+          (aggregatedStageProgress['structural'] as num).toDouble(),
+          (aggregatedStageProgress['roofing'] as num).toDouble(),
+          (aggregatedStageProgress['walls'] as num).toDouble(),
+        ];
+        overall = (values.reduce((a, b) => a + b) / values.length)
+            .clamp(0.0, 100.0)
+            .toDouble();
+      }
+
       final mergedAnalysis = <String, dynamic>{
-        'progressPercent': avg,
+        'progressPercent': overall,
+        if (aggregatedStageProgress != null) 'stageProgress': aggregatedStageProgress,
+        'labels': labelsUnion.toList(),
+        'objects': objectsUnion.toList(),
         'imagesAnalyzed': perImage,
       };
 
@@ -1735,7 +1941,7 @@ class _AiDashboardState extends State<_AiDashboard> {
         _lastAnalyzedImageUrls
           ..clear()
           ..addAll(urls);
-        _lastAnalyzedProgressPercent = avg;
+        _lastAnalyzedProgressPercent = overall;
       });
 
       final currentUser = AuthService.instance.currentUser;
@@ -2370,8 +2576,44 @@ class _UploadDropzone extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    void showViewer(int initialIndex) {
+      showDialog<void>(
+        context: context,
+        builder: (c) {
+          return Dialog(
+            insetPadding: const EdgeInsets.all(16),
+            child: SizedBox(
+              width: 860,
+              height: 640,
+              child: PageView.builder(
+                controller: PageController(initialPage: initialIndex),
+                itemCount: bytesList.length,
+                itemBuilder: (context, index) {
+                  return InteractiveViewer(
+                    minScale: 0.6,
+                    maxScale: 6,
+                    child: Container(
+                      color: Colors.black,
+                      alignment: Alignment.center,
+                      child: Image.memory(
+                        bytesList[index],
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Center(
+                          child: Icon(Icons.broken_image_outlined, color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+        },
+      );
+    }
+
     return InkWell(
-      onTap: onPick,
+      onTap: bytesList.isEmpty ? onPick : () => showViewer(0),
       borderRadius: BorderRadius.circular(18),
       child: Container(
         height: 340,
@@ -2429,6 +2671,35 @@ class _UploadDropzone extends StatelessWidget {
                       child: Image.memory(bytesList.first, fit: BoxFit.cover),
                     ),
                   ),
+                  Positioned(
+                    top: 12,
+                    right: 12,
+                    child: Material(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(999),
+                      child: InkWell(
+                        onTap: onPick,
+                        borderRadius: BorderRadius.circular(999),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.add_photo_alternate_outlined, color: Colors.white, size: 16),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Add (${bytesList.length}/10)',
+                                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                   if (bytesList.length > 1)
                     Positioned(
                       left: 12,
@@ -2441,13 +2712,38 @@ class _UploadDropzone extends StatelessWidget {
                           itemCount: bytesList.length,
                           separatorBuilder: (_, __) => const SizedBox(width: 8),
                           itemBuilder: (context, index) {
-                            return ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Container(
-                                width: 62,
-                                height: 62,
-                                color: Colors.white.withValues(alpha: 0.12),
-                                child: Image.memory(bytesList[index], fit: BoxFit.cover),
+                            return InkWell(
+                              onTap: () => showViewer(index),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Stack(
+                                  children: [
+                                    Container(
+                                      width: 62,
+                                      height: 62,
+                                      color: Colors.white.withValues(alpha: 0.12),
+                                      child: Image.memory(bytesList[index], fit: BoxFit.cover),
+                                    ),
+                                    Positioned(
+                                      right: 4,
+                                      bottom: 4,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withValues(alpha: 0.55),
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Text(
+                                          '${index + 1}',
+                                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -2585,6 +2881,43 @@ class _GovTrackReportCard extends StatelessWidget {
     final pass = (analysis['pass'] ?? false) == true;
     final date = DateTime.now();
     final dateText = '${_monthName(date.month)} ${date.day}, ${date.year} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+
+    List<Map<String, dynamic>> readMapList(dynamic value) {
+      final raw = value is List ? value : const <dynamic>[];
+      return raw
+          .map((e) => (e as Map?)?.cast<String, dynamic>())
+          .whereType<Map<String, dynamic>>()
+          .toList();
+    }
+
+    String readString(dynamic v) => (v ?? '').toString().trim();
+
+    final tasks = readMapList(
+      analysis['tasks'] ?? analysis['actionItems'] ?? analysis['action_items'],
+    );
+    final delaySignals = readMapList(
+      analysis['delaySignals'] ?? analysis['delay_signals'],
+    );
+    final materialShortages = readMapList(
+      analysis['materialShortages'] ?? analysis['material_shortages'],
+    );
+
+    final risks = readMapList(
+      analysis['risks'] ?? analysis['riskItems'] ?? analysis['risk_items'],
+    );
+    final recommendations = readMapList(
+      analysis['recommendations'] ?? analysis['recommendationItems'] ?? analysis['recommendation_items'],
+    );
+
+    List<Map<String, dynamic>> keepWithEvidence(List<Map<String, dynamic>> items) {
+      return items.where((e) => readString(e['evidence']).isNotEmpty).toList();
+    }
+
+    final tasksSafe = keepWithEvidence(tasks);
+    final delaySignalsSafe = keepWithEvidence(delaySignals);
+    final materialShortagesSafe = keepWithEvidence(materialShortages);
+    final risksSafe = keepWithEvidence(risks);
+    final recommendationsSafe = keepWithEvidence(recommendations);
 
     final stages = _inferStages(analysis);
     final schedule = (analysis['schedule'] as Map?)?.cast<String, dynamic>();
@@ -2839,6 +3172,257 @@ class _GovTrackReportCard extends StatelessWidget {
                               fontWeight: FontWeight.w700,
                             ),
                       ),
+                      if (risksSafe.isNotEmpty || recommendationsSafe.isNotEmpty || tasksSafe.isNotEmpty || delaySignalsSafe.isNotEmpty || materialShortagesSafe.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        Container(height: 1, color: _AiDashboardState._border),
+                        const SizedBox(height: 12),
+                      ],
+                      if (risksSafe.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.report_problem_outlined, color: Color(0xFFDC2626), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Risks',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final r in risksSafe.take(4)) ...[
+                          Text(
+                            readString(r['risk']).isEmpty ? readString(r['title']) : readString(r['risk']),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                          if (readString(r['impact']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Impact: ${readString(r['impact'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          if (readString(r['evidence']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Evidence: ${readString(r['evidence'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          const SizedBox(height: 10),
+                        ],
+                        const SizedBox(height: 2),
+                      ],
+                      if (recommendationsSafe.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.check_circle_outline, color: _AiDashboardState._blue, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Recommendations',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final rec in recommendationsSafe.take(4)) ...[
+                          Text(
+                            readString(rec['recommendation']).isEmpty
+                                ? readString(rec['title'])
+                                : readString(rec['recommendation']),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                          if (readString(rec['rationale']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Rationale: ${readString(rec['rationale'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          if (readString(rec['evidence']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Evidence: ${readString(rec['evidence'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          const SizedBox(height: 10),
+                        ],
+                        const SizedBox(height: 2),
+                      ],
+                      if (tasksSafe.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.task_alt, color: _AiDashboardState._blue, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Recommended Tasks',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final t in tasksSafe.take(5)) ...[
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('•  ', style: TextStyle(fontWeight: FontWeight.w900)),
+                              Expanded(
+                                child: Text(
+                                  readString(t['title']).isEmpty
+                                      ? readString(t['task'])
+                                      : readString(t['title']),
+                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                        color: _AiDashboardState._subtitle,
+                                        height: 1.25,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (readString(t['evidence']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 18, top: 2),
+                              child: Text(
+                                'Evidence: ${readString(t['evidence'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          const SizedBox(height: 6),
+                        ],
+                        const SizedBox(height: 10),
+                      ],
+                      if (delaySignalsSafe.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.warning_amber_rounded, color: Color(0xFFF59E0B), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Delay Signals',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final s in delaySignalsSafe.take(4)) ...[
+                          Text(
+                            readString(s['signal']).isEmpty
+                                ? readString(s['title'])
+                                : readString(s['signal']),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                          if (readString(s['evidence']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Evidence: ${readString(s['evidence'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          const SizedBox(height: 10),
+                        ],
+                      ],
+                      if (materialShortagesSafe.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(Icons.inventory_2_outlined, color: Color(0xFFDC2626), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Material Shortage Risks',
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: _AiDashboardState._title,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        for (final m in materialShortagesSafe.take(4)) ...[
+                          Text(
+                            readString(m['material']).isEmpty
+                                ? readString(m['name'])
+                                : readString(m['material']),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: _AiDashboardState._title,
+                                ),
+                          ),
+                          if (readString(m['evidence']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Evidence: ${readString(m['evidence'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          if (readString(m['suggestedAction']).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Action: ${readString(m['suggestedAction'])}',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: _AiDashboardState._subtitle,
+                                      height: 1.25,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          const SizedBox(height: 10),
+                        ],
+                      ],
                     ],
                   ),
                 ),
@@ -3040,6 +3624,20 @@ class _StageProgressRow extends StatelessWidget {
             ),
           ),
         ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 46,
+          child: Text(
+            stage.statusText,
+            textAlign: TextAlign.right,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: _AiDashboardState._subtitle,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+        ),
       ],
     );
   }
@@ -3049,6 +3647,7 @@ class _ChatComposer extends StatelessWidget {
   const _ChatComposer({
     required this.controller,
     required this.onSend,
+    this.isSending = false,
     required this.onPickImage,
     required this.attachmentBytes,
     required this.attachmentName,
@@ -3056,6 +3655,7 @@ class _ChatComposer extends StatelessWidget {
   });
   final TextEditingController controller;
   final VoidCallback onSend;
+  final bool isSending;
   final VoidCallback onPickImage;
   final Uint8List? attachmentBytes;
   final String? attachmentName;
@@ -3117,7 +3717,7 @@ class _ChatComposer extends StatelessWidget {
               Row(
                 children: [
                   IconButton(
-                    onPressed: onPickImage,
+                    onPressed: isSending ? null : onPickImage,
                     icon: const Icon(Icons.attach_file, size: 18, color: _AiDashboardState._subtitle),
                     tooltip: 'Attach image',
                   ),
@@ -3125,17 +3725,25 @@ class _ChatComposer extends StatelessWidget {
                   Expanded(
                     child: TextField(
                       controller: controller,
+                      enabled: !isSending,
+                      textInputAction: TextInputAction.send,
                       decoration: const InputDecoration(
                         border: InputBorder.none,
-                        hintText: 'Ask GovTrack AI about projects, budgets, or milestones...',
+                        hintText: 'Ask GovTrack AI...',
                       ),
-                      onSubmitted: (_) => onSend(),
+                      onSubmitted: isSending ? null : (_) => onSend(),
                     ),
                   ),
                   const SizedBox(width: 6),
                   IconButton(
-                    onPressed: onSend,
-                    icon: const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
+                    onPressed: isSending ? null : onSend,
+                    icon: isSending
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: _AiDashboardState._blue),
+                          )
+                        : const Icon(Icons.send_rounded, color: _AiDashboardState._blue),
                   ),
                 ],
               ),
@@ -3167,6 +3775,8 @@ class _GovChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message.isUser;
+    final isThinking = !isUser && message.text.trim() == 'Thinking…';
+
     final bubbleColor = isUser ? _AiDashboardState._blue : Colors.white;
     final textColor = isUser ? Colors.white : _AiDashboardState._title;
     final border = isUser ? Colors.transparent : _AiDashboardState._border;
@@ -3212,10 +3822,36 @@ class _GovChatBubble extends StatelessWidget {
                   ),
                   const SizedBox(height: 10),
                 ],
-                Text(
-                  message.text,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: textColor, height: 1.35),
-                ),
+                if (isThinking)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: isUser ? Colors.white : _AiDashboardState._blue,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Thinking…',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: textColor, height: 1.35, fontWeight: FontWeight.w800),
+                      ),
+                    ],
+                  )
+                else
+                  Text(
+                    message.text,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: textColor, height: 1.35),
+                  ),
               ],
             ),
           ),
@@ -3234,6 +3870,40 @@ class _StageItem {
 }
 
 List<_StageItem> _inferStages(Map<String, dynamic> analysis) {
+  final stageProgressRaw = (analysis['stageProgress'] as Map?)?.cast<String, dynamic>();
+  if (stageProgressRaw != null && stageProgressRaw.isNotEmpty) {
+    double readPct(String key) {
+      final v = stageProgressRaw[key];
+      if (v is num) return v.toDouble().clamp(0.0, 100.0).toDouble();
+      return double.tryParse(v?.toString() ?? '')?.clamp(0.0, 100.0).toDouble() ?? 0.0;
+    }
+
+    _StageItem item(String name, double pct) {
+      final rounded = pct.round();
+      final complete = rounded >= 100;
+      final started = rounded > 0;
+      final statusText = complete
+          ? '100%'
+          : (started ? '$rounded%' : '0%');
+      final color = complete
+          ? const Color(0xFF16A34A)
+          : (started ? const Color(0xFFFACC15) : _AiDashboardState._subtitle);
+      return _StageItem(name, statusText, color, complete);
+    }
+
+    final foundation = readPct('foundation');
+    final structural = readPct('structural');
+    final roofing = readPct('roofing');
+    final walls = readPct('walls');
+
+    return [
+      item('Foundation', foundation),
+      item('Structural', structural),
+      item('Roofing', roofing),
+      item('Walls', walls),
+    ];
+  }
+
   final labels = (analysis['labels'] is List)
       ? (analysis['labels'] as List).map((e) => e.toString().toLowerCase()).toList()
       : <String>[];

@@ -15,7 +15,7 @@ class SiteManagerBottomNav extends StatelessWidget {
         context.go(RouteNames.siteManagerHome);
         return;
       case 1:
-        context.go(RouteNames.siteManagerTasks);
+        context.go(RouteNames.govTrackAi);
         return;
       case 2:
         context.go(RouteNames.attendance);
@@ -55,9 +55,9 @@ class SiteManagerBottomNav extends StatelessWidget {
               label: 'Home',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.checklist_outlined),
-              activeIcon: Icon(Icons.checklist),
-              label: 'Tasks',
+              icon: Icon(Icons.auto_awesome_outlined),
+              activeIcon: Icon(Icons.auto_awesome),
+              label: 'GovTrack AI',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.people_outline),

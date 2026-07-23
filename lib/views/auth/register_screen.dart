@@ -22,6 +22,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
+
   String _selectedRole = AppConstants.roleSiteManager;
   bool _isLoading = false;
   bool _obscurePassword = true;
@@ -39,6 +40,88 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final isWideWebLayout = size.width >= 900;
+
+    if (isWideWebLayout) {
+      return Scaffold(
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: Image.asset(
+                'assets/images/Image_Background.png',
+                fit: BoxFit.cover,
+              ),
+            ),
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.18),
+                      const Color(0xFF051F36).withValues(alpha: 0.30),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1100),
+                    child: Form(
+                      key: _formKey,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            flex: 6,
+                            child: _buildWebBrandPanel(),
+                          ),
+                          const SizedBox(width: 28),
+                          Expanded(
+                            flex: 4,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton.icon(
+                                    onPressed: _isLoading
+                                        ? null
+                                        : () {
+                                            if (!mounted) return;
+                                            context.go(RouteNames.login);
+                                          },
+                                    icon: const Icon(Icons.arrow_back),
+                                    label: const Text('Back to Sign In'),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: AppTheme.white,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                _buildWebRegisterCard(context),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -80,7 +163,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Only the Site Manager role can self-register. Admin accounts are created by the system administrator.',
+                      'You can self-register as Site Manager, Material Monitoring, or Payroll. Admin and CEO accounts are created by the system administrator.',
                       style: Theme.of(
                         context,
                       ).textTheme.bodyMedium?.copyWith(
@@ -89,7 +172,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'After registering, a verification link will be sent to your email. You must verify before you can sign in.',
+                      'Site Manager accounts must verify OTP (Email or SMS). Payroll and Material Monitoring accounts can continue immediately.',
                       style: Theme.of(
                         context,
                       ).textTheme.bodySmall?.copyWith(
@@ -126,9 +209,144 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     );
   }
 
+  Widget _buildWebRegisterCard(BuildContext context) {
+    return Card(
+      elevation: 10,
+      color: AppTheme.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Create Account',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.deepBlue,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'You can self-register as Site Manager, Material Monitoring, or Payroll. Admin and CEO accounts are created by the system administrator.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.mediumGray,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Site Manager accounts must verify OTP (Email or SMS). Payroll and Material Monitoring accounts can continue immediately.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                  ),
+            ),
+            const SizedBox(height: 20),
+            _buildFormFields(context),
+            const SizedBox(height: 20),
+            AppButton(
+              text: 'Register',
+              onPressed: _isLoading ? null : _handleRegister,
+              isLoading: _isLoading,
+              width: double.infinity,
+              icon: Icons.person_add,
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _isLoading
+                  ? null
+                  : () {
+                      if (!mounted) return;
+                      context.go(RouteNames.login);
+                    },
+              child: const Text('Already have an account? Sign in'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWebBrandPanel() {
+    final headline = Theme.of(context).textTheme.headlineMedium?.copyWith(
+          fontWeight: FontWeight.w900,
+          color: AppTheme.white,
+          letterSpacing: 0.6,
+          height: 1.05,
+        );
+    final sub = Theme.of(context).textTheme.titleMedium?.copyWith(
+          color: AppTheme.white.withValues(alpha: 0.90),
+          fontWeight: FontWeight.w700,
+          height: 1.35,
+        );
+    const gold = Color(0xFFB79B4D);
+    final taglineBase = Theme.of(context).textTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w900,
+          color: AppTheme.white,
+          height: 1.1,
+        );
+    final taglineAccent = taglineBase?.copyWith(color: gold);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Image.asset(
+                'assets/images/City Engineering Office logo design.png',
+                height: 92,
+                width: 92,
+                fit: BoxFit.contain,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  'CITY ENGINEERING OFFICE',
+                  style: headline,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: 2,
+            width: 66,
+            decoration: BoxDecoration(
+              color: gold,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+          const SizedBox(height: 16),
+          RichText(
+            text: TextSpan(
+              style: taglineBase,
+              children: [
+                const TextSpan(text: 'Engineering '),
+                TextSpan(text: 'Excellence.', style: taglineAccent),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Building Better Cities.',
+            style: taglineBase,
+          ),
+          const SizedBox(height: 18),
+          Text(
+            'Register to access construction monitoring: projects, progress, materials, attendance, and AI insights.',
+            style: sub,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFormFields(BuildContext context) {
     return Card(
-      elevation: 4,
+      elevation: 6,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -178,27 +396,6 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               },
             ),
             const SizedBox(height: 16),
-            TextFormField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                labelText: 'Work Email',
-                prefixIcon: Icon(Icons.email_outlined),
-              ),
-              validator: (value) {
-                final text = value?.trim() ?? '';
-                if (text.isEmpty) {
-                  return 'Please enter email';
-                }
-                if (!RegExp(
-                  r'^[\w\.-]+@([\w-]+\.)+[\w-]{2,4}',
-                ).hasMatch(text)) {
-                  return 'Please enter a valid email';
-                }
-                return null;
-              },
-            ),
-            const SizedBox(height: 16),
             DropdownButtonFormField<String>(
               initialValue: _selectedRole,
               items: const [
@@ -206,9 +403,17 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   value: AppConstants.roleSiteManager,
                   child: Text('Site Manager'),
                 ),
+                DropdownMenuItem(
+                  value: AppConstants.roleMaterials,
+                  child: Text('Material Monitoring'),
+                ),
+                DropdownMenuItem(
+                  value: AppConstants.rolePayroll,
+                  child: Text('Payroll Monitoring'),
+                ),
               ],
               decoration: const InputDecoration(
-                labelText: 'Role',
+                labelText: 'Position',
                 prefixIcon: Icon(Icons.badge_outlined),
               ),
               onChanged: (value) {
@@ -216,6 +421,44 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 setState(() {
                   _selectedRole = value;
                 });
+              },
+            ),
+            const SizedBox(height: 16),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'OTP Delivery Method',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.mediumGray,
+                    ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Email',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 10),
+            TextFormField(
+              controller: _emailController,
+              decoration: const InputDecoration(
+                labelText: 'Work Email',
+                prefixIcon: Icon(Icons.email),
+              ),
+              keyboardType: TextInputType.emailAddress,
+              validator: (value) {
+                final v = (value ?? '').trim();
+                if (v.isEmpty) {
+                  return 'Please enter email';
+                }
+                if (!v.contains('@')) {
+                  return 'Please enter a valid email';
+                }
+                return null;
               },
             ),
             const SizedBox(height: 16),
@@ -311,7 +554,15 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       );
 
       if (result.success) {
-        context.go(RouteNames.login);
+        if (_selectedRole == AppConstants.roleSiteManager) {
+          context.go('${RouteNames.siteManagerOtp}?mode=register');
+        } else if (_selectedRole == AppConstants.rolePayroll) {
+          context.go(RouteNames.payrollHome);
+        } else if (_selectedRole == AppConstants.roleMaterials) {
+          context.go(RouteNames.materialsHome);
+        } else {
+          context.go(RouteNames.login);
+        }
       }
     } catch (e) {
       if (!mounted) return;

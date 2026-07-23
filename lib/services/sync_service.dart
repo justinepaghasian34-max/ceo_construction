@@ -547,6 +547,36 @@ class SyncService {
       case 'audit_log':
         await _firebaseService.auditLogsCollection.add(data);
         break;
+      case 'material_inventory_upsert':
+        {
+          final projectId = (data['projectId'] ?? '').toString();
+          final docId = (data['docId'] ?? '').toString();
+          final payload =
+              (data['payload'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+          if (projectId.isEmpty || docId.isEmpty) {
+            throw Exception('material_inventory_upsert missing projectId/docId');
+          }
+          await _firebaseService
+              .materialInventoryCollection(projectId)
+              .doc(docId)
+              .set(payload, SetOptions(merge: true));
+          break;
+        }
+      case 'material_allocation_upsert':
+        {
+          final projectId = (data['projectId'] ?? '').toString();
+          final docId = (data['docId'] ?? '').toString();
+          final payload =
+              (data['payload'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+          if (projectId.isEmpty || docId.isEmpty) {
+            throw Exception('material_allocation_upsert missing projectId/docId');
+          }
+          await _firebaseService
+              .materialAllocationsCollection(projectId)
+              .doc(docId)
+              .set(payload, SetOptions(merge: true));
+          break;
+        }
       default:
         throw Exception('Unknown sync queue item type: $type');
     }

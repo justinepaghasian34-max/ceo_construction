@@ -1,6 +1,9 @@
+import 'dart:convert';
+
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+import 'package:http/http.dart' as http;
 
 class WeatherService {
   WeatherService._();
@@ -17,6 +20,10 @@ class WeatherService {
       String.fromEnvironment('VISUAL_CROSSING_API_KEY');
   static const String _visualCrossingBaseUrl =
       'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline';
+
+  static const String _openMeteoForecastUrl = 'https://api.open-meteo.com/v1/forecast';
+  static const String _openMeteoGeocodeUrl =
+      'https://geocoding-api.open-meteo.com/v1/search';
 
   String getWeatherTileUrlTemplate(WeatherMapLayer layer) {
     if (_apiKey.isEmpty) {
@@ -217,6 +224,347 @@ class WeatherService {
           ? DateTime.fromMillisecondsSinceEpoch(sunsetRaw.toInt() * 1000,
               isUtc: true)
           : null,
+    );
+  }
+
+  /// Resolves a city/location string to coordinates via [Open-Meteo Geocoding](https://open-meteo.com/en/docs/geocoding-api).
+  Future<({double lat, double lon, String label})?> resolveOpenMeteoCoordinates(
+    String location,
+  ) async {
+    final query = location.split(',').first.trim();
+    if (query.isEmpty) return null;
+
+    final uri = Uri.parse(_openMeteoGeocodeUrl).replace(
+      queryParameters: <String, String>{
+        'name': query,
+        'count': '1',
+        'language': 'en',
+        'format': 'json',
+      },
+    );
+
+    final response = await http.get(uri).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) return null;
+
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final results = json['results'] as List<dynamic>? ?? <dynamic>[];
+    if (results.isEmpty) return null;
+
+    final first = results.first as Map<String, dynamic>;
+    final lat = (first['latitude'] as num?)?.toDouble();
+    final lon = (first['longitude'] as num?)?.toDouble();
+    if (lat == null || lon == null) return null;
+
+    final name = (first['name'] ?? query).toString();
+    final admin1 = (first['admin1'] ?? '').toString().trim();
+    final country = (first['country'] ?? '').toString().trim();
+    final labelParts = <String>[name];
+    if (admin1.isNotEmpty) labelParts.add(admin1);
+    if (country.isNotEmpty) labelParts.add(country);
+
+    return (lat: lat, lon: lon, label: labelParts.join(', '));
+  }
+
+  /// Live site metrics from [Open-Meteo Forecast API](https://api.open-meteo.com/v1/forecast) (no API key).
+  Future<LiveWeatherReport> getOpenMeteoLiveReport({
+    required double lat,
+    required double lon,
+  }) async {
+    final uri = Uri.parse(_openMeteoForecastUrl).replace(
+      queryParameters: <String, String>{
+        'latitude': lat.toString(),
+        'longitude': lon.toString(),
+        'current': 'temperature_2m,relative_humidity_2m,is_day',
+        'hourly': 'precipitation_probability',
+        'forecast_days': '2',
+        'timezone': 'auto',
+      },
+    );
+
+    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw StateError('Open-Meteo HTTP ${response.statusCode}');
+    }
+
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final current = json['current'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final hourly = json['hourly'] as Map<String, dynamic>? ?? <String, dynamic>{};
+
+    final temp = (current['temperature_2m'] as num?)?.toDouble() ?? 0.0;
+    final humidity = (current['relative_humidity_2m'] as num?)?.toInt() ?? 0;
+    final isDay = (current['is_day'] as num?)?.toInt() ?? 1;
+
+    final times = (hourly['time'] as List<dynamic>? ?? <dynamic>[])
+        .map((e) => e.toString())
+        .toList();
+    final rainProbs =
+        (hourly['precipitation_probability'] as List<dynamic>? ?? <dynamic>[])
+            .map((e) => (e as num?)?.toInt() ?? 0)
+            .toList();
+
+    var rainIsComing = false;
+    var startIdx = 0;
+    final now = DateTime.now();
+    for (var i = 0; i < times.length; i++) {
+      try {
+        final t = DateTime.parse(times[i]);
+        if (!t.isBefore(now)) {
+          startIdx = i;
+          break;
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+    for (var i = startIdx + 1; i <= startIdx + 3 && i < rainProbs.length; i++) {
+      if (rainProbs[i] > 40) {
+        rainIsComing = true;
+        break;
+      }
+    }
+
+    final rainForecast = rainIsComing
+        ? '🚨 ALERT: Rain approaching within 3 hours!'
+        : 'Clear skies.';
+
+    return LiveWeatherReport(
+      temperature: '${temp.toStringAsFixed(0)}°C',
+      humidity: '$humidity%',
+      environmentLighting: isDay == 1
+          ? 'Daylight Operations'
+          : 'Night Work / Low Visibility',
+      rainForecast: rainForecast,
+      rainIsComing: rainIsComing,
+      hoursUntilRain: rainIsComing ? 1 : 0,
+      rawTempC: temp,
+      rawHumidity: humidity,
+      isDaylight: isDay == 1,
+      provider: 'open-meteo',
+    );
+  }
+
+  /// GovTrack prompt injection map (Open-Meteo).
+  Future<Map<String, String>> getProjectWeatherData({
+    double? lat,
+    double? lon,
+    String? location,
+  }) async {
+    try {
+      double? useLat = lat;
+      double? useLon = lon;
+      if ((useLat == null || useLon == null) && location != null && location.trim().isNotEmpty) {
+        final coords = await resolveOpenMeteoCoordinates(location);
+        if (coords != null) {
+          useLat = coords.lat;
+          useLon = coords.lon;
+        }
+      }
+      if (useLat == null || useLon == null) {
+        throw StateError('No coordinates for weather');
+      }
+
+      final report = await getOpenMeteoLiveReport(lat: useLat, lon: useLon);
+      return {
+        'temperature': report.temperature,
+        'humidity': report.humidity,
+        'lighting': report.environmentLighting,
+        'rain_status': report.rainForecast,
+      };
+    } catch (e) {
+      debugPrint('Open-Meteo project weather error: $e');
+    }
+
+    return {
+      'temperature': 'Unavailable',
+      'humidity': 'Unavailable',
+      'lighting': 'Unavailable',
+      'rain_status': 'Offline',
+    };
+  }
+
+  /// Live on-site report: Open-Meteo first; then OpenWeather One Call / forecast fallback.
+  Future<LiveWeatherReport> getLiveWeatherReport({
+    required double lat,
+    required double lon,
+  }) async {
+    try {
+      return await getOpenMeteoLiveReport(lat: lat, lon: lon);
+    } catch (e) {
+      debugPrint('Open-Meteo live report failed, trying OpenWeather: $e');
+    }
+
+    if (_apiKey.isEmpty) {
+      return LiveWeatherReport.error(
+        'I cannot retrieve live weather data right now. Please check your system network connection.',
+      );
+    }
+
+    try {
+      final uri = Uri.parse(
+        'https://api.openweathermap.org/data/3.0/onecall',
+      ).replace(
+        queryParameters: <String, String>{
+          'lat': lat.toString(),
+          'lon': lon.toString(),
+          'units': 'metric',
+          'appid': _apiKey,
+          'exclude': 'minutely,daily,alerts',
+        },
+      );
+
+      final response = await http.get(uri).timeout(const Duration(seconds: 20));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        return _parseOneCallLiveReport(data);
+      }
+    } catch (e) {
+      debugPrint('One Call 3.0 unavailable, using forecast fallback: $e');
+    }
+
+    return _liveReportFallback(lat: lat, lon: lon);
+  }
+
+  Future<LiveWeatherReport> getLiveWeatherReportByCity(String city) async {
+    try {
+      final coords = await resolveOpenMeteoCoordinates(city);
+      if (coords != null) {
+        return await getOpenMeteoLiveReport(lat: coords.lat, lon: coords.lon);
+      }
+    } catch (e) {
+      debugPrint('Open-Meteo by city failed for $city: $e');
+    }
+
+    if (_apiKey.isEmpty) {
+      return LiveWeatherReport.error(
+        'I cannot retrieve live weather data right now. Please check your system network connection.',
+      );
+    }
+
+    final current = await getCurrentWeatherByCity(city);
+    final lat = current.lat;
+    final lon = current.lon;
+    if (lat != null && lon != null) {
+      try {
+        return await getLiveWeatherReport(lat: lat, lon: lon);
+      } catch (_) {
+        return _liveReportFromCurrentAndForecastList(current, city);
+      }
+    }
+    return _liveReportFromCurrentAndForecastList(current, city);
+  }
+
+  LiveWeatherReport _parseOneCallLiveReport(Map<String, dynamic> data) {
+    final current = data['current'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final temp = (current['temp'] as num?)?.toDouble() ?? 0.0;
+    final humidity = (current['humidity'] as num?)?.toInt() ?? 0;
+
+    final currentTime = (current['dt'] as num?)?.toInt() ?? 0;
+    final sunrise = (current['sunrise'] as num?)?.toInt() ?? 0;
+    final sunset = (current['sunset'] as num?)?.toInt() ?? 0;
+    final isDaylight =
+        sunrise > 0 && sunset > 0 && currentTime >= sunrise && currentTime < sunset;
+
+    final hourlyForecast = data['hourly'] as List<dynamic>? ?? <dynamic>[];
+    final rainScan = _scanHourlyForRain(hourlyForecast);
+
+    return LiveWeatherReport(
+      temperature: '${temp.toStringAsFixed(0)}°C',
+      humidity: '$humidity%',
+      environmentLighting:
+          isDaylight ? 'Daytime Operations' : 'Night Work / Low Visibility',
+      rainForecast: rainScan.message,
+      rainIsComing: rainScan.isComing,
+      hoursUntilRain: rainScan.hoursUntilRain,
+      rawTempC: temp,
+      rawHumidity: humidity,
+      isDaylight: isDaylight,
+    );
+  }
+
+  ({bool isComing, int hoursUntilRain, String message}) _scanHourlyForRain(
+    List<dynamic> hourlyForecast,
+  ) {
+    const defaultMsg =
+        'No rain detected in the immediate forecast windows.';
+    for (var i = 1; i <= 4; i++) {
+      if (i >= hourlyForecast.length) break;
+      final hourData = hourlyForecast[i];
+      if (hourData is! Map<String, dynamic>) continue;
+
+      final weatherList = hourData['weather'] as List<dynamic>? ?? <dynamic>[];
+      final mainCondition = weatherList.isNotEmpty
+          ? (weatherList.first as Map<String, dynamic>)['main']?.toString().toLowerCase() ?? ''
+          : '';
+
+      if (mainCondition.contains('rain') || hourData.containsKey('rain')) {
+        return (
+          isComing: true,
+          hoursUntilRain: i,
+          message:
+              '🚨 WARNING: Rain is approaching! Precipitation expected on-site within $i hour(s). Protect exposed materials immediately.',
+        );
+      }
+    }
+    return (isComing: false, hoursUntilRain: 0, message: defaultMsg);
+  }
+
+  Future<LiveWeatherReport> _liveReportFallback({
+    required double lat,
+    required double lon,
+  }) async {
+    final current = await getCurrentWeatherByCoordinates(lat: lat, lon: lon);
+    return _liveReportFromCurrentAndForecastList(current, current.cityName ?? '');
+  }
+
+  Future<LiveWeatherReport> _liveReportFromCurrentAndForecastList(
+    WeatherNow current,
+    String city,
+  ) async {
+    final now = DateTime.now().toUtc();
+    var isDaylight = true;
+    if (current.sunrise != null && current.sunset != null) {
+      isDaylight = now.isAfter(current.sunrise!) && now.isBefore(current.sunset!);
+    }
+
+    final hourly = await getHourlyForecastByCoordinatesAndDate(
+      lat: current.lat ?? 14.5995,
+      lon: current.lon ?? 120.9842,
+      date: DateTime.now(),
+    );
+
+    final upcoming = hourly
+        .where((h) => h.dateTime.isAfter(DateTime.now()))
+        .take(4)
+        .toList();
+
+    var rainMsg = 'No rain detected in the immediate forecast windows.';
+    var rainComing = false;
+    var hoursUntil = 0;
+
+    for (var i = 0; i < upcoming.length; i++) {
+      final h = upcoming[i];
+      final c = h.condition.toLowerCase();
+      if (c.contains('rain') || (h.pop ?? 0) > 0.5 || (h.rainMm ?? 0) > 0) {
+        rainComing = true;
+        hoursUntil = i + 1;
+        rainMsg =
+            '🚨 WARNING: Rain is approaching! Precipitation expected on-site within $hoursUntil hour(s). Protect exposed materials immediately.';
+        break;
+      }
+    }
+
+    return LiveWeatherReport(
+      temperature: '${current.temperatureC.toStringAsFixed(0)}°C',
+      humidity: current.humidity != null ? '${current.humidity}%' : '—',
+      environmentLighting:
+          isDaylight ? 'Daytime Operations' : 'Night Work / Low Visibility',
+      rainForecast: rainMsg,
+      rainIsComing: rainComing,
+      hoursUntilRain: hoursUntil,
+      rawTempC: current.temperatureC,
+      rawHumidity: current.humidity,
+      isDaylight: isDaylight,
     );
   }
 
@@ -769,4 +1117,62 @@ enum WeatherMapLayer {
   precipitation,
   wind,
   clouds,
+}
+
+/// Native Dart weather layer output for GovTrack AI site coordinator context.
+class LiveWeatherReport {
+  const LiveWeatherReport({
+    required this.temperature,
+    required this.humidity,
+    required this.environmentLighting,
+    required this.rainForecast,
+    this.rainIsComing = false,
+    this.hoursUntilRain = 0,
+    this.rawTempC,
+    this.rawHumidity,
+    this.isDaylight = true,
+    this.error,
+    this.provider,
+  });
+
+  final String temperature;
+  final String humidity;
+  final String environmentLighting;
+  final String rainForecast;
+  final bool rainIsComing;
+  final int hoursUntilRain;
+  final double? rawTempC;
+  final int? rawHumidity;
+  final bool isDaylight;
+  final String? error;
+  final String? provider;
+
+  bool get hasError => error != null && error!.isNotEmpty;
+
+  bool get isOffline =>
+      temperature == 'Unavailable' ||
+      humidity == 'Unavailable' ||
+      hasError;
+
+  Map<String, dynamic> toMap() => {
+        'temperature': temperature,
+        'humidity': humidity,
+        'environment_lighting': environmentLighting,
+        'rain_forecast': rainForecast,
+        'rain_is_coming': rainIsComing,
+        'hours_until_rain': hoursUntilRain,
+        if (rawTempC != null) 'raw_temp_c': rawTempC,
+        if (rawHumidity != null) 'raw_humidity': rawHumidity,
+        'is_daylight': isDaylight,
+        if (provider != null) 'provider': provider,
+        if (error != null) 'error': error,
+      };
+
+  factory LiveWeatherReport.error(String message) => LiveWeatherReport(
+        temperature: '—',
+        humidity: '—',
+        environmentLighting: '—',
+        rainForecast: message,
+        error: message,
+      );
 }

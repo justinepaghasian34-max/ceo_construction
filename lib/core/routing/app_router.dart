@@ -10,16 +10,17 @@ import '../../views/splash/splash_screen.dart';
 import '../../views/site_manager/site_manager_home.dart';
 import '../../views/site_manager/daily_report_screen.dart';
 import '../../views/site_manager/attendance_screen.dart';
-import '../../views/site_manager/fingerprint_attendance_screen.dart';
 import '../../views/site_manager/material_usage_screen.dart';
 import '../../views/site_manager/material_delivery_screen.dart';
+import '../../views/site_manager/material_inventory_screen.dart';
 import '../../views/site_manager/material_request_screen.dart';
 import '../../views/site_manager/materials_hub_screen.dart';
 import '../../views/site_manager/issues_screen.dart';
 import '../../views/site_manager/sync_queue_screen.dart';
 import '../../views/site_manager/site_manager_reports_screen.dart';
 import '../../views/site_manager/project_progress_update_screen.dart';
-import '../../views/site_manager/ai_assistant_chat_screen.dart';
+import '../../views/site_manager/site_manager_govtrack_screen.dart';
+import '../../views/site_manager/site_manager_otp_screen.dart';
 import '../../views/admin/admin_home.dart';
 import '../../views/admin/admin_dashboard.dart';
 import '../../views/admin/admin_reports.dart';
@@ -31,6 +32,11 @@ import '../../views/admin/admin_audit_trail.dart';
 import '../../views/admin/admin_material_monitoring.dart';
 import '../../views/admin/admin_financial_monitoring.dart';
 import '../../views/admin/admin_weather_forecast.dart';
+import '../../views/admin/admin_demo_script.dart';
+import '../../views/payroll/payroll_home.dart';
+import '../../views/payroll/payroll_monitoring_screen.dart';
+import '../../views/materials/materials_home.dart';
+import '../../views/materials/materials_monitoring_screen.dart';
 import '../../views/ceo/ceo_home.dart';
 import '../../views/ceo/ceo_dashboard.dart';
 import '../../views/ceo/ceo_analytics.dart';
@@ -41,6 +47,72 @@ import '../../views/common/notifications_screen.dart';
 
 class AppRouter {
   static final _rootNavigatorKey = GlobalKey<NavigatorState>();
+
+  static CustomTransitionPage<void> _authPage(
+    GoRouterState state, {
+    required Widget child,
+  }) {
+    return CustomTransitionPage<void>(
+      key: state.pageKey,
+      child: child,
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        final fade = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
+        final slide = Tween<Offset>(
+          begin: const Offset(0.00, 0.03),
+          end: Offset.zero,
+        ).animate(
+          CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+          ),
+        );
+        return FadeTransition(
+          opacity: fade,
+          child: SlideTransition(
+            position: slide,
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  static CustomTransitionPage<void> _adminPage(
+    GoRouterState state, {
+    required Widget child,
+  }) {
+    return CustomTransitionPage<void>(
+      key: state.pageKey,
+      child: child,
+      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+        final fade = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
+
+        final slide = Tween<Offset>(
+          begin: const Offset(0.02, 0.0),
+          end: Offset.zero,
+        ).animate(
+          CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+          ),
+        );
+
+        return FadeTransition(
+          opacity: fade,
+          child: SlideTransition(
+            position: slide,
+            child: child,
+          ),
+        );
+      },
+    );
+  }
 
   static GoRouter createRouter(Ref ref) {
     final authService = ref.read(authServiceProvider);
@@ -74,13 +146,9 @@ class AppRouter {
           return RouteNames.splash;
         }
 
-        // If authenticated and on login, register, or splash, redirect to appropriate home
-        if (isAuthenticated &&
-            (location == RouteNames.login ||
-                location == RouteNames.register ||
-                location == RouteNames.splash)) {
-          return _getHomeRouteForRole(userRole);
-        }
+        // REMOVED: Auto-redirect from login/register/splash to home
+        // Users must now explicitly log in after logout
+        // This prevents automatic login/shortcut behavior
 
         // Check role-based access
         if (isAuthenticated && !_hasAccessToRoute(location, userRole)) {
@@ -93,17 +161,26 @@ class AppRouter {
         // Splash Screen
         GoRoute(
           path: RouteNames.splash,
-          builder: (context, state) => const SplashScreen(),
+          pageBuilder: (context, state) =>
+              _authPage(state, child: const SplashScreen()),
         ),
 
         // Auth Routes
         GoRoute(
           path: RouteNames.login,
-          builder: (context, state) => const LoginScreen(),
+          pageBuilder: (context, state) =>
+              _authPage(state, child: const LoginScreen()),
         ),
         GoRoute(
           path: RouteNames.register,
-          builder: (context, state) => const RegisterScreen(),
+          pageBuilder: (context, state) =>
+              _authPage(state, child: const RegisterScreen()),
+        ),
+
+        // Site Manager OTP
+        GoRoute(
+          path: RouteNames.siteManagerOtp,
+          builder: (context, state) => const SiteManagerOtpScreen(),
         ),
 
         // Site Manager Routes
@@ -116,9 +193,9 @@ class AppRouter {
           routes: [
             GoRoute(
               path: 'tasks',
-              builder: (context, state) => const DailyReportScreen(
+              builder: (context, state) => const AdminReports(
                 showBottomNav: true,
-                showBack: false,
+                dashboardRoute: RouteNames.siteManagerHome,
               ),
             ),
             GoRoute(
@@ -130,14 +207,16 @@ class AppRouter {
             ),
             GoRoute(
               path: 'govtrack-ai',
-              builder: (context, state) => const AdminReports(
-                showBottomNav: false,
-                dashboardRoute: RouteNames.siteManagerHome,
+              builder: (context, state) => const SiteManagerGovtrackScreen(
+                showBottomNav: true,
               ),
             ),
             GoRoute(
               path: 'ai-assistant-chat',
-              builder: (context, state) => const AiAssistantChatScreen(),
+              builder: (context, state) => const SiteManagerGovtrackScreen(
+                initialTab: 0,
+                showBottomNav: false,
+              ),
             ),
             GoRoute(
               path: 'daily-report',
@@ -156,17 +235,7 @@ class AppRouter {
             ),
             GoRoute(
               path: 'fingerprint-attendance',
-              builder: (context, state) {
-                final worker = state.extra is WorkerFingerprintArgs
-                    ? state.extra as WorkerFingerprintArgs
-                    : null;
-
-                return FingerprintAttendanceScreen(
-                  showBottomNav: true,
-                  showBack: true,
-                  worker: worker,
-                );
-              },
+              redirect: (context, state) => RouteNames.attendance,
             ),
             GoRoute(
               path: 'material-usage',
@@ -175,6 +244,10 @@ class AppRouter {
             GoRoute(
               path: 'material-delivery',
               builder: (context, state) => const MaterialDeliveryScreen(),
+            ),
+            GoRoute(
+              path: 'material-inventory',
+              builder: (context, state) => const MaterialInventoryScreen(),
             ),
             GoRoute(
               path: 'material-request',
@@ -218,43 +291,94 @@ class AppRouter {
         // Admin Routes
         GoRoute(
           path: RouteNames.adminHome,
-          builder: (context, state) => const AdminHome(),
+          pageBuilder: (context, state) =>
+              _adminPage(state, child: const AdminHome()),
           routes: [
             GoRoute(
               path: 'dashboard',
-              builder: (context, state) => const AdminDashboard(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminDashboard()),
             ),
             GoRoute(
               path: 'weather-forecast',
-              builder: (context, state) => const AdminWeatherForecastScreen(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminWeatherForecastScreen()),
             ),
             GoRoute(
               path: 'progress-reports',
-              builder: (context, state) => const AdminProgressReportsScreen(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminProgressReportsScreen()),
             ),
             GoRoute(
               path: 'projects',
-              builder: (context, state) => const AdminProjects(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminProjects()),
             ),
             GoRoute(
               path: 'payroll',
-              builder: (context, state) => const AdminPayroll(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminPayroll()),
             ),
             GoRoute(
               path: 'material-monitoring',
-              builder: (context, state) => const AdminMaterialMonitoring(),
+              pageBuilder: (context, state) {
+                final qp = state.uri.queryParameters;
+                return _adminPage(
+                  state,
+                  child: AdminMaterialMonitoring(
+                    initialProjectId: qp['projectId'],
+                    initialProjectName: qp['projectName'],
+                  ),
+                );
+              },
             ),
             GoRoute(
               path: 'financial-monitoring',
-              builder: (context, state) => const AdminFinancialMonitoring(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminFinancialMonitoring()),
             ),
             GoRoute(
               path: 'history',
-              builder: (context, state) => const AdminHistory(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminHistory()),
             ),
             GoRoute(
               path: 'audit-trail',
-              builder: (context, state) => const AdminAuditTrail(),
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminAuditTrail()),
+            ),
+            GoRoute(
+              path: 'demo-script',
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminDemoScriptScreen()),
+            ),
+          ],
+        ),
+
+        // Payroll Routes
+        GoRoute(
+          path: RouteNames.payrollHome,
+          pageBuilder: (context, state) =>
+              _adminPage(state, child: const PayrollHome()),
+          routes: [
+            GoRoute(
+              path: 'monitoring',
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const PayrollMonitoringScreen()),
+            ),
+          ],
+        ),
+
+        // Materials Routes
+        GoRoute(
+          path: RouteNames.materialsHome,
+          pageBuilder: (context, state) =>
+              _adminPage(state, child: const MaterialsHome()),
+          routes: [
+            GoRoute(
+              path: 'monitoring',
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const MaterialsMonitoringScreen()),
             ),
           ],
         ),
@@ -317,6 +441,10 @@ class AppRouter {
         return RouteNames.adminHome;
       case AppConstants.roleCeo:
         return RouteNames.ceoHome;
+      case AppConstants.rolePayroll:
+        return RouteNames.payrollHome;
+      case AppConstants.roleMaterials:
+        return RouteNames.materialsHome;
       default:
         return RouteNames.login;
     }
@@ -332,11 +460,21 @@ class AppRouter {
     }
 
     if (userRole == AppConstants.roleAdmin) {
-      return route.startsWith(RouteNames.adminHome);
+      return route.startsWith(RouteNames.adminHome) ||
+          route.startsWith(RouteNames.payrollHome) ||
+          route.startsWith(RouteNames.materialsHome);
     }
 
     if (userRole == AppConstants.roleCeo) {
       return route.startsWith(RouteNames.ceoHome);
+    }
+
+    if (userRole == AppConstants.rolePayroll) {
+      return route.startsWith(RouteNames.payrollHome);
+    }
+
+    if (userRole == AppConstants.roleMaterials) {
+      return route.startsWith(RouteNames.materialsHome);
     }
 
     if (userRole == AppConstants.roleSiteManager) {

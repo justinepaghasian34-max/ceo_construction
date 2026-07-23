@@ -11,26 +11,44 @@ import '../../utils/png_exporter.dart';
 class AdminProgressReportsScreen extends StatelessWidget {
   const AdminProgressReportsScreen({super.key});
 
-  List<String> _extractImageUrls(Map<String, dynamic> data) {
-    final urls = <String>[];
+  List<_ImageEntry> _extractImageEntries(Map<String, dynamic> data) {
+    final entries = <_ImageEntry>[];
+    final baseFileName = (data['fileName'] ?? data['file_name'] ?? '').toString().trim();
 
     final listRaw = data['imageUrls'] ?? data['images'] ?? data['image_urls'];
     if (listRaw is Iterable) {
+      var index = 0;
       for (final e in listRaw) {
-        final v = e?.toString().trim() ?? '';
-        if (v.isNotEmpty) urls.add(v);
+        final source = e?.toString().trim() ?? '';
+        if (source.isEmpty) continue;
+        final label = baseFileName.isNotEmpty
+            ? '$baseFileName ${index + 1}'
+            : 'Image ${index + 1}';
+        entries.add(_ImageEntry(source: source, label: label));
+        index += 1;
       }
     }
 
     final single = (data['imageUrl'] ?? data['image_url'] ?? '').toString().trim();
-    if (single.isNotEmpty && !urls.contains(single)) {
-      urls.insert(0, single);
+    if (single.isNotEmpty && entries.every((entry) => entry.source != single)) {
+      final label = baseFileName.isNotEmpty
+          ? baseFileName
+          : 'Image ${entries.length + 1}';
+      entries.insert(0, _ImageEntry(source: single, label: label));
     }
 
-    return urls;
+    final storagePath = (data['storagePath'] ?? data['storage_path'] ?? '').toString().trim();
+    if (storagePath.isNotEmpty && entries.every((entry) => entry.source != storagePath)) {
+      final label = baseFileName.isNotEmpty
+          ? '$baseFileName ${entries.length + 1}'
+          : 'Image ${entries.length + 1}';
+      entries.add(_ImageEntry(source: storagePath, label: label));
+    }
+
+    return entries;
   }
 
-  void _showImageViewer(BuildContext context, String url) {
+  void _showImageViewer(BuildContext context, String url, String label) {
     showDialog<void>(
       context: context,
       builder: (dialogContext) {
@@ -39,20 +57,35 @@ class AdminProgressReportsScreen extends StatelessWidget {
           child: SizedBox(
             width: 860,
             height: 640,
-            child: InteractiveViewer(
-              minScale: 0.5,
-              maxScale: 6,
-              child: Container(
-                color: Colors.black,
-                alignment: Alignment.center,
-                child: Image.network(
-                  url,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const Center(
-                    child: Icon(Icons.broken_image_outlined, color: Colors.white),
+            child: Column(
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  color: AppTheme.lightGray,
+                  child: Text(
+                    label,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
                 ),
-              ),
+                Expanded(
+                  child: InteractiveViewer(
+                    minScale: 0.5,
+                    maxScale: 6,
+                    child: Container(
+                      color: Colors.black,
+                      alignment: Alignment.center,
+                      child: _StorageNetworkImage(
+                        source: url,
+                        fit: BoxFit.contain,
+                        errorIconColor: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         );
@@ -141,8 +174,8 @@ class AdminProgressReportsScreen extends StatelessWidget {
                   ? '${progressPercent.toStringAsFixed(1)}%'
                   : '—';
 
-              final imageUrls = _extractImageUrls(data);
-              final coverUrl = imageUrls.isNotEmpty ? imageUrls.first : '';
+              final imageEntries = _extractImageEntries(data);
+              final coverUrl = imageEntries.isNotEmpty ? imageEntries.first.source : '';
 
               return Material(
                 color: Colors.white,
@@ -178,19 +211,9 @@ class AdminProgressReportsScreen extends StatelessWidget {
                                           ),
                                     ),
                                   )
-                                : Image.network(
-                                    coverUrl,
+                                : _StorageNetworkImage(
+                                    source: coverUrl,
                                     fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) {
-                                      return Container(
-                                        color: AppTheme.deepBlue.withValues(alpha: 0.08),
-                                        alignment: Alignment.center,
-                                        child: const Icon(
-                                          Icons.broken_image_outlined,
-                                          color: AppTheme.mediumGray,
-                                        ),
-                                      );
-                                    },
                                   ),
                           ),
                         ),
@@ -235,29 +258,68 @@ class AdminProgressReportsScreen extends StatelessWidget {
                                         color: AppTheme.mediumGray,
                                       ),
                                 ),
-                              if (imageUrls.isNotEmpty) ...[
+                              if (imageEntries.isNotEmpty) ...[
                                 const SizedBox(height: 8),
                                 SizedBox(
                                   height: 54,
                                   child: ListView.separated(
                                     scrollDirection: Axis.horizontal,
-                                    itemCount: imageUrls.length,
+                                    itemCount: imageEntries.length,
                                     separatorBuilder: (_, __) => const SizedBox(width: 6),
                                     itemBuilder: (context, i) {
-                                      final url = imageUrls[i];
+                                      final entry = imageEntries[i];
                                       return InkWell(
-                                        onTap: () => _showImageViewer(context, url),
+                                        onTap: () => _showImageViewer(context, entry.source, entry.label),
+                                        onLongPress: () {
+                                          showDialog<void>(
+                                            context: context,
+                                            builder: (c) => AlertDialog(
+                                              title: Text(entry.label),
+                                              content: SelectableText(entry.source),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(c),
+                                                  child: const Text('Close'),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                        },
                                         child: ClipRRect(
                                           borderRadius: BorderRadius.circular(10),
                                           child: Container(
                                             width: 54,
                                             height: 54,
                                             color: AppTheme.lightGray,
-                                            child: Image.network(
-                                              url,
-                                              fit: BoxFit.cover,
-                                              errorBuilder: (_, __, ___) => const Center(
-                                                child: Icon(Icons.broken_image_outlined),
+                                            child: Tooltip(
+                                              message: entry.label,
+                                              child: Stack(
+                                                fit: StackFit.expand,
+                                                children: [
+                                                  _StorageNetworkImage(
+                                                    source: entry.source,
+                                                    fit: BoxFit.cover,
+                                                    semanticLabel: entry.label,
+                                                  ),
+                                                  Positioned(
+                                                    right: 4,
+                                                    bottom: 4,
+                                                    child: Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black.withValues(alpha: 0.55),
+                                                        borderRadius: BorderRadius.circular(10),
+                                                      ),
+                                                      child: Text(
+                                                        '${i + 1}',
+                                                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                                              color: Colors.white,
+                                                              fontWeight: FontWeight.w700,
+                                                            ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
                                             ),
                                           ),
@@ -321,7 +383,7 @@ class AdminProgressReportsScreen extends StatelessWidget {
     final schedule = (analysis?['schedule'] as Map?)?.cast<String, dynamic>();
     final status = schedule == null ? null : schedule['status']?.toString().trim();
 
-    final imageUrls = _extractImageUrls(data);
+    final imageEntries = _extractImageEntries(data);
 
     Future<void> exportPng() async {
       final messenger = ScaffoldMessenger.of(context);
@@ -378,7 +440,7 @@ class AdminProgressReportsScreen extends StatelessWidget {
                   children: [
                     _kv(context, 'Progress', pctText),
                     if (projectId.isNotEmpty) _kv(context, 'Project ID', projectId),
-                    if (imageUrls.isNotEmpty) ...[
+                    if (imageEntries.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       Text(
                         'Images',
@@ -391,23 +453,38 @@ class AdminProgressReportsScreen extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          for (final url in imageUrls)
+                          for (final entry in imageEntries)
                             InkWell(
-                              onTap: () => _showImageViewer(context, url),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(12),
-                                child: Container(
-                                  width: 140,
-                                  height: 92,
-                                  color: AppTheme.lightGray,
-                                  child: Image.network(
-                                    url,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => const Center(
-                                      child: Icon(Icons.broken_image_outlined),
+                              onTap: () => _showImageViewer(context, entry.source, entry.label),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Container(
+                                      width: 140,
+                                      height: 92,
+                                      color: AppTheme.lightGray,
+                                      child: _StorageNetworkImage(
+                                        source: entry.source,
+                                        fit: BoxFit.cover,
+                                        semanticLabel: entry.label,
+                                      ),
                                     ),
                                   ),
-                                ),
+                                  const SizedBox(height: 4),
+                                  SizedBox(
+                                    width: 140,
+                                    child: Text(
+                                      entry.label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                            color: AppTheme.mediumGray,
+                                          ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                         ],
@@ -420,6 +497,13 @@ class AdminProgressReportsScreen extends StatelessWidget {
                           ? '—'
                           : (assignedEmail.isEmpty ? assignedName : '$assignedName ($assignedEmail)'),
                     ),
+                    if (data['fileName'] != null || data['file_name'] != null) ...[
+                      _kv(
+                        context,
+                        'Image file name',
+                        (data['fileName'] ?? data['file_name'] ?? '').toString(),
+                      ),
+                    ],
                     _kv(
                       context,
                       'Submitted by',
@@ -489,6 +573,105 @@ class AdminProgressReportsScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ImageEntry {
+  const _ImageEntry({
+    required this.source,
+    required this.label,
+  });
+
+  final String source;
+  final String label;
+}
+
+class _StorageNetworkImage extends StatelessWidget {
+  const _StorageNetworkImage({
+    required this.source,
+    required this.fit,
+    this.errorIconColor,
+    this.semanticLabel,
+  });
+
+  final String source;
+  final BoxFit fit;
+  final Color? errorIconColor;
+  final String? semanticLabel;
+
+  String _normalizeHttpUrl(String url) {
+    final u = url.trim();
+    if (u.isEmpty) return '';
+    // Firebase Storage REST endpoints require alt=media to return raw bytes.
+    if (u.contains('firebasestorage.googleapis.com') && u.contains('/o/') && !u.contains('alt=media')) {
+      final join = u.contains('?') ? '&' : '?';
+      return '$u${join}alt=media';
+    }
+    return u;
+  }
+
+  Future<String> _resolveUrl() async {
+    final s = source.trim();
+    if (s.isEmpty) return '';
+    if (s.startsWith('http://') || s.startsWith('https://')) return _normalizeHttpUrl(s);
+    try {
+      if (s.startsWith('gs://')) {
+        final ref = FirebaseService.instance.storage.refFromURL(s);
+        return _normalizeHttpUrl(await ref.getDownloadURL());
+      }
+      final ref = FirebaseService.instance.storage.ref(s);
+      return _normalizeHttpUrl(await ref.getDownloadURL());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: _resolveUrl(),
+      builder: (context, snap) {
+        final url = (snap.data ?? '').trim();
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        }
+        if (url.isEmpty) {
+          return Center(
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: errorIconColor,
+            ),
+          );
+        }
+        return Image.network(
+          url,
+          fit: fit,
+          semanticLabel: semanticLabel,
+          loadingBuilder: (context, child, loadingProgress) {
+            if (loadingProgress == null) return child;
+            return const Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          },
+          errorBuilder: (_, __, ___) => Center(
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: errorIconColor,
+            ),
+          ),
+        );
+      },
     );
   }
 }

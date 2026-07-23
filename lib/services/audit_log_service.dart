@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as developer;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -19,6 +20,48 @@ class AuditLogService {
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  StreamSubscription<User?>? _authSubscription;
+  String? _lastAuthUid;
+  DateTime? _lastLoginLoggedAt;
+  DateTime? _lastLogoutLoggedAt;
+
+  void startSessionTracking({
+    Duration cooldown = const Duration(seconds: 20),
+  }) {
+    if (_authSubscription != null) return;
+
+    _lastAuthUid = _auth.currentUser?.uid;
+    _authSubscription = _auth.authStateChanges().listen((user) async {
+      final newUid = user?.uid;
+      final previousUid = _lastAuthUid;
+      _lastAuthUid = newUid;
+
+      final now = DateTime.now();
+
+      if (previousUid == null && newUid != null) {
+        final lastAt = _lastLoginLoggedAt;
+        if (lastAt == null || now.difference(lastAt) > cooldown) {
+          _lastLoginLoggedAt = now;
+          await logLogin();
+        }
+        return;
+      }
+
+      if (previousUid != null && newUid == null) {
+        final lastAt = _lastLogoutLoggedAt;
+        if (lastAt == null || now.difference(lastAt) > cooldown) {
+          _lastLogoutLoggedAt = now;
+          await logLogout();
+        }
+      }
+    });
+  }
+
+  Future<void> stopSessionTracking() async {
+    await _authSubscription?.cancel();
+    _authSubscription = null;
+  }
 
   /// Log a generic user action to the audit trail.
   ///
@@ -42,7 +85,7 @@ class AuditLogService {
       });
     } catch (e, stack) {
       developer.log(
-        'Failed to log audit action: $action  $e',
+        'Failed to log audit action: $action - $e',
         name: 'AuditLogService',
         error: e,
         stackTrace: stack,

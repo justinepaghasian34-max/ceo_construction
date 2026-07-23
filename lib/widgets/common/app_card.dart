@@ -25,8 +25,8 @@ class AppCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final card = Card(
       color: backgroundColor ?? AppTheme.white,
-      elevation: elevation ?? 3,
-      shadowColor: AppTheme.darkGray.withValues(alpha: 0.10),
+      elevation: elevation ?? 1,
+      shadowColor: AppTheme.darkGray.withValues(alpha: 0.06),
       margin: margin ?? const EdgeInsets.all(8),
       shape: RoundedRectangleBorder(
         borderRadius: borderRadius ?? BorderRadius.circular(12),
@@ -38,10 +38,17 @@ class AppCard extends StatelessWidget {
     );
 
     if (onTap != null) {
-      return InkWell(
-        onTap: onTap,
-        borderRadius: borderRadius ?? BorderRadius.circular(12),
-        child: card,
+      final radius = borderRadius ?? BorderRadius.circular(12);
+      return MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: radius,
+            child: card,
+          ),
+        ),
       );
     }
 

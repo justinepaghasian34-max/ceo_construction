@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
@@ -6,11 +8,127 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
 import '../../services/audit_log_service.dart';
+import '../../services/archive_service.dart';
+import '../../services/govtrack_progress_ml_service.dart';
+import 'admin_project_details_screen.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 
-class AdminProjects extends StatelessWidget {
+Widget _buildPlanUploadSection({
+  required BuildContext context,
+  required VoidCallback? onPick,
+  required bool busy,
+  String? fileName,
+  String? hint,
+}) {
+  return GlassCard(
+    borderRadius: 16,
+    padding: const EdgeInsets.all(14),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.architecture, color: AppTheme.deepBlue, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              'Project Plan & Blueprint',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.deepBlue,
+                  ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Upload a blueprint (PNG/JPG) or exact site photo. Images run the predefined ML pipeline (Vision + Gemini). PDF/DOC files are stored for reference.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppTheme.mediumGray,
+                height: 1.4,
+              ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: onPick,
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.deepBlue,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            icon: busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.upload_file),
+            label: Text(
+              busy ? 'Running ML analysis…' : 'Upload Project Plan',
+            ),
+          ),
+        ),
+        if (fileName != null && fileName.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.deepBlue.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: AppTheme.deepBlue.withValues(alpha: 0.14),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.insert_drive_file_outlined,
+                    size: 18, color: AppTheme.deepBlue),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    fileName,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (hint != null && hint.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            hint,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppTheme.deepBlue,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+class AdminProjects extends StatefulWidget {
   const AdminProjects({super.key});
+
+  @override
+  State<AdminProjects> createState() => _AdminProjectsState();
+}
+
+class _AdminProjectsState extends State<AdminProjects> {
+  bool _showArchived = false;
 
   @override
   Widget build(BuildContext context) {
@@ -39,7 +157,12 @@ class AdminProjects extends StatelessWidget {
       child: GlassCard(
         borderRadius: 18,
         padding: const EdgeInsets.all(14),
-        child: StreamBuilder<QuerySnapshot>(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildRecordsTabBar(context),
+            const SizedBox(height: 14),
+            StreamBuilder<QuerySnapshot>(
           stream: projectsRef.snapshots(),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
@@ -57,12 +180,20 @@ class AdminProjects extends StatelessWidget {
               );
             }
 
-            final docs = snapshot.data?.docs ?? [];
+            final docs = (snapshot.data?.docs ?? [])
+                .where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final archived = ArchiveService.isArchived(data);
+                  return _showArchived ? archived : !archived;
+                })
+                .toList();
 
             if (docs.isEmpty) {
               return Center(
                 child: Text(
-                  'No projects found',
+                  _showArchived
+                      ? 'No archived projects'
+                      : 'No active projects found',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         color: AppTheme.mediumGray,
                       ),
@@ -88,25 +219,28 @@ class AdminProjects extends StatelessWidget {
                 final siteManagerName =
                     (data['siteManagerName'] ?? '').toString();
                 final location = (data['location'] ?? '').toString();
+                final isArchivedView = _showArchived;
+                final archivedOn = isArchivedView
+                    ? ArchiveService.formatArchivedAt(data)
+                    : null;
+                final archivedBy =
+                    (data[ArchiveService.fieldArchivedByEmail] ?? '').toString();
 
                 final normalizedStatus = status.toLowerCase();
-                Color statusColor;
-                if (normalizedStatus == 'ongoing') {
-                  statusColor = AppTheme.softGreen;
-                } else if (normalizedStatus == 'completed') {
-                  statusColor = AppTheme.primaryBlue;
-                } else if (normalizedStatus == 'pending') {
-                  statusColor = AppTheme.warningOrange;
-                } else {
-                  statusColor = AppTheme.mediumGray;
-                }
-
-                String formattedStatus;
-                if (status.isEmpty) {
-                  formattedStatus = '—';
-                } else {
-                  formattedStatus = status[0].toUpperCase() + status.substring(1);
-                }
+                final String formattedStatus = isArchivedView
+                    ? 'Archived'
+                    : (status.isEmpty
+                        ? '—'
+                        : status[0].toUpperCase() + status.substring(1));
+                final Color statusColor = isArchivedView
+                    ? AppTheme.mediumGray
+                    : normalizedStatus == 'ongoing'
+                        ? AppTheme.softGreen
+                        : normalizedStatus == 'completed'
+                            ? AppTheme.primaryBlue
+                            : normalizedStatus == 'pending'
+                                ? AppTheme.warningOrange
+                                : AppTheme.mediumGray;
 
                 String siteManagerLabel;
                 if (siteManagerName.isEmpty) {
@@ -118,60 +252,60 @@ class AdminProjects extends StatelessWidget {
                 return GlassCard(
                   borderRadius: 16,
                   padding: const EdgeInsets.all(14),
-                  child: InkWell(
-                    onTap: () {
-                      _openProjectDetails(
-                        context,
-                        projectId,
-                        projectIdLabel,
-                        name,
-                        status,
-                        progress,
-                        location,
-                        siteManagerLabel,
-                        data,
-                      );
-                    },
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: 32,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.04),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(
-                                Icons.business,
-                                size: 18,
-                                color: Colors.black.withValues(alpha: 0.75),
-                              ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    name,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleMedium
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Row(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
+                            child: Icon(
+                              Icons.business,
+                              size: 18,
+                              color: AppTheme.deepBlue,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        '$projectIdLabel: $displayProjectId',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                              color: AppTheme.mediumGray,
+                                            ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (location.isNotEmpty) ...[
+                                      const SizedBox(width: 12),
                                       Expanded(
                                         child: Text(
-                                          '$projectIdLabel: $displayProjectId',
+                                          location,
                                           style: Theme.of(context)
                                               .textTheme
                                               .bodySmall
@@ -179,66 +313,55 @@ class AdminProjects extends StatelessWidget {
                                                 color: AppTheme.mediumGray,
                                               ),
                                           overflow: TextOverflow.ellipsis,
+                                          textAlign: TextAlign.right,
                                         ),
                                       ),
-                                      if (location.isNotEmpty) ...[
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Text(
-                                            location,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color: AppTheme.mediumGray,
-                                                ),
-                                            overflow: TextOverflow.ellipsis,
-                                            textAlign: TextAlign.right,
-                                          ),
-                                        ),
-                                      ],
                                     ],
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: statusColor.withValues(alpha: 0.22),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              formattedStatus,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: statusColor,
+                                    fontWeight: FontWeight.w600,
                                   ),
-                                ],
-                              ),
                             ),
-                            const SizedBox(width: 12),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: statusColor.withValues(alpha: 0.22),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: Text(
-                                formattedStatus,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: statusColor,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                              ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              isArchivedView
+                                  ? 'Archived on $archivedOn${archivedBy.isNotEmpty ? ' · $archivedBy' : ''}'
+                                  : 'Site manager: $siteManagerLabel',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.mediumGray,
+                                  ),
                             ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                'Site manager: $siteManagerLabel',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: AppTheme.mediumGray,
-                                    ),
-                              ),
-                            ),
+                          ),
+                          if (!isArchivedView) ...[
                             const SizedBox(width: 12),
                             Text(
                               '${progress.toStringAsFixed(0)}% complete',
@@ -250,26 +373,46 @@ class AdminProjects extends StatelessWidget {
                                   ),
                             ),
                           ],
-                        ),
+                        ],
+                      ),
+                      if (!isArchivedView) ...[
                         const SizedBox(height: 8),
                         LinearProgressIndicator(
                           value: (progress.clamp(0, 100)) / 100,
                           backgroundColor: Colors.black.withValues(alpha: 0.06),
                           color: const Color(0xFF2DD4BF),
                         ),
-                        const SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            TextButton.icon(
-                              onPressed: () {
-                                _showEditProjectDialog(context, projectId, data);
-                              },
-                              icon: const Icon(Icons.edit_outlined),
-                              label: const Text('Edit'),
-                            ),
-                            const SizedBox(width: 8),
-                            TextButton.icon(
+                      ],
+                      const SizedBox(height: 14),
+                      const Divider(height: 1),
+                      const SizedBox(height: 12),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final narrow = constraints.maxWidth < 520;
+                          final secondaryActions = [
+                            if (!isArchivedView)
+                              _ProjectActionButton(
+                                label: 'Materials',
+                                icon: Icons.inventory_2_outlined,
+                                variant: _ProjectActionVariant.neutral,
+                                onPressed: () {
+                                  final qp = <String, String>{
+                                    'projectId': projectId,
+                                    if (name.trim().isNotEmpty)
+                                      'projectName': name,
+                                  };
+                                  context.push(
+                                    Uri(
+                                      path: RouteNames.adminMaterialMonitoring,
+                                      queryParameters: qp,
+                                    ).toString(),
+                                  );
+                                },
+                              ),
+                            _ProjectActionButton(
+                              label: 'View',
+                              icon: Icons.visibility_outlined,
+                              variant: _ProjectActionVariant.neutral,
                               onPressed: () {
                                 _openProjectDetails(
                                   context,
@@ -283,21 +426,257 @@ class AdminProjects extends StatelessWidget {
                                   data,
                                 );
                               },
-                              icon: const Icon(Icons.visibility_outlined),
-                              label: const Text('View details'),
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
+                          ];
+                          final crudActions = isArchivedView
+                              ? [
+                                  _ProjectActionButton(
+                                    label: 'Restore',
+                                    icon: Icons.unarchive_outlined,
+                                    variant: _ProjectActionVariant.restore,
+                                    onPressed: () {
+                                      _confirmRestoreProject(
+                                        context,
+                                        projectId: projectId,
+                                        projectName: name,
+                                      );
+                                    },
+                                  ),
+                                ]
+                              : [
+                                  _ProjectActionButton(
+                                    label: 'Edit',
+                                    icon: Icons.edit_outlined,
+                                    variant: _ProjectActionVariant.edit,
+                                    onPressed: () {
+                                      _showEditProjectDialog(
+                                        context,
+                                        projectId,
+                                        data,
+                                      );
+                                    },
+                                  ),
+                                  _ProjectActionButton(
+                                    label: 'Archive',
+                                    icon: Icons.archive_outlined,
+                                    variant: _ProjectActionVariant.delete,
+                                    onPressed: () {
+                                      _confirmAndArchiveProject(
+                                        context,
+                                        projectId: projectId,
+                                        projectName: name,
+                                        siteManagerId:
+                                            (data['siteManagerId'] ?? '')
+                                                .toString(),
+                                        previousStatus: status,
+                                      );
+                                    },
+                                  ),
+                                ];
+
+                          if (narrow) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  alignment: WrapAlignment.end,
+                                  children: [...secondaryActions, ...crudActions],
+                                ),
+                              ],
+                            );
+                          }
+
+                          return Row(
+                            children: [
+                              ...secondaryActions.map(
+                                (w) => Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: w,
+                                ),
+                              ),
+                              const Spacer(),
+                              ...crudActions.map(
+                                (w) => Padding(
+                                  padding: const EdgeInsets.only(left: 8),
+                                  child: w,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
                   ),
                 );
               },
             );
           },
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Widget _buildRecordsTabBar(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppTheme.deepBlue.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.deepBlue.withValues(alpha: 0.1)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _RecordsTabChip(
+              label: 'Active',
+              icon: Icons.folder_open_outlined,
+              selected: !_showArchived,
+              onTap: () => setState(() => _showArchived = false),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _RecordsTabChip(
+              label: 'Archived',
+              icon: Icons.inventory_2_outlined,
+              selected: _showArchived,
+              onTap: () => setState(() => _showArchived = true),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmAndArchiveProject(
+    BuildContext context, {
+    required String projectId,
+    required String projectName,
+    required String siteManagerId,
+    required String previousStatus,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.archive_outlined, color: AppTheme.errorRed),
+              SizedBox(width: 10),
+              Text('Archive project?'),
+            ],
+          ),
+          content: Text(
+            'Archive "$projectName"? It will be removed from active lists but '
+            'kept in the system for audit and review.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.errorRed,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Archive'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      await ArchiveService.instance.archiveProject(
+        projectId: projectId,
+        projectName: projectName,
+        siteManagerId: siteManagerId,
+        previousStatus: previousStatus,
+      );
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Archived "$projectName" — data retained for audit'),
+          backgroundColor: AppTheme.softGreen,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to archive project: $e'),
+          backgroundColor: AppTheme.errorRed,
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmRestoreProject(
+    BuildContext context, {
+    required String projectId,
+    required String projectName,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Restore project?'),
+          content: Text(
+            'Restore "$projectName" to the active projects list?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppTheme.deepBlue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Restore'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    try {
+      await ArchiveService.instance.restoreProject(
+        projectId: projectId,
+        projectName: projectName,
+      );
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Restored "$projectName"'),
+          backgroundColor: AppTheme.softGreen,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to restore project: $e'),
+          backgroundColor: AppTheme.errorRed,
+        ),
+      );
+    }
   }
 
   void _openProjectDetails(
@@ -312,123 +691,13 @@ class AdminProjects extends StatelessWidget {
     Map<String, dynamic> data,
   ) {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (detailContext) {
-          final projectType = (data['projectType'] ?? '').toString();
-          final description = (data['description'] ?? '').toString();
-          final contractDocs = (data['contractDocuments'] ?? '').toString();
-          final sourceOfFund = (data['sourceOfFund'] ?? '').toString();
-          final approvedBudgetRaw = data['approvedBudget'];
-          String approvedBudgetText = '';
-          if (approvedBudgetRaw is num) {
-            approvedBudgetText = approvedBudgetRaw.toStringAsFixed(2);
-          } else if (approvedBudgetRaw is String &&
-              approvedBudgetRaw.isNotEmpty) {
-            approvedBudgetText = approvedBudgetRaw;
-          }
-
-          String? startDateText;
-          final startDateStr = data['startDate'] as String?;
-          if (startDateStr != null && startDateStr.isNotEmpty) {
-            try {
-              final d = DateTime.parse(startDateStr);
-              startDateText =
-                  '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-            } catch (_) {}
-          }
-
-          String? endDateText;
-          final endDateStr = data['endDate'] as String?;
-          if (endDateStr != null && endDateStr.isNotEmpty) {
-            try {
-              final d = DateTime.parse(endDateStr);
-              endDateText =
-                  '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-            } catch (_) {}
-          }
-
-          final statusText = '$status (${progress.toStringAsFixed(0)}%)';
-          final displayProjectId = (data['projectCode'] ?? projectId)
-              .toString();
-
-          return Scaffold(
-            appBar: AppBar(title: const Text('Project details')),
-            body: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    name,
-                    style: Theme.of(detailContext).textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildDetailRow(
-                    detailContext,
-                    projectIdLabel,
-                    displayProjectId,
-                  ),
-                  _buildDetailRow(detailContext, 'Status', statusText),
-                  if (location.isNotEmpty)
-                    _buildDetailRow(detailContext, 'Location', location),
-                  _buildDetailRow(
-                    detailContext,
-                    'Site manager',
-                    siteManagerLabel,
-                  ),
-                  if (projectType.isNotEmpty)
-                    _buildDetailRow(detailContext, 'Project type', projectType),
-                  if (sourceOfFund.isNotEmpty)
-                    _buildDetailRow(
-                      detailContext,
-                      'Source of fund',
-                      sourceOfFund,
-                    ),
-                  if (approvedBudgetText.isNotEmpty)
-                    _buildDetailRow(
-                      detailContext,
-                      'Approved budget',
-                      '₱$approvedBudgetText',
-                    ),
-                  if (startDateText != null)
-                    _buildDetailRow(detailContext, 'Start date', startDateText),
-                  if (endDateText != null)
-                    _buildDetailRow(detailContext, 'End date', endDateText),
-                  if (description.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      'Description',
-                      style: Theme.of(detailContext).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      description,
-                      style: Theme.of(detailContext).textTheme.bodyMedium,
-                    ),
-                  ],
-                  if (contractDocs.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      'Contract & required papers',
-                      style: Theme.of(detailContext).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      contractDocs,
-                      style: Theme.of(detailContext).textTheme.bodyMedium,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          );
-        },
+      MaterialPageRoute<void>(
+        builder: (_) => AdminProjectDetailsScreen(projectId: projectId),
       ),
     );
   }
 
-  void _showAddProjectDialog(BuildContext context) {
+  static void _showAddProjectDialog(BuildContext context) {
     final formKey = GlobalKey<FormState>();
     final nameController = TextEditingController();
     final locationController = TextEditingController();
@@ -446,6 +715,8 @@ class AdminProjects extends StatelessWidget {
     final inspectorNameController = TextEditingController();
     String? planFileName;
     dynamic planFileBytes;
+    String? planMlHint;
+    bool isAnalyzingPlan = false;
     bool isSaving = false;
 
     showDialog(
@@ -469,9 +740,17 @@ class AdminProjects extends StatelessWidget {
               }
 
               final file = result.files.single;
+              final name = file.name.toLowerCase();
+              final isImage = name.endsWith('.jpg') ||
+                  name.endsWith('.jpeg') ||
+                  name.endsWith('.png') ||
+                  name.endsWith('.webp');
               setState(() {
                 planFileName = file.name;
                 planFileBytes = file.bytes;
+                planMlHint = isImage
+                    ? 'Blueprint or site photo — ML analysis will run on create.'
+                    : 'PDF/DOC stored for reference. Use JPG/PNG for ML analysis.';
               });
             }
 
@@ -619,6 +898,24 @@ class AdminProjects extends StatelessWidget {
                           }
                           return null;
                         },
+                      ),
+                      const SizedBox(height: 12),
+                      GlassCard(
+                        borderRadius: 16,
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              value: false,
+                              onChanged: null,
+                              title: const Text('Use Material Template'),
+                              subtitle: const Text('Auto-populate assigned materials (budget list) from a template.'),
+                              controlAffinity: ListTileControlAffinity.leading,
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 12),
                       TextFormField(
@@ -853,32 +1150,13 @@ class AdminProjects extends StatelessWidget {
                         },
                       ),
                       const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: isSaving ? null : pickPlanFile,
-                              style: FilledButton.styleFrom(
-                                backgroundColor: AppTheme.deepBlue,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                              ),
-                              icon: const Icon(Icons.upload_file),
-                              label: const Text('Upload Project Plan'),
-                            ),
-                          ),
-                        ],
+                      _buildPlanUploadSection(
+                        context: dialogContext,
+                        onPick: isSaving || isAnalyzingPlan ? null : pickPlanFile,
+                        busy: isAnalyzingPlan,
+                        fileName: planFileName,
+                        hint: planMlHint,
                       ),
-                      if (planFileName != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          planFileName!,
-                          style: Theme.of(dialogContext).textTheme.bodySmall
-                              ?.copyWith(color: AppTheme.mediumGray),
-                        ),
-                      ],
                       const SizedBox(height: 20),
                       Align(
                         alignment: Alignment.centerRight,
@@ -1020,40 +1298,41 @@ class AdminProjects extends StatelessWidget {
                                     );
 
                                     if (planFileBytes != null) {
-                                      () async {
-                                        try {
-                                          final fileName =
-                                              planFileName ??
-                                              'project_plan_${DateTime.now().millisecondsSinceEpoch}';
-                                          final path =
-                                              'projects/$newProjectId/project_plans/$fileName';
-                                          final contentType = inferContentType(
-                                            fileName,
-                                          );
-                                          final uploadedUrl =
-                                              await FirebaseService.instance
-                                                  .uploadFile(
-                                                    path,
-                                                    planFileBytes,
-                                                    contentType: contentType,
-                                                  )
-                                                  .timeout(
-                                                    const Duration(seconds: 30),
-                                                  );
-
-                                          await newProjectRef
-                                              .update({
-                                                'planUrl': uploadedUrl,
-                                                'updatedAt': DateTime.now()
-                                                    .toIso8601String(),
-                                              })
-                                              .timeout(
-                                                const Duration(seconds: 20),
+                                      setState(() => isAnalyzingPlan = true);
+                                      try {
+                                        final bytes = planFileBytes is Uint8List
+                                            ? planFileBytes as Uint8List
+                                            : Uint8List.fromList(
+                                                planFileBytes as List<int>,
                                               );
-                                        } catch (_) {
-                                          // Ignore upload failures for this background task.
+                                        final result = await GovtrackProgressMlService()
+                                            .analyzeProjectPlan(
+                                              projectId: newProjectId,
+                                              projectName:
+                                                  nameController.text.trim(),
+                                              fileBytes: bytes,
+                                              fileName: planFileName ??
+                                                  'project_plan.jpg',
+                                            );
+                                        final planUpdate = <String, dynamic>{
+                                          'planUrl': result.planUrl,
+                                          'planAnalysis':
+                                              result.toFirestoreMap(),
+                                          'updatedAt': nowIso,
+                                        };
+                                        if (result.progressPercent != null &&
+                                            !result.mlSkipped) {
+                                          planUpdate['progressPercentage'] =
+                                              result.progressPercent;
                                         }
-                                      }();
+                                        await newProjectRef.update(planUpdate);
+                                      } catch (_) {
+                                        // Plan upload is best-effort; project already created.
+                                      } finally {
+                                        if (context.mounted) {
+                                          setState(() => isAnalyzingPlan = false);
+                                        }
+                                      }
                                     }
 
                                     if (context.mounted) {
@@ -1199,6 +1478,8 @@ class AdminProjects extends StatelessWidget {
           Uri.tryParse(existingPlanUrl)?.pathSegments.last ?? 'Existing plan';
     }
     dynamic planFileBytes;
+    String? planMlHint;
+    bool isAnalyzingPlan = false;
     bool isSaving = false;
 
     showDialog(
@@ -1210,7 +1491,10 @@ class AdminProjects extends StatelessWidget {
             Future<void> pickPlanFile() async {
               final result = await FilePicker.platform.pickFiles(
                 type: FileType.custom,
-                allowedExtensions: [...AppConstants.allowedDocumentTypes],
+                allowedExtensions: [
+                  ...AppConstants.allowedImageTypes,
+                  ...AppConstants.allowedDocumentTypes,
+                ],
                 withData: true,
               );
 
@@ -1219,9 +1503,17 @@ class AdminProjects extends StatelessWidget {
               }
 
               final file = result.files.single;
+              final name = file.name.toLowerCase();
+              final isImage = name.endsWith('.jpg') ||
+                  name.endsWith('.jpeg') ||
+                  name.endsWith('.png') ||
+                  name.endsWith('.webp');
               setState(() {
                 planFileName = file.name;
                 planFileBytes = file.bytes;
+                planMlHint = isImage
+                    ? 'Blueprint or site photo — ML analysis will run on save.'
+                    : 'PDF/DOC stored for reference. Use JPG/PNG for ML analysis.';
               });
             }
 
@@ -1603,32 +1895,13 @@ class AdminProjects extends StatelessWidget {
                         },
                       ),
                       const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: isSaving ? null : pickPlanFile,
-                              style: FilledButton.styleFrom(
-                                backgroundColor: AppTheme.deepBlue,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                ),
-                              ),
-                              icon: const Icon(Icons.upload_file),
-                              label: const Text('Upload Project Plan'),
-                            ),
-                          ),
-                        ],
+                      _buildPlanUploadSection(
+                        context: dialogContext,
+                        onPick: isSaving || isAnalyzingPlan ? null : pickPlanFile,
+                        busy: isAnalyzingPlan,
+                        fileName: planFileName,
+                        hint: planMlHint,
                       ),
-                      if (planFileName != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          planFileName!,
-                          style: Theme.of(dialogContext).textTheme.bodySmall
-                              ?.copyWith(color: AppTheme.mediumGray),
-                        ),
-                      ],
                       const SizedBox(height: 20),
                       Align(
                         alignment: Alignment.centerRight,
@@ -1667,21 +1940,38 @@ class AdminProjects extends StatelessWidget {
                                     );
 
                                     String? planUrl = existingPlanUrl;
+                                    Map<String, dynamic>? planAnalysis;
+                                    double? mlProgress;
+
                                     if (planFileBytes != null) {
-                                      final fileName =
-                                          planFileName ??
-                                          'project_plan_${DateTime.now().millisecondsSinceEpoch}';
-                                      final path =
-                                          'projects/$projectId/project_plans/$fileName';
-                                      final contentType = inferContentType(
-                                        fileName,
-                                      );
-                                      planUrl = await FirebaseService.instance
-                                          .uploadFile(
-                                            path,
-                                            planFileBytes,
-                                            contentType: contentType,
-                                          );
+                                      setState(() => isAnalyzingPlan = true);
+                                      try {
+                                        final bytes = planFileBytes is Uint8List
+                                            ? planFileBytes as Uint8List
+                                            : Uint8List.fromList(
+                                                planFileBytes as List<int>,
+                                              );
+                                        final result =
+                                            await GovtrackProgressMlService()
+                                                .analyzeProjectPlan(
+                                          projectId: projectId,
+                                          projectName:
+                                              nameController.text.trim(),
+                                          fileBytes: bytes,
+                                          fileName: planFileName ??
+                                              'project_plan.jpg',
+                                        );
+                                        planUrl = result.planUrl;
+                                        planAnalysis = result.toFirestoreMap();
+                                        if (result.progressPercent != null &&
+                                            !result.mlSkipped) {
+                                          mlProgress = result.progressPercent;
+                                        }
+                                      } finally {
+                                        if (context.mounted) {
+                                          setState(() => isAnalyzingPlan = false);
+                                        }
+                                      }
                                     }
 
                                     await FirebaseService
@@ -1727,6 +2017,10 @@ class AdminProjects extends StatelessWidget {
                                               : inspectorNameController.text
                                                     .trim(),
                                           'planUrl': planUrl,
+                                          if (planAnalysis != null)
+                                            'planAnalysis': planAnalysis,
+                                          if (mlProgress != null)
+                                            'progressPercentage': mlProgress,
                                           'updatedAt': now,
                                         });
 
@@ -1817,28 +2111,159 @@ class AdminProjects extends StatelessWidget {
       },
     );
   }
+}
 
-  Widget _buildDetailRow(BuildContext context, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 140,
-            child: Text(
-              '$label:',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: AppTheme.mediumGray,
-                fontWeight: FontWeight.w600,
+enum _ProjectActionVariant { neutral, edit, delete, restore }
+
+class _ProjectActionButton extends StatefulWidget {
+  const _ProjectActionButton({
+    required this.label,
+    required this.icon,
+    required this.variant,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final _ProjectActionVariant variant;
+  final VoidCallback onPressed;
+
+  @override
+  State<_ProjectActionButton> createState() => _ProjectActionButtonState();
+}
+
+class _ProjectActionButtonState extends State<_ProjectActionButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.variant == _ProjectActionVariant.edit;
+    final isDelete = widget.variant == _ProjectActionVariant.delete;
+    final isRestore = widget.variant == _ProjectActionVariant.restore;
+
+    final Color fg;
+    final Color bg;
+    final Color border;
+    if (isEdit) {
+      fg = Colors.white;
+      bg = AppTheme.deepBlue;
+      border = AppTheme.deepBlue;
+    } else if (isDelete) {
+      fg = AppTheme.errorRed;
+      bg = AppTheme.errorRed.withValues(alpha: 0.08);
+      border = AppTheme.errorRed.withValues(alpha: 0.45);
+    } else if (isRestore) {
+      fg = AppTheme.softGreen;
+      bg = AppTheme.softGreen.withValues(alpha: 0.1);
+      border = AppTheme.softGreen.withValues(alpha: 0.45);
+    } else {
+      fg = AppTheme.deepBlue;
+      bg = AppTheme.deepBlue.withValues(alpha: 0.06);
+      border = AppTheme.deepBlue.withValues(alpha: 0.18);
+    }
+
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTap: widget.onPressed,
+      child: AnimatedScale(
+        scale: _pressed ? 0.97 : 1.0,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOutCubic,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 360),
+          curve: Curves.easeInOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: isEdit && _pressed
+                ? AppTheme.deepBlueDark
+                : (isDelete && _pressed
+                    ? AppTheme.errorRed.withValues(alpha: 0.16)
+                    : (isRestore && _pressed
+                        ? AppTheme.softGreen.withValues(alpha: 0.18)
+                        : bg)),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: border),
+            boxShadow: _pressed
+                ? []
+                : [
+                    BoxShadow(
+                      color: (isDelete
+                              ? AppTheme.errorRed
+                              : isRestore
+                                  ? AppTheme.softGreen
+                                  : AppTheme.deepBlue)
+                          .withValues(alpha: isEdit ? 0.22 : 0.08),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(widget.icon, size: 17, color: fg),
+              const SizedBox(width: 6),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  color: fg,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
               ),
-            ),
+            ],
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(value, style: Theme.of(context).textTheme.bodySmall),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecordsTabChip extends StatelessWidget {
+  const _RecordsTabChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? Colors.white : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: selected ? AppTheme.deepBlue : AppTheme.mediumGray,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: selected ? AppTheme.deepBlue : AppTheme.mediumGray,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

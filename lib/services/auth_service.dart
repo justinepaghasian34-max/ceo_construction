@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/user_model.dart';
 import '../core/constants/app_constants.dart';
 import 'firebase_service.dart';
+import 'archive_service.dart';
 import 'hive_service.dart';
 import 'audit_log_service.dart';
 
@@ -76,6 +77,7 @@ class AuthService {
           'department': null,
           'assignedProjects': <String>[],
           'isActive': true,
+          'otpVerified': false,
           'createdAt': now,
           'updatedAt': now,
           'permissions': null,
@@ -120,6 +122,18 @@ class AuthService {
 
       // Save user locally
       await _hiveService.saveUser(userModel);
+
+      // Persist OTP verification state for Site Manager OTP gate.
+      try {
+        final otpVerified = userData['otpVerified'] == true;
+        await _hiveService.settingsBox.put(
+          'otp_verified_${firebaseUser.uid}',
+          <String, dynamic>{'verified': otpVerified},
+        );
+      } catch (_) {
+        // ignore
+      }
+
       // Log successful login to audit trail (best-effort only)
       await AuditLogService.instance.logLogin();
 
@@ -158,7 +172,11 @@ class AuthService {
   }) async {
     try {
       // Only allow specific roles to self-register
-      const allowedRoles = <String>{AppConstants.roleSiteManager};
+      const allowedRoles = <String>{
+        AppConstants.roleSiteManager,
+        AppConstants.rolePayroll,
+        AppConstants.roleMaterials,
+      };
 
       if (!allowedRoles.contains(role)) {
         return AuthResult(
@@ -189,6 +207,7 @@ class AuthService {
         'department': null,
         'assignedProjects': <String>[],
         'isActive': true,
+        'otpVerified': false,
         'createdAt': now,
         'updatedAt': now,
         'permissions': null,
@@ -198,18 +217,26 @@ class AuthService {
           .doc(firebaseUser.uid)
           .set(userData);
 
-      // Send verification email
-      if (!firebaseUser.emailVerified) {
-        await firebaseUser.sendEmailVerification();
-      }
+      final userModel = UserModel.fromJson({
+        'id': firebaseUser.uid,
+        ...userData,
+      });
 
-      // Sign out so user must verify then sign in
-      await signOut();
+      await _hiveService.saveUser(userModel);
+
+      try {
+        await _hiveService.settingsBox.put(
+          'otp_verified_${firebaseUser.uid}',
+          <String, dynamic>{'verified': false},
+        );
+      } catch (_) {
+        // ignore
+      }
 
       return AuthResult(
         success: true,
-        message:
-            'Registration successful. Please check your email for a verification link before signing in.',
+        message: 'Registration successful. Please verify your OTP to continue.',
+        user: userModel,
       );
     } on FirebaseAuthException catch (e) {
       return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
@@ -276,13 +303,29 @@ class AuthService {
       // Capture current user before clearing local state so we only log
       // real user sessions (not temporary auth flows).
       final user = currentUser;
+      final uid = currentFirebaseUser?.uid;
 
       if (user != null) {
         await AuditLogService.instance.logLogout();
       }
 
+      // Clear Firebase auth first
       await _firebaseService.signOut();
+
+      // Clear local user data
       await _hiveService.clearUser();
+
+      // Clear OTP verification state
+      if (uid != null) {
+        try {
+          await _hiveService.settingsBox.delete('otp_verified_$uid');
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      // Force invalidate providers to ensure UI updates
+      // This will trigger the router redirect to login
     } catch (e) {
       // Log error but don't throw
       developer.log('Error during sign out: $e', name: 'AuthService');
@@ -307,14 +350,16 @@ class AuthService {
 
   bool get isSiteManager => hasRole(AppConstants.roleSiteManager);
   bool get isAdmin => hasRole(AppConstants.roleAdmin);
+  bool get isPayroll => hasRole(AppConstants.rolePayroll);
+  bool get isMaterials => hasRole(AppConstants.roleMaterials);
 
   // Check if user has access to project
   bool hasProjectAccess(String projectId) {
     final user = currentUser;
     if (user == null) return false;
 
-    // Admin has access to all projects
-    if (user.isAdmin) return true;
+    // Admin has access to all projects; materials/payroll monitors also see all
+    if (user.isAdmin || user.isMaterials || user.isPayroll) return true;
 
     // Other roles need to be assigned to the project
     return user.assignedProjects.contains(projectId);
@@ -324,7 +369,7 @@ class AuthService {
   bool canCreateReports() => isSiteManager;
   bool canApproveReports() => isAdmin;
   bool canManageProjects() => isAdmin;
-  bool canGeneratePayroll() => isAdmin;
+  bool canGeneratePayroll() => isAdmin || isPayroll;
   bool canViewAnalytics() => isAdmin;
   bool canViewAllData() => isAdmin;
 
@@ -351,7 +396,11 @@ class AuthService {
 
       final updatedAssignedSet = <String>{
         ...existingAssigned,
-        for (final doc in projectsSnap.docs) doc.id,
+        for (final doc in projectsSnap.docs)
+          if (!ArchiveService.isArchived(
+            (doc.data() as Map?)?.cast<String, dynamic>(),
+          ))
+            doc.id,
       };
 
       final existingSet = existingAssigned.toSet();
@@ -405,6 +454,18 @@ class AuthService {
       });
 
       await _hiveService.saveUser(userModel);
+
+      // Persist OTP verification state for Site Manager OTP gate.
+      try {
+        final otpVerified = userData['otpVerified'] == true;
+        await _hiveService.settingsBox.put(
+          'otp_verified_${firebaseUser.uid}',
+          <String, dynamic>{'verified': otpVerified},
+        );
+      } catch (_) {
+        // ignore
+      }
+
       return true;
     } catch (e) {
       return false;

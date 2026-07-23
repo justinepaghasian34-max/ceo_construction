@@ -14,6 +14,7 @@ import '../../widgets/common/app_button.dart';
 import '../../widgets/common/status_chip.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
+import 'widgets/site_manager_dashboard_body.dart';
 
 class SiteManagerHome extends ConsumerStatefulWidget {
   final bool showBottomNav;
@@ -49,6 +50,20 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
     final isNarrow = MediaQuery.of(context).size.width < 980;
     final hasDrawer = isNarrow;
+
+    if (widget.showBottomNav) {
+      return Scaffold(
+        backgroundColor: const Color(0xFFF3F4F6),
+        drawer: hasDrawer ? _SiteManagerDrawer() : null,
+        body: SiteManagerDashboardBody(
+          user: user,
+          syncStats: syncStats,
+          onRefresh: _refreshData,
+          onProjectAction: _handleProjectDependentAction,
+        ),
+        bottomNavigationBar: const SiteManagerBottomNav(currentIndex: 0),
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.lightGray,
@@ -156,19 +171,15 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
           ],
         ),
       ),
-      floatingActionButton: widget.showBottomNav
-          ? null
-          : FloatingActionButton.extended(
-              onPressed: () => _handleProjectDependentAction(hasProject, () {
-                context.push(RouteNames.projectProgressUpdate);
-              }),
-              icon: const Icon(Icons.photo_camera),
-              label: const Text('Upload Site Progress'),
-              backgroundColor: AppTheme.deepBlue,
-              foregroundColor: AppTheme.white,
-            ),
-      bottomNavigationBar:
-          widget.showBottomNav ? const SiteManagerBottomNav(currentIndex: 0) : null,
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _handleProjectDependentAction(hasProject, () {
+          context.push(RouteNames.projectProgressUpdate);
+        }),
+        icon: const Icon(Icons.photo_camera),
+        label: const Text('Upload Site Progress'),
+        backgroundColor: AppTheme.deepBlue,
+        foregroundColor: AppTheme.white,
+      ),
     );
   }
 
@@ -1165,6 +1176,34 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
       ),
     );
   }
+
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await AuthService.instance.signOut();
+              if (!context.mounted) return;
+              context.go(RouteNames.login);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.errorRed,
+            ),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _SiteManagerDrawer extends StatelessWidget {
@@ -1174,61 +1213,103 @@ class _SiteManagerDrawer extends StatelessWidget {
 
     return Drawer(
       child: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFF1E3A8A), Color(0xFF2563EB)],
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'More options',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Use the bottom bar for Home, GovTrack, Attendance, and Materials.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.white.withValues(alpha: 0.88),
+                          height: 1.3,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                children: [
+                  _drawerSectionLabel(context, 'Work'),
+                  ListTile(
+                    leading: const Icon(Icons.edit_note_outlined),
+                    title: const Text('Daily Report'),
+                    onTap: () => state?._navigateFromDrawer(context, RouteNames.dailyReport),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.description_outlined),
+                    title: const Text('Reports'),
+                    onTap: () => state?._navigateFromDrawer(context, '/site-manager/reports'),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.sync),
+                    title: const Text('Sync Queue'),
+                    onTap: () => state?._navigateFromDrawer(context, RouteNames.syncQueue),
+                  ),
+                  const Divider(height: 20),
+                  _drawerSectionLabel(context, 'Account'),
+                  ListTile(
+                    leading: const Icon(Icons.person_outline),
+                    title: const Text('Profile'),
+                    onTap: () => state?._navigateFromDrawer(context, RouteNames.profile),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.notifications_none),
+                    title: const Text('Notifications'),
+                    onTap: () => state?._navigateFromDrawer(context, RouteNames.notifications),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined),
+                    title: const Text('Settings'),
+                    onTap: () => state?._navigateFromDrawer(context, RouteNames.settings),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
             ListTile(
-              leading: const Icon(Icons.home_outlined),
-              title: const Text('Home'),
+              leading: const Icon(Icons.logout, color: AppTheme.errorRed),
+              title: const Text('Logout', style: TextStyle(color: AppTheme.errorRed)),
               onTap: () {
                 Navigator.of(context).pop();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.auto_awesome),
-              title: const Text('GovTrack AI'),
-              onTap: () {
-                state?._navigateFromDrawer(context, RouteNames.govTrackAi);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.description_outlined),
-              title: const Text('Reports'),
-              onTap: () {
-                state?._navigateFromDrawer(context, '/site-manager/reports');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.sync),
-              title: const Text('Sync Queue'),
-              onTap: () {
-                state?._navigateFromDrawer(context, RouteNames.syncQueue);
-              },
-            ),
-            const Divider(height: 24),
-            ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: const Text('Profile'),
-              onTap: () {
-                state?._navigateFromDrawer(context, RouteNames.profile);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.notifications_none),
-              title: const Text('Notifications'),
-              onTap: () {
-                state?._navigateFromDrawer(context, RouteNames.notifications);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.settings_outlined),
-              title: const Text('Settings'),
-              onTap: () {
-                state?._navigateFromDrawer(context, RouteNames.settings);
+                state?._showLogoutDialog(context);
               },
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _drawerSectionLabel(BuildContext context, String label) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Text(
+        label.toUpperCase(),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: AppTheme.mediumGray,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.6,
+            ),
       ),
     );
   }

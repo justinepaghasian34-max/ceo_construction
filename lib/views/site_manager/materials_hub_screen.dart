@@ -4,33 +4,35 @@ import 'package:go_router/go_router.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import 'widgets/site_manager_bottom_nav.dart';
-import 'widgets/site_manager_card.dart';
 
 class MaterialsHubScreen extends StatelessWidget {
-  final bool showBottomNav;
-  final bool showBack;
-
   const MaterialsHubScreen({
     super.key,
     this.showBottomNav = false,
     this.showBack = true,
   });
 
+  final bool showBottomNav;
+  final bool showBack;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
+        elevation: 0,
+        backgroundColor: const Color(0xFF1E3A8A),
+        foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         leading: showBack
             ? IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new),
+                icon: const Icon(Icons.arrow_back_ios_new, size: 20),
                 onPressed: () => Navigator.of(context).pop(),
               )
             : null,
         title: const Text(
           'Materials',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontWeight: FontWeight.w900),
         ),
       ),
       body: ListView(
@@ -38,142 +40,144 @@ class MaterialsHubScreen extends StatelessWidget {
           16,
           16,
           16,
-          16 + MediaQuery.of(context).padding.bottom,
+          24 + MediaQuery.of(context).padding.bottom,
         ),
         children: [
-          SiteManagerCard(
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF1E3A8A), Color(0xFF2563EB)],
+              ),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Site materials',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Log usage, record deliveries, and request materials from admin.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.9),
+                        height: 1.35,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          _MaterialHubTile(
+            icon: Icons.construction_outlined,
+            iconColor: const Color(0xFFEA580C),
+            iconBg: const Color(0xFFFFF7ED),
+            title: 'Material Usage',
+            subtitle: 'Record materials used on site today',
             onTap: () => context.push(RouteNames.materialUsage),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: AppTheme.warningOrange.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    Icons.inventory,
-                    color: AppTheme.warningOrange,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Material Usage',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Track materials used on site',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.arrow_forward_ios, size: 16, color: AppTheme.mediumGray),
-              ],
-            ),
           ),
-          const SizedBox(height: 12),
-          SiteManagerCard(
+          const SizedBox(height: 10),
+          _MaterialHubTile(
+            icon: Icons.local_shipping_outlined,
+            iconColor: const Color(0xFF2563EB),
+            iconBg: const Color(0xFFEFF6FF),
+            title: 'Material Delivery',
+            subtitle: 'Log supplier deliveries received on site',
             onTap: () => context.push(RouteNames.materialDelivery),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: AppTheme.deepBlue.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    Icons.local_shipping,
-                    color: AppTheme.deepBlue,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Material Delivery',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'View delivery records',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.arrow_forward_ios, size: 16, color: AppTheme.mediumGray),
-              ],
-            ),
           ),
-          const SizedBox(height: 12),
-          SiteManagerCard(
+          const SizedBox(height: 10),
+          _MaterialHubTile(
+            icon: Icons.assignment_outlined,
+            iconColor: const Color(0xFF16A34A),
+            iconBg: const Color(0xFFECFDF5),
+            title: 'Material Request',
+            subtitle: 'Request approval from admin for extra materials',
             onTap: () => context.push(RouteNames.materialRequest),
-            child: Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: AppTheme.softGreen.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(
-                    Icons.assignment_outlined,
-                    color: AppTheme.softGreen,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Material Request',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Request admin approval',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.arrow_forward_ios, size: 16, color: AppTheme.mediumGray),
-              ],
-            ),
           ),
         ],
       ),
       bottomNavigationBar: showBottomNav
           ? const SiteManagerBottomNav(currentIndex: 3)
           : null,
+    );
+  }
+}
+
+class _MaterialHubTile extends StatelessWidget {
+  const _MaterialHubTile({
+    required this.icon,
+    required this.iconColor,
+    required this.iconBg,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBg;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFFE2E8F0)),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: iconBg,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: iconColor, size: 26),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.mediumGray,
+                            height: 1.3,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: AppTheme.mediumGray.withValues(alpha: 0.8)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -109,7 +109,9 @@ class _MaterialUsageScreenState extends State<MaterialUsageScreen> {
     final materialName = inventoryItemId != null && inventory != null
         ? (inventory['materialName'] ?? '').toString().trim()
         : (_selectedManualMaterialName ?? '').toString().trim();
-    final unit = (_selectedManualUnit ?? '').toString().trim();
+    final unit = inventoryItemId != null && inventory != null
+        ? (inventory['unit'] ?? '').toString().trim()
+        : (_selectedManualUnit ?? '').toString().trim();
     if (materialName.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

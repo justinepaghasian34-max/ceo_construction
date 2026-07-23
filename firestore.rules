@@ -6,10 +6,27 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         request.auth.uid == userId ||
         isAdmin() ||
-        isCeoHead()
+        isCeoHead() ||
+        isMaterials() ||
+        isPayroll()
       );
 
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+
+      allow update: if request.auth != null && (
+        request.auth.uid == userId ||
+        (
+          (isAdmin() || isCeoHead()) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'assignedProjects',
+            'otpVerified',
+            'otpVerifiedAt',
+            'updatedAt'
+          ])
+        )
+      );
+
+      allow delete: if false;
     }
     
     // Projects collection - role-based access
@@ -19,25 +36,42 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
+        isMaterials() ||
+        isPayroll() ||
         (isSiteManager() && (hasProjectAccess(projectId) || resource.data.siteManagerId == request.auth.uid))
       );
 
-      // Only Admin can create/update/delete projects (CRUD)
-      allow write: if request.auth != null && isAdmin();
+      // Admin can create/update/delete projects. CEO Head can create projects.
+      allow create: if request.auth != null && (isAdmin() || isCeoHead());
+      allow update: if request.auth != null && (
+        isAdmin() ||
+        (
+          isSiteManager() &&
+          (hasProjectAccess(projectId) || isProjectSiteManager(projectId)) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'progressPercentage',
+            'progress',
+            'updatedAt'
+          ])
+        )
+      );
+      allow delete: if request.auth != null && isAdmin();
 
       match /material_inventory/{itemId} {
         allow read: if request.auth != null && (
           isAdmin() ||
           isCeoHead() ||
+          isMaterials() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
 
-        allow create, delete: if request.auth != null && isAdmin();
+        allow create, delete: if request.auth != null && (isAdmin() || isMaterials());
 
         // Admin can update freely. Site managers can only decrement stock for
         // assigned projects (best-effort inventory deduction after usage sync).
         allow update: if request.auth != null && (
           isAdmin() ||
+          isMaterials() ||
           (
             isSiteManager() &&
             hasProjectAccess(projectId) &&
@@ -52,12 +86,25 @@ service cloud.firestore {
           )
         );
       }
+
+      match /material_allocations/{allocationId} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          isMaterials() ||
+          (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
+        );
+
+        allow write: if request.auth != null && (isAdmin() || isMaterials());
+      }
       
       // Daily reports sub-collection
       match /daily_reports/{reportId} {
         allow read: if request.auth != null && (
           isAdmin() || 
-          isCeoHead() || 
+          isCeoHead() ||
+          isMaterials() ||
+          isPayroll() ||
           hasProjectAccess(projectId)
         );
         allow create: if request.auth != null && (
@@ -71,7 +118,8 @@ service cloud.firestore {
         // Material usage sub-collection
         match /material_usage/{usageId} {
           allow read, write: if request.auth != null && (
-            isAdmin() || 
+            isAdmin() ||
+            isMaterials() ||
             (isSiteManager() && hasProjectAccess(projectId))
           );
         }
@@ -81,12 +129,27 @@ service cloud.firestore {
       match /attendance/{attendanceId} {
         allow read: if request.auth != null && (
           isAdmin() || 
-          isCeoHead() || 
+          isCeoHead() ||
+          isPayroll() ||
           hasProjectAccess(projectId)
         );
         allow write: if request.auth != null && (
           isSiteManager() && hasProjectAccess(projectId)
         );
+      }
+
+      // GovTrack AI reports sub-collection
+      match /govtrack_reports/{reportId} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          hasProjectAccess(projectId)
+        );
+        allow create: if request.auth != null && (
+          isAdmin() ||
+          (isSiteManager() && hasProjectAccess(projectId))
+        );
+        allow update, delete: if request.auth != null && isAdmin();
       }
       
       // Payroll sub-collection
@@ -94,14 +157,15 @@ service cloud.firestore {
         allow read: if request.auth != null && (
           isAdmin() ||
           isCeoHead() ||
+          isPayroll() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
-        allow create: if request.auth != null && isAdmin();
-        allow update: if request.auth != null && isAdmin();
+        allow create: if request.auth != null && (isAdmin() || isPayroll());
+        allow update: if request.auth != null && (isAdmin() || isPayroll());
         
         // Payroll items sub-collection
         match /items/{itemId} {
-          allow read, write: if request.auth != null && isAdmin();
+          allow read, write: if request.auth != null && (isAdmin() || isPayroll());
         }
       }
       
@@ -109,12 +173,15 @@ service cloud.firestore {
       match /deliveries/{deliveryId} {
         allow read: if request.auth != null && (
           isAdmin() || 
-          isCeoHead() || 
-          hasProjectAccess(projectId)
+          isCeoHead() ||
+          isMaterials() ||
+          hasProjectAccess(projectId) ||
+          isProjectSiteManager(projectId)
         );
         allow write: if request.auth != null && (
           isAdmin() ||
-          (isSiteManager() && hasProjectAccess(projectId))
+          isMaterials() ||
+          (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
         );
       }
 
@@ -122,16 +189,18 @@ service cloud.firestore {
         allow read: if request.auth != null && (
           isAdmin() ||
           isCeoHead() ||
-          (isSiteManager() && hasProjectAccess(projectId))
+          isMaterials() ||
+          (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
         );
         allow create: if request.auth != null && (
-          isSiteManager() && hasProjectAccess(projectId)
+          isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId))
         );
         allow update: if request.auth != null && (
           isAdmin() ||
+          isMaterials() ||
           (
             isSiteManager() &&
-            hasProjectAccess(projectId) &&
+            (hasProjectAccess(projectId) || isProjectSiteManager(projectId)) &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'deliveryStatus',
               'deliveredAt',
@@ -150,6 +219,16 @@ service cloud.firestore {
           hasProjectAccess(projectId)
         );
         allow create: if request.auth != null;
+      }
+
+      // Project documents for GovTrack AI (schedules, BOQ, blueprints, SSMP, etc.)
+      match /documents/{documentId} {
+        allow read: if request.auth != null && (
+          isAdmin() ||
+          isCeoHead() ||
+          (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
+        );
+        allow create, update, delete: if request.auth != null && isAdmin();
       }
     }
     
@@ -179,15 +258,33 @@ service cloud.firestore {
       );
     }
     
-    // AI Analysis collection - read-only for most users
+    // AI Analysis collection (GovTrack chat + progress reports)
     match /ai_analysis/{analysisId} {
       allow read: if request.auth != null && (
         resource.data.submittedByUid == request.auth.uid ||
-        isAdmin() || 
+        isAdmin() ||
         isCeoHead() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
-      allow create: if request.auth != null;
+      allow create: if request.auth != null && (
+        request.resource.data.submittedByUid == request.auth.uid &&
+        (
+          isAdmin() ||
+          isCeoHead() ||
+          (
+            isSiteManager() &&
+            (
+              !('projectId' in request.resource.data) ||
+              request.resource.data.projectId == null ||
+              request.resource.data.projectId == '' ||
+              (
+                request.resource.data.projectId is string &&
+                hasProjectAccess(request.resource.data.projectId)
+              )
+            )
+          )
+        )
+      );
       allow update, delete: if false;
     }
     
@@ -206,6 +303,17 @@ service cloud.firestore {
       allow write: if request.auth != null && isAdmin();
     }
 
+    // Material templates (admin-managed, reusable for projects)
+    match /material_templates/{templateId} {
+      allow read: if request.auth != null && (
+        isAdmin() ||
+        isCeoHead() ||
+        isMaterials()
+      );
+
+      allow create, update, delete: if request.auth != null && (isAdmin() || isMaterials());
+    }
+
     // Collection group rules for history (Project History screen)
     match /{path=**}/history/{historyId} {
       allow read: if request.auth != null && (
@@ -218,15 +326,17 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
+        isMaterials() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
       allow create: if request.auth != null && (
         isAdmin() ||
+        isMaterials() ||
         (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
       );
 
-      allow update: if request.auth != null && isAdmin();
+      allow update: if request.auth != null && (isAdmin() || isMaterials());
     }
 
     // Collection group rules for material usage (Admin Material Monitoring screen)
@@ -234,11 +344,13 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
+        isMaterials() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
       allow create, update: if request.auth != null && (
         isAdmin() ||
+        isMaterials() ||
         (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
       );
 
@@ -259,6 +371,7 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
+        isPayroll() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
     }
@@ -268,17 +381,17 @@ service cloud.firestore {
       allow read: if request.auth != null && (
         isAdmin() ||
         isCeoHead() ||
+        isPayroll() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
-      // Admin-only writes
-      allow create, update, delete: if request.auth != null && isAdmin();
+      allow create, update, delete: if request.auth != null && (isAdmin() || isPayroll());
     }
 
     // Collection group rules for payroll items (if queried)
     match /{path=**}/items/{itemId} {
-      allow read: if request.auth != null && (isAdmin() || isCeoHead());
-      allow write: if request.auth != null && isAdmin();
+      allow read: if request.auth != null && (isAdmin() || isCeoHead() || isPayroll());
+      allow write: if request.auth != null && (isAdmin() || isPayroll());
     }
     
     // Helper functions
@@ -293,6 +406,14 @@ service cloud.firestore {
     function isCeoHead() {
       return getUserRole() in ['ceo_head', 'Ceo_Head', 'CEO_HEAD', 'CEO head', 'ceo head'];
     }
+
+    function isMaterials() {
+      return getUserRole() in ['materials', 'Materials', 'MATERIALS', 'material_monitoring'];
+    }
+
+    function isPayroll() {
+      return getUserRole() in ['payroll', 'Payroll', 'PAYROLL', 'payroll_monitoring'];
+    }
     
     function getUserRole() {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid))
@@ -303,6 +424,11 @@ service cloud.firestore {
     function hasProjectAccess(projectId) {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
           projectId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedProjects;
+    }
+
+    function isProjectSiteManager(projectId) {
+      return exists(/databases/$(database)/documents/projects/$(projectId)) &&
+          get(/databases/$(database)/documents/projects/$(projectId)).data.siteManagerId == request.auth.uid;
     }
     
     // TEMP: allow all reads and writes

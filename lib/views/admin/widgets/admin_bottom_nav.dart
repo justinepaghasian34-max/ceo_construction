@@ -57,9 +57,9 @@ class AdminBottomNavBar extends StatelessWidget {
           ),
           boxShadow: [
             BoxShadow(
-              color: AppTheme.mediumGray.withValues(alpha: 0.15),
-              blurRadius: 8,
-              offset: const Offset(0, -2),
+              color: AppTheme.mediumGray.withValues(alpha: 0.06),
+              blurRadius: 4,
+              offset: const Offset(0, -1),
             ),
           ],
         ),

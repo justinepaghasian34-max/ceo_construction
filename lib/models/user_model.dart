@@ -65,6 +65,8 @@ class UserModel extends HiveObject {
 
   bool get isSiteManager => role == 'site_manager';
   bool get isAdmin => role == 'admin';
+  bool get isPayroll => role == 'payroll';
+  bool get isMaterials => role == 'materials';
 
   factory UserModel.fromJson(Map<String, dynamic> json) {
     return UserModel(

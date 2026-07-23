@@ -4,8 +4,10 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/hive_service.dart';
 import '../../services/firebase_service.dart';
+import '../../services/archive_service.dart';
 import '../../services/weather_service.dart';
 import '../../widgets/common/app_card.dart';
+import '../../widgets/common/motion_widgets.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 
@@ -29,7 +31,8 @@ class AdminHome extends StatelessWidget {
         ),
         IconButton(
           icon: const Icon(Icons.help_outline),
-          onPressed: () {},
+          tooltip: 'Demo script',
+          onPressed: () => context.push(RouteNames.adminDemoScript),
         ),
         IconButton(
           icon: const Icon(Icons.person_outline),
@@ -39,8 +42,9 @@ class AdminHome extends StatelessWidget {
       bottomNavigationBar: const AdminBottomNavBar(
         current: AdminNavItem.dashboard,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: StaggerColumn(
+        interval: const Duration(milliseconds: 150),
+        itemDuration: const Duration(milliseconds: 820),
         children: [
           _buildSmartInsightCard(context),
           const SizedBox(height: 14),
@@ -72,6 +76,7 @@ class AdminHome extends StatelessWidget {
             title: 'Net Margin',
             value: '18.2%',
             accent: const Color(0xFF2DD4BF),
+            icon: Icons.trending_up_rounded,
             onTap: () => context.push(RouteNames.adminFinancialMonitoring),
           ),
           _KpiCard(
@@ -80,12 +85,14 @@ class AdminHome extends StatelessWidget {
             badgeText: 'On Track',
             badgeColor: const Color(0xFF22C55E),
             accent: const Color(0xFF22C55E),
+            icon: Icons.account_balance_wallet_outlined,
             onTap: () => context.push(RouteNames.adminFinancialMonitoring),
           ),
           _KpiCard(
             title: 'Schedule Performance Index (SPI)',
             value: '0.05',
             accent: const Color(0xFFF97316),
+            icon: Icons.schedule_rounded,
             onTap: () => context.push(RouteNames.adminProgressReports),
           ),
         ];
@@ -252,6 +259,7 @@ class AdminHome extends StatelessWidget {
     final List<Map<String, dynamic>> summaries = [];
     for (final doc in projectsSnap.docs) {
       final data = doc.data() as Map<String, dynamic>;
+      if (ArchiveService.isArchived(data)) continue;
       final projectId = doc.id;
 
       final name = (data['name'] ?? 'Untitled').toString();
@@ -380,23 +388,32 @@ class AdminHome extends StatelessWidget {
     BuildContext context,
     List<Map<String, dynamic>> rows,
   ) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        dividerThickness: 0,
-        columnSpacing: 16,
-        dataRowMinHeight: 88,
-        dataRowMaxHeight: 128,
-        columns: const [
-          DataColumn(label: Text('Project')),
-          DataColumn(label: Text('Site manager')),
-          DataColumn(label: Text('Status')),
-          DataColumn(label: Text('Progress')),
-          DataColumn(label: Text('Budget & expense %')),
-          DataColumn(label: Text('AI Health')),
-        ],
-        rows: [for (final item in rows) _buildProjectSummaryRow(context, item)],
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: DataTable(
+              dividerThickness: 0,
+              columnSpacing: 16,
+              dataRowMinHeight: 88,
+              dataRowMaxHeight: 128,
+              columns: const [
+                DataColumn(label: Text('Project')),
+                DataColumn(label: Text('Site manager')),
+                DataColumn(label: Text('Status')),
+                DataColumn(label: Text('Progress')),
+                DataColumn(label: Text('Budget & expense %')),
+                DataColumn(label: Text('AI Health')),
+              ],
+              rows: [
+                for (final item in rows) _buildProjectSummaryRow(context, item),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -656,6 +673,7 @@ class _KpiCard extends StatelessWidget {
     required this.title,
     required this.value,
     required this.accent,
+    required this.icon,
     this.badgeText,
     this.badgeColor,
     this.onTap,
@@ -664,6 +682,7 @@ class _KpiCard extends StatelessWidget {
   final String title;
   final String value;
   final Color accent;
+  final IconData icon;
   final String? badgeText;
   final Color? badgeColor;
   final VoidCallback? onTap;
@@ -673,33 +692,28 @@ class _KpiCard extends StatelessWidget {
     const borderRadius = 16.0;
     final card = GlassCard(
       borderRadius: borderRadius,
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Text(
-                  title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
                 ),
+                child: Icon(icon, size: 18, color: accent),
               ),
+              const Spacer(),
               if (badgeText != null && badgeText!.isNotEmpty)
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: (badgeColor ?? accent).withValues(alpha: 0.16),
+                    color: (badgeColor ?? accent).withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: (badgeColor ?? accent).withValues(alpha: 0.30),
-                    ),
                   ),
                   child: Text(
                     badgeText!,
@@ -713,27 +727,31 @@ class _KpiCard extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.mediumGray,
+                ),
+          ),
+          const SizedBox(height: 6),
+          Text(
             value,
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w800,
+                  color: const Color(0xFF0F172A),
+                  letterSpacing: -0.5,
                 ),
           ),
-          const SizedBox(height: 10),
-          Container(
-            height: 2,
-            width: 48,
-            decoration: BoxDecoration(
+          const Spacer(),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: 0.72,
+              minHeight: 4,
+              backgroundColor: accent.withValues(alpha: 0.12),
               color: accent,
-              borderRadius: BorderRadius.circular(999),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(12),
-              ),
             ),
           ),
         ],

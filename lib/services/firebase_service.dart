@@ -66,6 +66,8 @@ class FirebaseService {
       firestore.collection('audit_logs');
   CollectionReference get disbursementsCollection =>
       firestore.collection('disbursements');
+  CollectionReference get materialTemplatesCollection =>
+      firestore.collection('material_templates');
 
   Future<String> generateProjectCode() async {
     final now = DateTime.now();
@@ -103,6 +105,9 @@ class FirebaseService {
 
   CollectionReference materialInventoryCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('material_inventory');
+
+  CollectionReference materialAllocationsCollection(String projectId) =>
+      projectsCollection.doc(projectId).collection('material_allocations');
 
   CollectionReference attendanceCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('attendance');

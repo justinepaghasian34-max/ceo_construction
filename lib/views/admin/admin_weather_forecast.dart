@@ -3245,9 +3245,18 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
     final ll = _pendingProjectLatLng;
     if (id == null || ll == null) return;
     try {
+      String? label;
+      try {
+        label = await WeatherService.instance
+            .reverseGeocode(lat: ll.latitude, lon: ll.longitude);
+      } catch (_) {
+        label = _placeLabel;
+      }
+
       await FirebaseService.instance.projectsCollection.doc(id).update({
         'latitude': ll.latitude,
         'longitude': ll.longitude,
+        'geoAddress': (label ?? '').trim(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
       if (!mounted) return;
@@ -3327,12 +3336,24 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                 IconButton(
                   tooltip: _geoTagMode ? 'Exit geo-tag mode' : 'Geo-tag projects',
                   onPressed: () {
+                    final nextMode = !_geoTagMode;
+                    final currentCenter = _mapController.camera.center;
+                    final target = nextMode
+                        ? (_pendingProjectLatLng ?? currentCenter)
+                        : null;
+
                     setState(() {
-                      _geoTagMode = !_geoTagMode;
-                      _pendingProjectLatLng = _geoTagMode
-                          ? _mapController.camera.center
-                          : null;
+                      _geoTagMode = nextMode;
+                      _pendingProjectLatLng = target;
                     });
+
+                    if (nextMode && target != null) {
+                      final zoom = (_mapController.camera.zoom < 14
+                              ? 14.0
+                              : _mapController.camera.zoom)
+                          .clamp(7.0, 16.0);
+                      _mapController.move(target, zoom);
+                    }
                   },
                   icon: Icon(
                     _geoTagMode ? Icons.gps_off_rounded : Icons.my_location,
@@ -3365,14 +3386,45 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                     .whereType<DropdownMenuItem<String>>()
                     .toList();
 
+                if (_selectedProjectId == null && items.isNotEmpty) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    if (_selectedProjectId != null) return;
+                    final firstDoc = docs.first;
+                    final data =
+                        (firstDoc.data() as Map?)?.cast<String, dynamic>() ??
+                            <String, dynamic>{};
+                    final name = (data['name'] ?? '').toString().trim();
+                    final lat = _toDouble(data['latitude']);
+                    final lon = _toDouble(data['longitude']);
+                    final saved = (lat != null && lon != null)
+                        ? LatLng(lat, lon)
+                        : null;
+
+                    setState(() {
+                      _selectedProjectId = firstDoc.id;
+                      _selectedProjectName = name;
+                      _pendingProjectLatLng = saved ?? _mapController.camera.center;
+                    });
+
+                    if (saved != null) {
+                      final zoom = (_mapController.camera.zoom < 14
+                              ? 14.0
+                              : _mapController.camera.zoom)
+                          .clamp(7.0, 16.0);
+                      _mapController.move(saved, zoom);
+                      _scheduleReverseGeocode(saved.latitude, saved.longitude);
+                    }
+                  });
+                }
+
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     DropdownButtonFormField<String>(
-                      initialValue:
-                          items.any((e) => e.value == _selectedProjectId)
-                              ? _selectedProjectId
-                              : null,
+                      initialValue: items.any((e) => e.value == _selectedProjectId)
+                          ? _selectedProjectId
+                          : null,
                       items: items,
                       onChanged: (v) {
                         if (v == null) return;
@@ -3383,12 +3435,29 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                         final data =
                             (doc.data() as Map?)?.cast<String, dynamic>() ??
                                 <String, dynamic>{};
+                        final lat = _toDouble(data['latitude']);
+                        final lon = _toDouble(data['longitude']);
+                        final saved = (lat != null && lon != null)
+                            ? LatLng(lat, lon)
+                            : null;
                         setState(() {
                           _selectedProjectId = v;
                           _selectedProjectName =
                               (data['name'] ?? '').toString().trim();
-                          _pendingProjectLatLng = _mapController.camera.center;
+                          _pendingProjectLatLng = saved ?? _mapController.camera.center;
                         });
+
+                        if (saved != null) {
+                          final zoom = (_mapController.camera.zoom < 14
+                                  ? 14.0
+                                  : _mapController.camera.zoom)
+                              .clamp(7.0, 16.0);
+                          _mapController.move(saved, zoom);
+                          _scheduleReverseGeocode(saved.latitude, saved.longitude);
+                        } else {
+                          final c = _mapController.camera.center;
+                          _scheduleReverseGeocode(c.latitude, c.longitude);
+                        }
                       },
                       decoration: InputDecoration(
                         filled: true,
@@ -3405,7 +3474,9 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                     Text(
                       _pendingProjectLatLng == null
                           ? 'Move the map to the exact spot, then press "Set to map center".'
-                          : 'Selected: ${_pendingProjectLatLng!.latitude.toStringAsFixed(5)}, ${_pendingProjectLatLng!.longitude.toStringAsFixed(5)}',
+                          : ((_placeLabel != null && _placeLabel!.trim().isNotEmpty)
+                              ? 'Selected: ${_placeLabel!.trim()}'
+                              : 'Selected: ${_pendingProjectLatLng!.latitude.toStringAsFixed(5)}, ${_pendingProjectLatLng!.longitude.toStringAsFixed(5)}'),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: const Color(0xFF64748B),
                             fontWeight: FontWeight.w700,
@@ -3452,13 +3523,11 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                             borderRadius: BorderRadius.circular(14),
                           ),
                         ),
-                        child: Text(
-                          _selectedProjectName != null
-                              ? 'Save location for ${_selectedProjectName!}'
-                              : 'Save location',
+                        child: const Text(
+                          'Save location',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.w900),
+                          style: TextStyle(fontWeight: FontWeight.w900),
                         ),
                       ),
                     ),
@@ -3488,6 +3557,7 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                         setState(() {
                           _pendingProjectLatLng = ll;
                         });
+                        _scheduleReverseGeocode(ll.latitude, ll.longitude);
                       },
                       onLongPress: (tapPos, ll) {
                         if (!_geoTagMode) return;
@@ -3495,6 +3565,7 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                         setState(() {
                           _pendingProjectLatLng = ll;
                         });
+                        _scheduleReverseGeocode(ll.latitude, ll.longitude);
                       },
                       onMapEvent: (evt) {
                         if (evt is MapEventMoveEnd || evt is MapEventFlingAnimationEnd) {
@@ -3533,19 +3604,33 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                             if (lat == null || lon == null) continue;
                             final name =
                                 (data['name'] ?? 'Project').toString().trim();
+                            final addr = (data['geoAddress'] ?? '').toString().trim();
                             markers.add(
                               Marker(
                                 point: LatLng(lat, lon),
                                 width: 46,
                                 height: 46,
                                 child: InkWell(
-                                  onTap: () {
+                                  onTap: () async {
                                     _mapController.move(LatLng(lat, lon),
                                         (_mapController.camera.zoom).clamp(7, 13));
+                                    String? label = addr;
+                                    if (label.isEmpty) {
+                                      try {
+                                        label = await WeatherService.instance
+                                            .reverseGeocode(lat: lat, lon: lon);
+                                      } catch (_) {
+                                        label = '';
+                                      }
+                                    }
+                                    if (!context.mounted) return;
+                                    final msg = (label != null && label.trim().isNotEmpty)
+                                        ? '$name\n${label.trim()}'
+                                        : name;
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                        content: Text(name),
-                                        duration: const Duration(seconds: 2),
+                                        content: Text(msg),
+                                        duration: const Duration(seconds: 3),
                                       ),
                                     );
                                   },

@@ -50,7 +50,16 @@ String shortProjectId(String projectId) {
 }
 
 class AdminPayroll extends StatefulWidget {
-  const AdminPayroll({super.key});
+  const AdminPayroll({
+    super.key,
+    this.showSidebar = true,
+    this.showBottomNav = true,
+    this.sidebarMode = AdminSidebarMode.full,
+  });
+
+  final bool showSidebar;
+  final bool showBottomNav;
+  final AdminSidebarMode sidebarMode;
 
   @override
   State<AdminPayroll> createState() => _AdminPayrollState();
@@ -73,9 +82,13 @@ class _AdminPayrollState extends State<AdminPayroll> {
           onPressed: () => context.push(RouteNames.profile),
         ),
       ],
-      bottomNavigationBar: const AdminBottomNavBar(
-        current: AdminNavItem.payroll,
-      ),
+      showSidebar: widget.showSidebar,
+      sidebarMode: widget.sidebarMode,
+      bottomNavigationBar: widget.showBottomNav
+          ? const AdminBottomNavBar(
+              current: AdminNavItem.payroll,
+            )
+          : null,
       child: StreamBuilder<QuerySnapshot>(
         stream: query.snapshots(),
         builder: (context, snapshot) {
@@ -374,46 +387,24 @@ class _AdminPayrollState extends State<AdminPayroll> {
                         required String title,
                         required Widget child,
                       }) {
-                        showModalBottomSheet<void>(
+                        showCenteredAdminDialog<void>(
                           context: context,
-                          isScrollControlled: true,
-                          backgroundColor: Colors.white,
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-                          ),
-                          builder: (sheetContext) {
-                            return SafeArea(
-                              child: Padding(
-                                padding: EdgeInsets.only(
-                                  left: 16,
-                                  right: 16,
-                                  top: 12,
-                                  bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 16,
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            title,
-                                            style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
-                                                  fontWeight: FontWeight.w800,
-                                                ),
-                                          ),
-                                        ),
-                                        IconButton(
-                                          onPressed: () => Navigator.pop(sheetContext),
-                                          icon: const Icon(Icons.close),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Flexible(child: child),
-                                  ],
-                                ),
+                          maxWidth: 420,
+                          maxHeightFactor: 0.7,
+                          builder: (dialogContext) {
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  adminDialogTitleRow(
+                                    context: dialogContext,
+                                    title: title,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Flexible(child: child),
+                                ],
                               ),
                             );
                           },
@@ -885,37 +876,46 @@ class _AdminPayrollState extends State<AdminPayroll> {
                 ),
           ),
           const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              columns: const [
-                DataColumn(label: Text('Site')),
-                DataColumn(label: Text('Worker')),
-                DataColumn(label: Text('Days')),
-                DataColumn(label: Text('Rate')),
-                DataColumn(label: Text('Dates')),
-              ],
-              rows: [
-                for (final s in sorted)
-                  DataRow(
-                    cells: [
-                      DataCell(Text(siteLabel(s.projectId))),
-                      DataCell(Text(s.workerName)),
-                      DataCell(Text(s.attendedDays.length.toString())),
-                      DataCell(Text(s.rate > 0 ? formatCurrency(s.rate) : '-')),
-                      DataCell(
-                        Text(
-                          (s.attendedDays.toList()..sort())
-                              .map((d) => '${d.month}/${d.day}')
-                              .join(', '),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('Site')),
+                      DataColumn(label: Text('Worker')),
+                      DataColumn(label: Text('Days')),
+                      DataColumn(label: Text('Rate')),
+                      DataColumn(label: Text('Dates')),
+                    ],
+                    rows: [
+                      for (final s in sorted)
+                        DataRow(
+                          cells: [
+                            DataCell(Text(siteLabel(s.projectId))),
+                            DataCell(Text(s.workerName)),
+                            DataCell(Text(s.attendedDays.length.toString())),
+                            DataCell(
+                              Text(s.rate > 0 ? formatCurrency(s.rate) : '-'),
+                            ),
+                            DataCell(
+                              Text(
+                                (s.attendedDays.toList()..sort())
+                                    .map((d) => '${d.month}/${d.day}')
+                                    .join(', '),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
                     ],
                   ),
-              ],
-            ),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -999,31 +999,38 @@ class _AdminPayrollState extends State<AdminPayroll> {
     BuildContext context,
     List<_WorkerPayrollEntry> entries,
   ) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columnSpacing: 16,
-        headingTextStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
-          fontWeight: FontWeight.w600,
-          color: AppTheme.mediumGray,
-        ),
-        columns: const [
-          DataColumn(label: Text('Worker name')),
-          DataColumn(label: Text('Role')),
-          DataColumn(label: Text('Hours worked')),
-          DataColumn(label: Text('Hourly rate')),
-          DataColumn(label: Text('Total payout')),
-          DataColumn(label: Text('Status')),
-        ],
-        rows: [
-          for (final workerEntry in entries)
-            _buildWorkerPayrollRow(
-              context,
-              workerEntry.item,
-              workerEntry.payrollStatus,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: constraints.maxWidth),
+            child: DataTable(
+              columnSpacing: 16,
+              headingTextStyle: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: AppTheme.mediumGray,
+              ),
+              columns: const [
+                DataColumn(label: Text('Worker name')),
+                DataColumn(label: Text('Role')),
+                DataColumn(label: Text('Hours worked')),
+                DataColumn(label: Text('Hourly rate')),
+                DataColumn(label: Text('Total payout')),
+                DataColumn(label: Text('Status')),
+              ],
+              rows: [
+                for (final workerEntry in entries)
+                  _buildWorkerPayrollRow(
+                    context,
+                    workerEntry.item,
+                    workerEntry.payrollStatus,
+                  ),
+              ],
             ),
-        ],
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -1311,39 +1318,25 @@ class _AdminPayrollState extends State<AdminPayroll> {
     String projectId,
     List<_WorkerPayrollEntry> entries,
   ) {
-    showModalBottomSheet<void>(
+    showCenteredAdminDialog<void>(
       context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.8,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        'Worker payroll - Site: ${shortProjectId(projectId)}',
-                        style: Theme.of(sheetContext).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.of(sheetContext).pop(),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: _buildWorkerPayrollDataTable(sheetContext, entries),
-                  ),
-                ],
+      maxWidth: 900,
+      maxHeightFactor: 0.8,
+      builder: (dialogContext) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              adminDialogTitleRow(
+                context: dialogContext,
+                title: 'Worker payroll - Site: ${shortProjectId(projectId)}',
               ),
-            ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: _buildWorkerPayrollDataTable(dialogContext, entries),
+              ),
+            ],
           ),
         );
       },
@@ -1982,69 +1975,46 @@ void _showPayoutDetailsSheet(BuildContext context, _RecentPayout payout) {
       '${date.month.toString().padLeft(2, '0')}-'
       '${date.day.toString().padLeft(2, '0')}';
 
-  showModalBottomSheet<void>(
+  showCenteredAdminDialog<void>(
     context: context,
-    showDragHandle: true,
-    isScrollControlled: true,
-    backgroundColor: Colors.white,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-    ),
-    builder: (sheetContext) {
-      return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Payout details',
-                      style: Theme.of(sheetContext)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w800),
+    maxWidth: 420,
+    maxHeightFactor: 0.55,
+    builder: (dialogContext) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            adminDialogTitleRow(
+              context: dialogContext,
+              title: 'Payout details',
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const CircleAvatar(
+                backgroundColor: AppTheme.lightGray,
+                child: Icon(Icons.person, color: AppTheme.deepBlue),
+              ),
+              title: Text(payout.workerName),
+              subtitle: Text(dateText),
+              trailing: Text(
+                formatCurrency(payout.amount),
+                style: Theme.of(dialogContext).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.primaryBlue,
                     ),
+              ),
+            ),
+            const Divider(height: 16),
+            Text(
+              'Status: Paid',
+              style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.of(sheetContext).pop(),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const CircleAvatar(
-                  backgroundColor: AppTheme.lightGray,
-                  child: Icon(Icons.person, color: AppTheme.deepBlue),
-                ),
-                title: Text(payout.workerName),
-                subtitle: Text(dateText),
-                trailing: Text(
-                  formatCurrency(payout.amount),
-                  style: Theme.of(sheetContext)
-                      .textTheme
-                      .titleSmall
-                      ?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.primaryBlue,
-                      ),
-                ),
-              ),
-              const Divider(height: 16),
-              Text(
-                'Status: Paid',
-                style: Theme.of(sheetContext)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     },
@@ -2057,80 +2027,55 @@ void _showAllTransactionsSheet(
 ) {
   final sorted = [...payouts]..sort((a, b) => b.date.compareTo(a.date));
 
-  showModalBottomSheet<void>(
+  showCenteredAdminDialog<void>(
     context: context,
-    showDragHandle: true,
-    isScrollControlled: true,
-    backgroundColor: Colors.white,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-    ),
-    builder: (sheetContext) {
-      return SafeArea(
-        child: SizedBox(
-          height: MediaQuery.of(sheetContext).size.height * 0.75,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'All transactions',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(sheetContext).pop(),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: sorted.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final payout = sorted[i];
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(
-                          payout.workerName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          '${payout.date.year.toString().padLeft(4, '0')}-'
-                          '${payout.date.month.toString().padLeft(2, '0')}-'
-                          '${payout.date.day.toString().padLeft(2, '0')}',
-                        ),
-                        trailing: Text(
-                          formatCurrency(payout.amount),
-                          style: Theme.of(sheetContext)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(
-                                fontWeight: FontWeight.w800,
-                                color: AppTheme.primaryBlue,
-                              ),
-                        ),
-                        onTap: () {
-                          Navigator.of(sheetContext).pop();
-                          _showPayoutDetailsSheet(context, payout);
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ],
+    maxWidth: 520,
+    maxHeightFactor: 0.75,
+    builder: (dialogContext) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            adminDialogTitleRow(
+              context: dialogContext,
+              title: 'All transactions',
             ),
-          ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.separated(
+                itemCount: sorted.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final payout = sorted[i];
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      payout.workerName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${payout.date.year.toString().padLeft(4, '0')}-'
+                      '${payout.date.month.toString().padLeft(2, '0')}-'
+                      '${payout.date.day.toString().padLeft(2, '0')}',
+                    ),
+                    trailing: Text(
+                      formatCurrency(payout.amount),
+                      style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.primaryBlue,
+                          ),
+                    ),
+                    onTap: () {
+                      Navigator.of(dialogContext).pop();
+                      _showPayoutDetailsSheet(context, payout);
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       );
     },

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/firebase_service.dart';
+import '../../services/archive_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
@@ -86,6 +87,10 @@ class AdminFinancialMonitoring extends StatelessWidget {
                         required String value,
                       }) {
                         return AppCard(
+                          onTap: () => _showFullBudgetVsExpensesTable(
+                            context,
+                            data.summaries,
+                          ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
@@ -199,9 +204,14 @@ class AdminFinancialMonitoring extends StatelessWidget {
                     data.summaries,
                   ),
                   child: GlassDataTableTheme(
-                    child: _buildBudgetVsExpensesTable(
-                      context,
-                      visibleSummaries,
+                    child: LayoutBuilder(
+                      builder: (context, tableConstraints) {
+                        return _buildBudgetVsExpensesTable(
+                          context,
+                          visibleSummaries,
+                          minWidth: tableConstraints.maxWidth,
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -230,23 +240,29 @@ class AdminFinancialMonitoring extends StatelessWidget {
   Widget _buildBudgetVsExpensesTable(
     BuildContext context,
     List<_ProjectFinancialSummary> summaries,
+    {
+    double? minWidth,
+  }
   ) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columnSpacing: 16,
-        columns: const [
-          DataColumn(label: Text('Project')),
-          DataColumn(label: Text('Status')),
-          DataColumn(label: Text('Budget')),
-          DataColumn(label: Text('Expenses')),
-          DataColumn(label: Text('Profit')),
-          DataColumn(label: Text('Utilization')),
-        ],
-        rows: [
-          for (final item in summaries)
-            _buildProjectFinancialRow(context, item),
-        ],
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minWidth: minWidth ?? 0),
+        child: DataTable(
+          columnSpacing: 16,
+          columns: const [
+            DataColumn(label: Text('Project')),
+            DataColumn(label: Text('Status')),
+            DataColumn(label: Text('Budget')),
+            DataColumn(label: Text('Expenses')),
+            DataColumn(label: Text('Profit')),
+            DataColumn(label: Text('Utilization')),
+          ],
+          rows: [
+            for (final item in summaries)
+              _buildProjectFinancialRow(context, item),
+          ],
+        ),
       ),
     );
   }
@@ -255,37 +271,48 @@ class AdminFinancialMonitoring extends StatelessWidget {
     BuildContext context,
     List<_ProjectFinancialSummary> summaries,
   ) {
-    showModalBottomSheet<void>(
+    showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.8,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        final size = MediaQuery.of(dialogContext).size;
+        final maxHeight = size.height * 0.78;
+        final maxWidth = size.width < 900 ? size.width * 0.94 : 820.0;
+
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: maxWidth,
+              maxHeight: maxHeight,
+            ),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Text(
-                        'Budget vs expenses per project',
-                        style: Theme.of(sheetContext).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                      Expanded(
+                        child: Text(
+                          'Budget vs expenses per project',
+                          style: Theme.of(dialogContext).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
                       ),
-                      const Spacer(),
                       IconButton(
                         icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(dialogContext).pop(),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Expanded(
                     child: SingleChildScrollView(
                       child: _buildBudgetVsExpensesTable(
-                        sheetContext,
+                        dialogContext,
                         summaries,
                       ),
                     ),
@@ -425,6 +452,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
 
     for (final doc in projectsSnap.docs) {
       final data = doc.data() as Map<String, dynamic>;
+      if (ArchiveService.isArchived(data)) continue;
       final projectId = doc.id;
       final name = (data['name'] ?? 'Untitled').toString();
       final status = (data['status'] ?? 'unknown').toString();
@@ -648,10 +676,10 @@ void _showExpenseBreakdown(
   BuildContext context,
   _ProjectFinancialSummary item,
 ) {
-  showModalBottomSheet<void>(
+  showDialog<void>(
     context: context,
-    isScrollControlled: true,
-    builder: (sheetContext) {
+    barrierDismissible: true,
+    builder: (dialogContext) {
       final materials = item.expenseDetails
           .where((e) => e.category == 'materials')
           .toList();
@@ -669,19 +697,21 @@ void _showExpenseBreakdown(
         required Color color,
       }) {
         return ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+          childrenPadding: const EdgeInsets.only(bottom: 4),
           title: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
                 title,
-                style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
+                style: Theme.of(dialogContext).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: color,
+                    ),
               ),
               Text(
                 _formatCurrency(total),
-                style: Theme.of(sheetContext).textTheme.bodyMedium,
+                style: Theme.of(dialogContext).textTheme.bodyMedium,
               ),
             ],
           ),
@@ -689,24 +719,28 @@ void _showExpenseBreakdown(
             if (details.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
+                  horizontal: 12,
                   vertical: 8,
                 ),
-                child: Text(
-                  'No records for this category.',
-                  style: Theme.of(
-                    sheetContext,
-                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'No records for this category.',
+                    style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                        ),
+                  ),
                 ),
               )
             else
               ...details.map(
                 (d) => ListTile(
                   dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
                   title: Text(d.description),
                   trailing: Text(
                     _formatCurrency(d.amount),
-                    style: Theme.of(sheetContext).textTheme.bodySmall,
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
                   ),
                 ),
               ),
@@ -714,44 +748,64 @@ void _showExpenseBreakdown(
         );
       }
 
-      return SafeArea(
-        child: SizedBox(
-          height: MediaQuery.of(sheetContext).size.height * 0.8,
+      final maxHeight = MediaQuery.of(dialogContext).size.height * 0.72;
+      final maxWidth = MediaQuery.of(dialogContext).size.width < 560
+          ? MediaQuery.of(dialogContext).size.width * 0.92
+          : 480.0;
+
+      return Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+          ),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(20, 16, 12, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Row(
                   children: [
                     Expanded(
                       child: Text(
                         'Expense breakdown',
-                        style: Theme.of(sheetContext).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                        style: Theme.of(dialogContext).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),
-                      onPressed: () => Navigator.of(sheetContext).pop(),
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(dialogContext).pop(),
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  item.name,
-                  style: Theme.of(
-                    sheetContext,
-                  ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.name,
+                        style: Theme.of(dialogContext).textTheme.bodySmall
+                            ?.copyWith(color: AppTheme.mediumGray),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Total expenses: ${_formatCurrency(item.expenses)}',
+                        style: Theme.of(dialogContext).textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  'Total expenses: ${_formatCurrency(item.expenses)}',
-                  style: Theme.of(sheetContext).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 12),
-                Expanded(
+                Flexible(
                   child: ListView(
+                    shrinkWrap: true,
                     children: [
                       buildCategorySection(
                         title: 'Materials',

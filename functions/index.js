@@ -4,6 +4,7 @@ const { defineSecret, defineString } = require('firebase-functions/params');
 const crypto = require('crypto');
 
 const vision = require('@google-cloud/vision');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 admin.initializeApp();
 
@@ -308,14 +309,59 @@ async function getWorkingGeminiModel({ apiKey, requestedModel, forceRefresh = fa
   return chosen;
 }
 
-const GOVTRACK_GEMINI_SYSTEM_INSTRUCTION =
-  'You are the factual core of GovTrack AI. Your sole job is to read project statistics and provide exact data to the user.\n\n'
-  + 'CRITICAL ANTI-HALLUCINATION RULES:\n'
-  + '1. ONLY extract information from the structured [PROJECT DATA] block provided in the prompt (and [IMAGE DATA] only when answering about an attached image).\n'
-  + '2. If the user asks for a project percentage, locate the exact "Calculated Progress" field. State that exact number. Do NOT round it up or down.\n'
-  + '3. If the [PROJECT DATA] block is empty or missing the requested metric, reply exactly with: "I cannot find that information in the current project records."\n'
-  + '4. Never assume, hypothesize, or invent numbers. If data says 45%, the answer is 45%.\n'
-  + '5. Do not answer questions completely unrelated to construction or project tracking. If asked a non-related question, say "I can only answer questions related to this project\'s tracking data."';
+const GOVTRACK_CHAT_SYSTEM_INSTRUCTION =
+  'You are GovTrack AI, an expert construction assistant for the assigned project.\n\n'
+  + 'GOVTRACK AI — 3-LAYER SCOPE\n\n'
+  + 'LAYER 1 — CORE CONSTRUCTION EXPERTISE (The "Brain")\n'
+  + '- Technical step-by-step guidance for on-site tasks.\n'
+  + '- On-site safety protocols; always emphasize proper PPE.\n'
+  + '- Equipment troubleshooting steps.\n'
+  + '- Local building code compliance (from uploaded SOP/SSMP/code docs when present).\n\n'
+  + 'LAYER 2 — LIVE MATERIALS TRACKING (The "Inventory")\n'
+  + '- Real-time stock numbers from [PROJECT DATA] only.\n'
+  + '- Material storage guidelines (SOP/docs when available).\n'
+  + '- Supplier delivery dates and material requests.\n'
+  + '- Low inventory warnings when data shows low stock.\n\n'
+  + 'LAYER 3 — PROJECT PROGRESS DATA (The "Timeline")\n'
+  + '- Daily work summary logs (dailyReports).\n'
+  + '- Critical milestone deadlines.\n'
+  + '- Weather delay impact ([LIVE SITE DATA INTERFACE] + logs).\n'
+  + '- Task assignment logs and attendance.\n\n'
+  + 'OPERATING RULES:\n'
+  + '1. CONSTRUCTION QUESTIONS (Layer 1): Answer technical and safety questions using industry best practices and uploaded SOP manuals in [PROJECT DOCUMENTS]. Always emphasize PPE. Do not invent code citations.\n'
+  + '2. MATERIAL & PROGRESS QUESTIONS (Layers 2 & 3): Use ONLY [PROJECT DATA] for stock levels, deliveries, milestones, dates, and logs. If numbers or dates are missing, say exactly: "That tracking metric is currently unavailable."\n'
+  + '3. WEATHER: Use [LIVE SITE DATA INTERFACE] and [WEATHER DATA] (Open-Meteo). If Unavailable/Offline: "I cannot retrieve live weather data right now. Please check your system network connection." Never guess weather.\n'
+  + '4. RAIN/NIGHT: 🚨 rain alert → cover cement/drywall/electrical. Night/low visibility → site lighting + Class 3 PPE.\n'
+  + '5. GUARDRAILS: Refuse non-construction queries (sports, games, general chat) with: "I can only answer questions related to this project\'s tracking data."\n'
+  + '6. NO FABRICATION: Never invent inventory, dates, BOQ lines, or progress %.\n'
+  + '7. Cite sources (daily report date, material_inventory, document fileName, Open-Meteo).\n\n'
+  + 'DOCUMENT CATEGORIES ([PROJECT DOCUMENTS]):\n'
+  + '- planning_progress: schedules, milestones, daily logs, SOW\n'
+  + '- materials_inventory: BOQ, POs, delivery receipts, inventory\n'
+  + '- engineering_technical: blueprints, MSDS/SDS, specs\n'
+  + '- safety_compliance: SSMP, building codes, regulatory docs\n\n'
+  + 'DATA SOURCES ([PROJECT DATA]): dailyReports, materialInventory, materialUsage, deliveries, materialRequests, materialAllocations, attendance, milestones.\n'
+  + 'IMAGE: Prioritize [IMAGE DATA] for site safety and physical progress.\n\n'
+  + 'FORMATTING:\n'
+  + '- Status/audit queries: JSON schema below.\n'
+  + '- General Q&A: concise professional prose with citations.\n\n'
+  + 'JSON Schema for Project Queries:\n'
+  + '{\n'
+  + '  "summary": "Brief summary grounded in cited sources.",\n'
+  + '  "keyPoints": ["Point with evidence and source name"],\n'
+  + '  "recommendation": "Actionable next step; say if data is missing.",\n'
+  + '  "confidence": "High" | "Medium" | "Low"\n'
+  + '}';
+
+const GOVTRACK_REPORT_SYSTEM_INSTRUCTION =
+  'You are the GovTrack Report Generator, a specialized AI auditing system for infrastructure projects. '
+  + 'Your sole job is to analyze the provided [PROJECT DATA] (including daily reports, inventory, deliveries, and weather) and generate a structured JSON audit report.\n\n'
+  + 'CRITICAL AUDITING & GROUNDING RULES:\n'
+  + '1. You must strictly output the requested JSON schema. Do not output conversational text or markdown blocks outside the JSON.\n'
+  + '2. You must ground every risk, delay signal, task, and shortage in concrete evidence present in the [PROJECT DATA]. Each evidence field must reference specific values, dates, or logs from the data.\n'
+  + '3. If data for a section (like budget or weather) is completely missing, set its status or notes to "Insufficient data" or "No records found in current data block" rather than inventing information.\n'
+  + '4. Be objective and factual. Do not exaggerate or downplay risks. Evaluate schedule delta and material stocks mathematically based on the numbers provided.';
+
 
 const GOVTRACK_GEMINI_GENERATION_CONFIG = {
   temperature: 0.0,
@@ -326,6 +372,239 @@ function formatGovtrackProgressValue(value) {
   const n = Number(value);
   if (Number.isFinite(n)) return String(n);
   return String(value).trim();
+}
+
+function messageAsksWeather(msgLower) {
+  if (!msgLower || typeof msgLower !== 'string') return false;
+  const m = msgLower;
+  return (
+    m.includes('weather') ||
+    m.includes('forecast') ||
+    m.includes('temperature') ||
+    m.includes('temp ') ||
+    m.includes('how hot') ||
+    m.includes('how cold') ||
+    m.includes('rain') ||
+    m.includes('humidity') ||
+    m.includes('wind') ||
+    m.includes('storm') ||
+    m.includes('typhoon') ||
+    m.includes('site condition') ||
+    m.includes('sunny') ||
+    m.includes('cloud')
+  );
+}
+
+async function fetchOpenMeteoLive(locationRaw) {
+  if (!locationRaw || typeof locationRaw !== 'string') return null;
+  const loc = locationRaw.trim();
+  if (!loc) return null;
+  const query = loc.split(',')[0].trim();
+  try {
+    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`;
+    const geoRes = await fetch(geoUrl, { method: 'GET' });
+    const geoJson = await geoRes.json().catch(() => ({}));
+    const hit = Array.isArray(geoJson?.results) ? geoJson.results[0] : null;
+    if (!hit || hit.latitude == null || hit.longitude == null) return null;
+
+    const lat = hit.latitude;
+    const lon = hit.longitude;
+    const forecastUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    forecastUrl.searchParams.set('latitude', String(lat));
+    forecastUrl.searchParams.set('longitude', String(lon));
+    forecastUrl.searchParams.set('current', 'temperature_2m,relative_humidity_2m,is_day');
+    forecastUrl.searchParams.set('hourly', 'precipitation_probability');
+    forecastUrl.searchParams.set('forecast_days', '2');
+    forecastUrl.searchParams.set('timezone', 'auto');
+
+    const res = await fetch(forecastUrl.toString(), { method: 'GET' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+
+    const current = json?.current && typeof json.current === 'object' ? json.current : {};
+    const hourly = json?.hourly && typeof json.hourly === 'object' ? json.hourly : {};
+    const times = Array.isArray(hourly.time) ? hourly.time : [];
+    const rainProbs = Array.isArray(hourly.precipitation_probability)
+      ? hourly.precipitation_probability.map((v) => Number(v) || 0)
+      : [];
+
+    const temp = current.temperature_2m;
+    const humidity = current.relative_humidity_2m;
+    const isDay = Number(current.is_day) === 1;
+
+    const now = Date.now();
+    let startIdx = 0;
+    for (let i = 0; i < times.length; i++) {
+      const t = Date.parse(times[i]);
+      if (!Number.isNaN(t) && t >= now) {
+        startIdx = i;
+        break;
+      }
+    }
+    let rainIsComing = false;
+    for (let i = startIdx + 1; i <= startIdx + 3 && i < rainProbs.length; i++) {
+      if (rainProbs[i] > 40) {
+        rainIsComing = true;
+        break;
+      }
+    }
+
+    const rainForecast = rainIsComing
+      ? '🚨 ALERT: Rain approaching within 3 hours!'
+      : 'Clear skies.';
+
+    return {
+      provider: 'open-meteo',
+      location: loc,
+      fetchedAt: new Date().toISOString(),
+      liveSiteContext: {
+        temperature: temp != null ? `${Math.round(Number(temp))}°C` : 'Unavailable',
+        humidity: humidity != null ? `${humidity}%` : 'Unavailable',
+        environment_lighting: isDay ? 'Daylight Operations' : 'Night Work / Low Visibility',
+        rain_forecast: rainForecast,
+        rain_is_coming: rainIsComing,
+        provider: 'open-meteo',
+      },
+      current: {
+        tempC: temp != null ? Number(temp) : null,
+        humidity: humidity != null ? Number(humidity) : null,
+        description: isDay ? 'Daylight' : 'Night',
+        condition: rainIsComing ? 'Rain likely' : 'Clear',
+      },
+    };
+  } catch (e) {
+    console.warn('fetchOpenMeteoLive failed:', { message: e?.message, location: loc });
+    return null;
+  }
+}
+
+async function fetchVisualCrossingForecast(locationRaw, apiKey, dayCount = 7) {
+  if (!locationRaw || typeof locationRaw !== 'string' || !apiKey) return null;
+  const loc = locationRaw.trim();
+  if (!loc) return null;
+  const now = new Date();
+  const start = new Date(now.getTime());
+  const end = new Date(now.getTime() + dayCount * 24 * 60 * 60 * 1000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const base = 'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline';
+  const url = `${base}/${encodeURIComponent(loc)}/${encodeURIComponent(fmt(start))}/${encodeURIComponent(fmt(end))}?unitGroup=metric&include=days&key=${encodeURIComponent(apiKey)}&contentType=json`;
+  try {
+    const res = await fetch(url, { method: 'GET' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+    const days = Array.isArray(json?.days) ? json.days : [];
+    return {
+      provider: 'visualcrossing',
+      location: loc,
+      fetchedAt: new Date().toISOString(),
+      days: days.slice(0, dayCount).map((d) => ({
+        datetime: d?.datetime,
+        tempmin: d?.tempmin,
+        tempmax: d?.tempmax,
+        humidity: d?.humidity,
+        windspeed: d?.windspeed,
+        precipprob: d?.precipprob,
+        conditions: d?.conditions,
+      })),
+    };
+  } catch (e) {
+    console.warn('fetchVisualCrossingForecast failed:', { message: e?.message, location: loc });
+    return null;
+  }
+}
+
+function normalizeWeatherContext(weather) {
+  if (!weather || typeof weather !== 'object') return null;
+  const current = weather.current && typeof weather.current === 'object' ? weather.current : {};
+  const forecastRaw = Array.isArray(weather.forecast)
+    ? weather.forecast
+    : Array.isArray(weather.days)
+      ? weather.days
+      : [];
+  const forecast = forecastRaw.slice(0, 7).map((d) => ({
+    date: d?.date || d?.datetime || null,
+    minTempC: d?.minTempC ?? d?.tempmin ?? null,
+    maxTempC: d?.maxTempC ?? d?.tempmax ?? null,
+    condition: d?.condition || d?.conditions || null,
+    pop: d?.pop ?? d?.precipprob ?? null,
+  }));
+  const tempC = current.tempC ?? current.temperatureC ?? null;
+  if (tempC == null && !forecast.length && !weather.location) return null;
+  return {
+    location: weather.location || null,
+    fetchedAt: weather.fetchedAt || null,
+    provider: weather.provider || 'openweather',
+    current: {
+      tempC,
+      feelsLikeC: current.feelsLikeC ?? null,
+      description: current.description || current.condition || null,
+      humidity: current.humidity ?? null,
+      windSpeedMs: current.windSpeedMs ?? current.windspeed ?? null,
+    },
+    forecast,
+    siteAdvice: typeof weather.siteAdvice === 'string' ? weather.siteAdvice : null,
+  };
+}
+
+function buildLiveSiteContextBlock(weather) {
+  const raw = weather?.liveSiteContext && typeof weather.liveSiteContext === 'object'
+    ? weather.liveSiteContext
+    : null;
+  if (raw) {
+    return (
+      '[LIVE SITE DATA INTERFACE]\n'
+      + `- Current Temperature: ${raw.temperature ?? 'Unavailable'}\n`
+      + `- Humidity: ${raw.humidity ?? 'Unavailable'}\n`
+      + `- Operational Visibility: ${raw.environment_lighting ?? 'Unavailable'}\n`
+      + `- Rain Forecast Status: ${raw.rain_forecast ?? 'Offline'}\n`
+      + '[END LIVE SITE DATA INTERFACE]'
+    );
+  }
+  return '';
+}
+
+function buildWeatherDataBlock(weather) {
+  const liveBlock = buildLiveSiteContextBlock(weather);
+  const w = normalizeWeatherContext(weather);
+  if (!w && !liveBlock) return '';
+  const parts = [];
+  if (liveBlock) parts.push(liveBlock);
+  if (!w) return parts.join('\n\n');
+  parts.push(
+    '[WEATHER DATA] (live — use for all weather/temperature/forecast questions)\n'
+    + `Location: ${w.location || 'project site'}\n`
+    + `Fetched: ${w.fetchedAt || 'recent'}\n`
+    + `Current temperature: ${w.current.tempC != null ? `${w.current.tempC}°C` : 'n/a'}\n`
+    + `Feels like: ${w.current.feelsLikeC != null ? `${w.current.feelsLikeC}°C` : 'n/a'}\n`
+    + `Conditions: ${w.current.description || 'n/a'}\n`
+    + `Humidity: ${w.current.humidity != null ? `${w.current.humidity}%` : 'n/a'}\n`
+    + `Wind: ${w.current.windSpeedMs != null ? `${w.current.windSpeedMs} m/s` : 'n/a'}\n`
+    + `Forecast:\n${w.forecast.map((d) => `  - ${d.date}: ${d.minTempC}° to ${d.maxTempC}°C, ${d.condition || ''}, rain chance ${d.pop != null ? d.pop : 'n/a'}`).join('\n') || '  (none)'}\n`
+    + `Site advice: ${w.siteAdvice || 'Plan outdoor work using forecast above.'}\n`
+    + '[END WEATHER DATA]'
+  );
+  return parts.join('\n\n');
+}
+
+function buildWeatherChatJson(weather, projectLabel) {
+  const w = normalizeWeatherContext(weather);
+  if (!w) return null;
+  const loc = w.location || projectLabel || 'the project site';
+  const nowLine = `Right now at ${loc}: ${w.current.tempC != null ? `${w.current.tempC}°C` : 'temperature n/a'}, ${w.current.description || 'conditions n/a'}.`;
+  const feelLine = w.current.feelsLikeC != null ? `Feels like ${w.current.feelsLikeC}°C.` : null;
+  const humidLine = w.current.humidity != null ? `Humidity ${w.current.humidity}%.` : null;
+  const forecastLines = w.forecast.slice(0, 3).map((d) => {
+    return `${d.date}: ${d.minTempC}°–${d.maxTempC}°C, ${d.condition || ''}`;
+  });
+  const keyPoints = [nowLine, feelLine, humidLine, forecastLines.length ? `Next days: ${forecastLines.join('; ')}` : null]
+    .filter(Boolean)
+    .slice(0, 3);
+  return {
+    summary: nowLine,
+    keyPoints,
+    recommendation: w.siteAdvice || 'Check rain and wind before concrete pours and crane work.',
+    confidence: 'High',
+  };
 }
 
 function buildGovtrackProjectDataBlock(projectId, contextObj, detailedJson) {
@@ -356,9 +635,12 @@ function buildGovtrackChatUserPrompt({
   imageContext = '',
   chatHistoryContext = '',
   deterministicContext = '',
+  weatherDataBlock = '',
   isSmallTalk = false,
+  isWeatherQuestion = false,
 }) {
   const blocks = [];
+  if (weatherDataBlock) blocks.push(weatherDataBlock.trim());
   if (projectDataBlock) blocks.push(projectDataBlock);
   if (deterministicContext) blocks.push(deterministicContext.trim());
   if (imageContext) blocks.push(imageContext.trim());
@@ -370,7 +652,18 @@ function buildGovtrackChatUserPrompt({
     return (
       `${dataSection}`
       + '[INSTRUCTION]\n'
-      + 'The user is greeting or asking for help. Reply briefly and explain you answer construction project tracking questions using project records when a project is selected. Do not invent project metrics.\n\n'
+      + 'The user is greeting or asking for help. Reply briefly: you assist with (1) construction/safety expertise, (2) live materials tracking, and (3) project progress/timeline — using project records only. Do not invent metrics.\n\n'
+      + `[USER QUESTION]\n${userQuestion}`
+    );
+  }
+
+  if (isWeatherQuestion && weatherDataBlock) {
+    return (
+      `${dataSection}`
+      + '[INSTRUCTION]\n'
+      + 'The user asked about WEATHER or TEMPERATURE. Answer using [WEATHER DATA] above. '
+      + 'Include current °C, conditions, humidity/wind if listed, and short forecast. '
+      + 'Add construction site advice. Do NOT say information is missing when [WEATHER DATA] is present.\n\n'
       + `[USER QUESTION]\n${userQuestion}`
     );
   }
@@ -378,9 +671,9 @@ function buildGovtrackChatUserPrompt({
   return (
     `${dataSection}`
     + '[INSTRUCTION]\n'
-    + 'Answer the following user question using ONLY the metrics listed inside the [PROJECT DATA] block above. '
-    + 'For image questions, you may also use [IMAGE DATA]. '
-    + 'If the exact answer or percentage is not listed, reply "Data unavailable". Do not guess or hallucinate.\n\n'
+    + 'Answer using [PROJECT DATA], [WEATHER DATA] (for weather questions), and [IMAGE DATA]. '
+    + 'Route by layer: construction/safety → Layer 1 + docs; materials/stock/deliveries → Layer 2 + [PROJECT DATA]; progress/milestones/logs → Layer 3 + [PROJECT DATA]. '
+    + 'Missing numbers/dates → "That tracking metric is currently unavailable." Missing docs → "I cannot find that information in the current project documents." Cite sources.\n\n'
     + `[USER QUESTION]\n${userQuestion}`
   );
 }
@@ -1259,7 +1552,7 @@ exports.visualCrossingMonthlyForecast = functions
   });
 
 exports.govtrackChatGemini = functions
-  .runWith({ secrets: [geminiApiKey], timeoutSeconds: 180 })
+  .runWith({ secrets: [geminiApiKey, visualCrossingApiKey], timeoutSeconds: 180 })
   .https.onCall(async (data, context) => {
   try {
     console.log('govtrackChatGemini auth presence:', {
@@ -1353,6 +1646,17 @@ exports.govtrackChatGemini = functions
       'planning',
       'qa',
       'qc',
+      'weather',
+      'forecast',
+      'rain',
+      'temperature',
+      'humidity',
+      'wind',
+      'storm',
+      'typhoon',
+      'concrete',
+      'pour',
+      'conditions',
     ];
 
     const isClearlyOutOfScope = outOfScopeSignals.some((k) => lowerMsg.includes(k));
@@ -1361,6 +1665,11 @@ exports.govtrackChatGemini = functions
 
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl.trim() : '';
     const storagePath = typeof data?.storagePath === 'string' ? data.storagePath.trim() : '';
+
+    // Prepare image for Gemini if available
+    const base64Image = (imageUrl || storagePath) 
+      ? await downloadImageAsBase64(storagePath, imageUrl) 
+      : null;
 
     // Require auth if the caller wants project context OR is providing an image (Vision/GCS access).
     const requiresAuth = Boolean(projectId) || Boolean(imageUrl || storagePath);
@@ -1499,7 +1808,18 @@ exports.govtrackChatGemini = functions
         return s.length > max ? s.slice(0, max) : s;
       };
 
-      const [dailyReportsSnap, inventorySnap, deliveriesSnap, usageSnap, latestAiProgressSnap] = await Promise.all([
+      const [
+        dailyReportsSnap,
+        inventorySnap,
+        deliveriesSnap,
+        usageSnap,
+        latestAiProgressSnap,
+        documentsSnap,
+        requestsSnap,
+        allocationsSnap,
+        attendanceSnap,
+        milestonesSnap,
+      ] = await Promise.all([
         projectRef.collection('daily_reports').orderBy('reportDate', 'desc').limit(10).get().catch(() => null),
         projectRef.collection('material_inventory').limit(80).get().catch(() => null),
         projectRef.collection('deliveries').limit(40).get().catch(() => null),
@@ -1513,6 +1833,11 @@ exports.govtrackChatGemini = functions
           .limit(1)
           .get()
           .catch(() => null),
+        projectRef.collection('documents').orderBy('uploadedAt', 'desc').limit(25).get().catch(() => null),
+        projectRef.collection('material_requests').orderBy('requestedAt', 'desc').limit(30).get().catch(() => null),
+        projectRef.collection('material_allocations').limit(80).get().catch(() => null),
+        projectRef.collection('attendance').orderBy('attendanceDate', 'desc').limit(20).get().catch(() => null),
+        projectRef.collection('milestones').limit(30).get().catch(() => null),
       ]);
 
       const dailyReports = dailyReportsSnap
@@ -1567,6 +1892,75 @@ exports.govtrackChatGemini = functions
         remarks: u.remarks || null,
       }));
 
+      const projectDocuments = documentsSnap
+        ? documentsSnap.docs.map((d) => {
+            const doc = d.data() || {};
+            const extracted =
+              typeof doc.extractedText === 'string'
+                ? doc.extractedText.trim().slice(0, 2500)
+                : typeof doc.summary === 'string'
+                  ? doc.summary.trim().slice(0, 1200)
+                  : '';
+            return {
+              id: d.id,
+              fileName: doc.fileName || doc.name || null,
+              category: doc.category || doc.documentType || null,
+              title: doc.title || null,
+              uploadedAt: doc.uploadedAt || doc.createdAt || null,
+              extractedTextPreview: extracted || null,
+            };
+          })
+        : [];
+
+      const materialRequests = requestsSnap
+        ? requestsSnap.docs.map((d) => {
+            const r = d.data() || {};
+            return {
+              materialName: r.materialName || null,
+              quantity: r.quantity ?? null,
+              unit: r.unit || null,
+              status: r.status || null,
+              requestedAt: r.requestedAt || null,
+              reason: r.reason || r.purpose || null,
+            };
+          })
+        : [];
+
+      const materialAllocations = allocationsSnap
+        ? allocationsSnap.docs.map((d) => {
+            const a = d.data() || {};
+            return {
+              materialName: a.materialName || null,
+              unit: a.unit || null,
+              budgetQuantity: a.budgetQuantity ?? null,
+              usedQuantity: a.usedQuantity ?? null,
+            };
+          })
+        : [];
+
+      const attendanceRecords = attendanceSnap
+        ? attendanceSnap.docs.map((d) => {
+            const a = d.data() || {};
+            return {
+              attendanceDate: a.attendanceDate || null,
+              presentWorkers: a.presentWorkers ?? null,
+              totalWorkers: a.totalWorkers ?? null,
+              status: a.status || null,
+            };
+          })
+        : [];
+
+      const milestones = milestonesSnap
+        ? milestonesSnap.docs.map((d) => {
+            const m = d.data() || {};
+            return {
+              milestoneName: m.milestoneName || m.title || null,
+              targetDate: m.targetDate || null,
+              status: m.status || null,
+            };
+          })
+        : [];
+
       const latestAiProgressDoc = latestAiProgressSnap && latestAiProgressSnap.docs && latestAiProgressSnap.docs.length
         ? (latestAiProgressSnap.docs[0].data() || {})
         : null;
@@ -1583,6 +1977,7 @@ exports.govtrackChatGemini = functions
         project: {
           id: projectId,
           name: projectName || projectData.name || projectData.projectName || null,
+          location: typeof projectData.location === 'string' ? projectData.location.trim() : null,
           progressPercentage: hasLatestAiPct
             ? latestAiProgressPercent
             : (projectData.progressPercentage ?? projectData.progress ?? null),
@@ -1597,10 +1992,40 @@ exports.govtrackChatGemini = functions
         materialInventory: compactInv,
         deliveries: compactDeliveries,
         materialUsage: compactUsage,
+        materialRequests: safeLimit(materialRequests, 25),
+        materialAllocations: safeLimit(materialAllocations, 50),
+        attendance: safeLimit(attendanceRecords, 15),
+        milestones: safeLimit(milestones, 20),
+        projectDocuments: safeLimit(projectDocuments, 20),
       };
 
+      const clientWeather =
+        data?.weatherContext && typeof data.weatherContext === 'object'
+          ? data.weatherContext
+          : null;
+      const locationRaw =
+        typeof projectData.location === 'string' ? projectData.location.trim() : '';
+      let weatherContext = clientWeather;
+      if (!weatherContext && locationRaw) {
+        try {
+          weatherContext = await fetchOpenMeteoLive(locationRaw);
+          if (!weatherContext) {
+            const vcKey = visualCrossingApiKey.value();
+            weatherContext = await fetchVisualCrossingForecast(locationRaw, vcKey, 7);
+          }
+        } catch (weatherErr) {
+          console.warn('govtrackChatGemini: weather fetch skipped', { message: weatherErr?.message });
+        }
+      }
+      if (clientWeather && weatherContext && typeof weatherContext === 'object') {
+        weatherContext = { ...weatherContext, ...clientWeather, current: clientWeather.current || weatherContext.current };
+      }
+      if (weatherContext) {
+        contextObj.weather = weatherContext;
+      }
+
       projectContextObj = contextObj;
-      projectDataJson = stringifySafe(contextObj, 14000);
+      projectDataJson = stringifySafe(contextObj, 22000);
     }
 
     // If there is no authoritative project data and no image context, avoid model speculation.
@@ -1638,6 +2063,22 @@ exports.govtrackChatGemini = functions
         lower.includes('labor') ||
         lower.includes('absent');
       const wantsRisk = lower.includes('risk') || lower.includes('safety') || lower.includes('hazard');
+      const wantsWeather =
+        lower.includes('weather') ||
+        lower.includes('forecast') ||
+        lower.includes('rain') ||
+        lower.includes('temperature') ||
+        lower.includes('humidity') ||
+        lower.includes('wind') ||
+        lower.includes('storm') ||
+        lower.includes('typhoon') ||
+        lower.includes('concrete pour') ||
+        lower.includes('site condition');
+
+      const clientWeatherOnly =
+        data?.weatherContext && typeof data.weatherContext === 'object'
+          ? data.weatherContext
+          : null;
 
       const limited = 'Limited data available for full analysis.';
       let summary = limited;
@@ -1687,6 +2128,26 @@ exports.govtrackChatGemini = functions
           'Document: photo evidence + corrective actions with owner and deadline.',
         ];
         recommendation = 'Attach a site photo and I can point out visible hazards/quality issues (no guessing).';
+      } else if (wantsWeather && clientWeatherOnly) {
+        const cur = clientWeatherOnly.current || {};
+        const forecast = Array.isArray(clientWeatherOnly.forecast) ? clientWeatherOnly.forecast : [];
+        const advice = typeof clientWeatherOnly.siteAdvice === 'string' ? clientWeatherOnly.siteAdvice : '';
+        summary = `Current site weather at ${clientWeatherOnly.location || 'project location'}.`;
+        keyPoints = [
+          `Now: ${cur.tempC != null ? `${cur.tempC}°C` : '—'} ${cur.description || cur.condition || ''}`.trim(),
+          forecast.length
+            ? `Next days: ${forecast.slice(0, 3).map((d) => `${d.date}: ${d.maxTempC}°/${d.minTempC}° ${d.condition || ''}`).join('; ')}`
+            : 'Forecast: not available in payload.',
+          advice ? `Site advice: ${advice}` : 'Use forecast to plan pours and outdoor work.',
+        ];
+        recommendation = advice || 'Review rain and wind before scheduling concrete and crane work.';
+      } else if (wantsWeather) {
+        summary = `${limited} Select your assigned project so I can load live weather for the site.`;
+        keyPoints = [
+          'Weather answers use project location + Visual Crossing / OpenWeather data.',
+          'Ask: "What is the weather today?" or "Can we pour concrete this week?"',
+        ];
+        recommendation = 'Open GovTrack AI with an assigned project, then ask your weather question again.';
       }
 
       return {
@@ -1751,7 +2212,18 @@ exports.govtrackChatGemini = functions
         msgLower.includes('labor') ||
         msgLower.includes('absent');
       const wantsRisk = msgLower.includes('risk') || msgLower.includes('safety') || msgLower.includes('hazard');
+      const wantsWeather =
+        msgLower.includes('weather') ||
+        msgLower.includes('forecast') ||
+        msgLower.includes('rain') ||
+        msgLower.includes('temperature') ||
+        msgLower.includes('humidity') ||
+        msgLower.includes('wind') ||
+        msgLower.includes('storm') ||
+        msgLower.includes('typhoon') ||
+        msgLower.includes('site condition');
 
+      if (wantsWeather) return 'weather';
       if (wantsMaterials) return 'materials';
       if (wantsProgress) return 'progress';
       if (wantsDelay) return 'delay';
@@ -1825,7 +2297,14 @@ exports.govtrackChatGemini = functions
       }
 
       if (intent === 'attendance') {
-        out.missing.push('attendance data is not included in PROJECT_DATA_JSON payload');
+        const att = Array.isArray(ctx.attendance) ? ctx.attendance : [];
+        if (!att.length) out.missing.push('attendance records empty');
+        out.facts.attendance = att.slice(0, 5);
+      }
+
+      if (intent === 'weather') {
+        out.facts.weather = normalizeWeatherContext(ctx.weather);
+        if (!out.facts.weather) out.missing.push('weather data missing — need project location');
       }
 
       return out;
@@ -1835,6 +2314,28 @@ exports.govtrackChatGemini = functions
     const deterministicInsights = strictEvidenceMode
       ? buildDeterministicInsights({ intent, ctx: projectContextObj })
       : null;
+
+    const mergedWeather =
+      projectContextObj?.weather
+      || (data?.weatherContext && typeof data.weatherContext === 'object' ? data.weatherContext : null);
+
+    if (intent === 'weather') {
+      const weatherJson = buildWeatherChatJson(
+        mergedWeather,
+        projectName || projectContextObj?.project?.name || 'your project site'
+      );
+      if (weatherJson) {
+        return {
+          ok: true,
+          intent: 'weather',
+          reply: JSON.stringify(weatherJson),
+          uid: auth ? auth.uid : null,
+          hasImage: Boolean(imageUrl || storagePath),
+          ocrTextPreview: ocrText ? ocrText.slice(0, 300) : '',
+          ocrLabels,
+        };
+      }
+    }
 
     const apiKey = geminiApiKey.value();
     const model = geminiModel.value();
@@ -2066,6 +2567,11 @@ exports.govtrackChatGemini = functions
         };
       }
 
+      if (intent === 'weather') {
+        const wJson = buildWeatherChatJson(mergedWeather, pName);
+        if (wJson) return { ...wJson, confidence: 'High' };
+      }
+
       return buildFallback({
         confidence: 'Low',
         intent,
@@ -2127,8 +2633,11 @@ exports.govtrackChatGemini = functions
     }
 
     const geminiSystemInstruction = {
-      parts: [{ text: GOVTRACK_GEMINI_SYSTEM_INSTRUCTION }],
+      parts: [{ text: GOVTRACK_CHAT_SYSTEM_INSTRUCTION }],
     };
+
+    const weatherDataBlock = buildWeatherDataBlock(mergedWeather);
+    const isWeatherQuestion = intent === 'weather' || messageAsksWeather(lowerMsg);
 
     const geminiUserPrompt = buildGovtrackChatUserPrompt({
       projectDataBlock,
@@ -2136,19 +2645,21 @@ exports.govtrackChatGemini = functions
       imageContext,
       chatHistoryContext,
       deterministicContext,
+      weatherDataBlock,
       isSmallTalk: Boolean(isSmallTalk),
+      isWeatherQuestion,
     });
+
+    const parts = [{ text: geminiUserPrompt }];
+    if (base64Image) {
+      parts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Image } });
+    }
 
     const { text: rawReply } = await geminiGenerateWithContinuation({
       apiKey,
       model,
       systemInstruction: geminiSystemInstruction,
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: geminiUserPrompt }],
-        },
-      ],
+      contents: [{ role: 'user', parts }],
       generationConfig: {
         ...GOVTRACK_GEMINI_GENERATION_CONFIG,
         maxOutputTokens: strictEvidenceMode ? 900 : 700,
@@ -2227,36 +2738,10 @@ exports.generateGovTrackReportGemini = functions
 
     let weatherContext = null;
     if (locationRaw) {
-      const vcKey = visualCrossingApiKey.value();
-      if (vcKey) {
-        const now = new Date();
-        const start = new Date(now.getTime());
-        const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-        const fmt = (d) => d.toISOString().slice(0, 10);
-        const base = 'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline';
-        const url = `${base}/${encodeURIComponent(locationRaw)}/${encodeURIComponent(fmt(start))}/${encodeURIComponent(fmt(end))}?unitGroup=metric&include=days&key=${encodeURIComponent(vcKey)}&contentType=json`;
-        try {
-          const res = await fetch(url, { method: 'GET' });
-          const json = await res.json().catch(() => ({}));
-          if (res.ok) {
-            const days = Array.isArray(json?.days) ? json.days : [];
-            weatherContext = {
-              provider: 'visualcrossing',
-              location: locationRaw,
-              days: days.slice(0, 7).map((d) => ({
-                datetime: d?.datetime,
-                tempmin: d?.tempmin,
-                tempmax: d?.tempmax,
-                humidity: d?.humidity,
-                windspeed: d?.windspeed,
-                precipprob: d?.precipprob,
-                conditions: d?.conditions,
-              })),
-            };
-          }
-        } catch (e) {
-          weatherContext = null;
-        }
+      weatherContext = await fetchOpenMeteoLive(locationRaw);
+      if (!weatherContext) {
+        const vcKey = visualCrossingApiKey.value();
+        weatherContext = await fetchVisualCrossingForecast(locationRaw, vcKey, 7);
       }
     }
 
@@ -2295,7 +2780,7 @@ exports.generateGovTrackReportGemini = functions
       apiKey,
       model,
       systemInstruction: {
-        parts: [{ text: GOVTRACK_GEMINI_SYSTEM_INSTRUCTION }],
+        parts: [{ text: GOVTRACK_REPORT_SYSTEM_INSTRUCTION }],
       },
       contents: [
         {
@@ -2442,8 +2927,10 @@ exports.deductMaterialInventoryOnUsageCreate = functions.firestore
     }
   });
 
-// AI Progress % Estimation (Cloud Vision OCR MVP)
-exports.estimateProgressPercent = functions.https.onCall(async (data, context) => {
+// AI Progress % Estimation (Cloud Vision OCR + Gemini Vision ML)
+exports.estimateProgressPercent = functions
+  .runWith({ secrets: [geminiApiKey], timeoutSeconds: 60 })
+  .https.onCall(async (data, context) => {
   try {
     console.log('estimateProgressPercent auth presence:', {
       hasContextAuth: Boolean(context && context.auth),
@@ -2478,54 +2965,157 @@ exports.estimateProgressPercent = functions.https.onCall(async (data, context) =
     const gcsUri = storagePath ? `gs://${bucketName}/${storagePath}` : null;
     const imageSource = gcsUri || imageUrl;
 
-    const [result] = await visionClient.annotateImage({
-      image: { source: { imageUri: imageSource } },
-      features: [{ type: 'TEXT_DETECTION', maxResults: 5 }],
-    });
-
-    const textAnnotations = Array.isArray(result?.textAnnotations)
-      ? result.textAnnotations
-      : [];
-    const extractedText =
-      textAnnotations.length > 0 && typeof textAnnotations[0].description === 'string'
-        ? textAnnotations[0].description
-        : '';
-
-    // Heuristic: extract a number like "32%" from OCR
-    let progressPercent = null;
-    if (extractedText) {
-      const match = extractedText.match(/(\d{1,3})\s*%/);
-      if (match && match[1]) {
-        const n = Number(match[1]);
-        if (!Number.isNaN(n)) {
-          progressPercent = Math.max(0, Math.min(100, n));
-        }
-      }
-    }
-
-    // Optional: stage-specific progress from OCR text like "Foundation 75%"
-    const stageProgress = {
+    // 1. Image Download & OCR Extraction
+    const base64Image = await downloadImageAsBase64(storagePath, imageUrl);
+    let ocrPercent = null;
+    let extractedText = '';
+    const ocrStageProgress = {
       foundation: null,
       structural: null,
       roofing: null,
       walls: null,
     };
-    if (extractedText) {
-      const patterns = [
-        ['foundation', /(foundation)[^\d]{0,20}(\d{1,3})\s*%/i],
-        ['structural', /(structural|columns|beams|slab|frame)[^\d]{0,20}(\d{1,3})\s*%/i],
-        ['roofing', /(roof|roofing)[^\d]{0,20}(\d{1,3})\s*%/i],
-        ['walls', /(wall|walls|masonry|plaster)[^\d]{0,20}(\d{1,3})\s*%/i],
-      ];
-      for (const [key, re] of patterns) {
-        const m = extractedText.match(re);
-        if (m && m[2]) {
-          const n = Number(m[2]);
-          if (Number.isFinite(n)) {
-            stageProgress[key] = Math.max(0, Math.min(100, n));
+
+    try {
+      const [result] = await visionClient.annotateImage({
+        image: { source: { imageUri: imageSource } },
+        features: [{ type: 'TEXT_DETECTION', maxResults: 5 }],
+      });
+
+      const textAnnotations = Array.isArray(result?.textAnnotations)
+        ? result.textAnnotations
+        : [];
+      extractedText =
+        textAnnotations.length > 0 && typeof textAnnotations[0].description === 'string'
+          ? textAnnotations[0].description
+          : '';
+
+      if (extractedText) {
+        const match = extractedText.match(/(\d{1,3})\s*%/);
+        if (match && match[1]) {
+          const n = Number(match[1]);
+          if (!Number.isNaN(n)) {
+            ocrPercent = Math.max(0, Math.min(100, n));
+          }
+        }
+
+        const patterns = [
+          ['foundation', /(foundation)[^\d]{0,20}(\d{1,3})\s*%/i],
+          ['structural', /(structural|columns|beams|slab|frame)[^\d]{0,20}(\d{1,3})\s*%/i],
+          ['roofing', /(roof|roofing)[^\d]{0,20}(\d{1,3})\s*%/i],
+          ['walls', /(wall|walls|masonry|plaster)[^\d]{0,20}(\d{1,3})\s*%/i],
+        ];
+        for (const [key, re] of patterns) {
+          const m = extractedText.match(re);
+          if (m && m[2]) {
+            const n = Number(m[2]);
+            if (Number.isFinite(n)) {
+              ocrStageProgress[key] = Math.max(0, Math.min(100, n));
+            }
           }
         }
       }
+    } catch (visionErr) {
+      console.warn('estimateProgressPercent: Cloud Vision OCR failed', visionErr);
+    }
+
+    // 2. Gemini Vision Machine Learning Analysis
+    let geminiPercent = null;
+    let geminiStageProgress = null;
+    let geminiNotes = '';
+
+    if (base64Image) {
+      try {
+        const apiKey = geminiApiKey.value();
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        const prompt = 'As a Professional Civil Engineer, conduct a forensic visual audit of this construction site photo.\n\n'
+          + 'STEP 1: Identify visible components: Rebar, formwork, concrete pours, scaffolding, masonry units, roof trusses, or finishing paint.\n'
+          + 'STEP 2: Determine the current milestone (e.g., Foundation pouring, Column framing, Lintel beam setting).\n'
+          + 'STEP 3: Apply the Civil Engineering Weighted Progress Rule:\n'
+          + '  - Foundation: 0-20% of total project\n'
+          + '  - Structural/Framing: 21-60% of total project\n'
+          + '  - Masonry/Walls: 61-80% of total project\n'
+          + '  - Roofing/Finishing: 81-100% of total project\n\n'
+          + 'Return STRICT JSON ONLY:\n'
+          + '{\n'
+          + '  "analysisReasoning": "Detailed explanation of visual cues found (e.g., \'I see Grade 60 rebars tied for columns, indicating structural phase\')",\n'
+          + '  "identifiedMilestone": "String description",\n'
+          + '  "progressPercent": <calculated_number_0_to_100>,\n'
+          + '  "stageProgress": {\n'
+          + '    "foundation": <number 0..100>,\n'
+          + '    "structural": <number 0..100>,\n'
+          + '    "roofing": <number 0..100>,\n'
+          + '    "walls": <number 0..100>\n'
+          + '  },\n'
+          + '  "confidenceLevel": <0.0 to 1.0>,\n'
+          + '  "notes": "Advice for the site manager based on visual state."\n'
+          + '}';
+        
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: base64Image,
+            },
+          },
+        ]);
+        const replyText = result.response.text();
+        let parsed = null;
+        try {
+          parsed = JSON.parse(replyText);
+        } catch (_) {
+          const start = replyText.indexOf('{');
+          const end = replyText.lastIndexOf('}');
+          if (start >= 0 && end > start) {
+            parsed = JSON.parse(replyText.substring(start, end + 1));
+          }
+        }
+
+        if (parsed) {
+          if (typeof parsed.progressPercent === 'number') {
+            geminiPercent = Math.max(0, Math.min(100, Math.round(parsed.progressPercent)));
+          }
+          if (parsed.stageProgress && typeof parsed.stageProgress === 'object') {
+            const sp = parsed.stageProgress;
+            geminiStageProgress = {
+              foundation: typeof sp.foundation === 'number' ? Math.max(0, Math.min(100, Math.round(sp.foundation))) : 0,
+              structural: typeof sp.structural === 'number' ? Math.max(0, Math.min(100, Math.round(sp.structural))) : 0,
+              roofing: typeof sp.roofing === 'number' ? Math.max(0, Math.min(100, Math.round(sp.roofing))) : 0,
+              walls: typeof sp.walls === 'number' ? Math.max(0, Math.min(100, Math.round(sp.walls))) : 0,
+            };
+          }
+          geminiNotes = parsed.notes || '';
+        }
+      } catch (geminiErr) {
+        console.warn('estimateProgressPercent: Gemini Vision analysis failed', geminiErr);
+      }
+    }
+
+    // 3. Merging results
+    let progressPercent = ocrPercent;
+    let method = 'vision_text_detection';
+
+    if (progressPercent == null && geminiPercent != null) {
+      progressPercent = geminiPercent;
+      method = 'gemini_vision_ml';
+    }
+
+    const stageProgress = {
+      foundation: ocrStageProgress.foundation ?? (geminiStageProgress ? geminiStageProgress.foundation : null),
+      structural: ocrStageProgress.structural ?? (geminiStageProgress ? geminiStageProgress.structural : null),
+      roofing: ocrStageProgress.roofing ?? (geminiStageProgress ? geminiStageProgress.roofing : null),
+      walls: ocrStageProgress.walls ?? (geminiStageProgress ? geminiStageProgress.walls : null),
+    };
+
+    // Fill missing stages with default 0 if we did get some Gemini visual feedback
+    if (geminiStageProgress) {
+      stageProgress.foundation = stageProgress.foundation ?? 0;
+      stageProgress.structural = stageProgress.structural ?? 0;
+      stageProgress.roofing = stageProgress.roofing ?? 0;
+      stageProgress.walls = stageProgress.walls ?? 0;
     }
 
     const stageValues = Object.values(stageProgress).filter((v) => typeof v === 'number');
@@ -2541,7 +3131,8 @@ exports.estimateProgressPercent = functions.https.onCall(async (data, context) =
       progressPercent,
       stageProgress,
       extractedText: extractedText ? extractedText.slice(0, 2000) : '',
-      method: 'vision_text_detection',
+      geminiNotes,
+      method,
     };
   } catch (error) {
     console.error('estimateProgressPercent error:', error);

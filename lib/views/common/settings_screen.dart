@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/hive_service.dart';
 import '../../services/auth_service.dart';
+import '../../services/firebase_service.dart';
 import '../../models/attendance_model.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -13,6 +15,25 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  DateTime _toDateTime(dynamic v) {
+    if (v == null) return DateTime.fromMillisecondsSinceEpoch(0);
+    if (v is DateTime) return v;
+    if (v is Timestamp) return v.toDate();
+    final s = v.toString();
+    return DateTime.tryParse(s) ?? DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  List<AttendanceModel> _mergeAttendance({
+    required List<AttendanceModel> local,
+    required List<AttendanceModel> remote,
+  }) {
+    final map = <String, AttendanceModel>{
+      for (final a in local) a.id: a,
+      for (final a in remote) a.id: a,
+    };
+    return map.values.toList();
+  }
+
   DateTime _startOfWeek(DateTime d) {
     final date = DateTime(d.year, d.month, d.day);
     final delta = date.weekday - DateTime.monday;
@@ -42,6 +63,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           return r.friPresent;
         case DateTime.saturday:
           return r.satPresent;
+        case DateTime.sunday:
+          return false;
         default:
           return false;
       }
@@ -151,6 +174,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 dayChip('Thu', presentFor(r, DateTime.thursday)),
                                 dayChip('Fri', presentFor(r, DateTime.friday)),
                                 dayChip('Sat', presentFor(r, DateTime.saturday)),
+                                dayChip('Sun', presentFor(r, DateTime.sunday)),
                               ],
                             ),
                           ],
@@ -171,98 +195,243 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final hive = HiveService.instance;
-    final all = user == null ? hive.getAllAttendance() : hive.getAttendanceByRecorder(user.id);
+    final localAll = user == null ? hive.getAllAttendance() : hive.getAttendanceByRecorder(user.id);
+    final projectId = (user != null && user.assignedProjects.isNotEmpty) ? user.assignedProjects.first : null;
 
-    final Map<DateTime, List<AttendanceModel>> byWeek = {};
-    for (final a in all) {
-      final weekStart = _startOfWeek(a.attendanceDate);
-      byWeek.putIfAbsent(weekStart, () => []).add(a);
+    if (user == null || projectId == null || projectId.isEmpty) {
+      final Map<DateTime, List<AttendanceModel>> byWeek = {};
+      for (final a in localAll) {
+        final weekStart = _startOfWeek(a.attendanceDate);
+        byWeek.putIfAbsent(weekStart, () => []).add(a);
+      }
+      final weeks = byWeek.keys.toList()..sort((a, b) => b.compareTo(a));
+
+      return Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          title: const Text(
+            'Settings',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [
+            Text(
+              'Attendance History',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.darkGray,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            if (weeks.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppTheme.deepBlue.withValues(alpha: 0.08)),
+                ),
+                child: Text(
+                  'No attendance history yet.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.mediumGray,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              )
+            else
+              ...weeks.map((weekStart) {
+                final list = byWeek[weekStart] ?? const <AttendanceModel>[];
+                final sorted = [...list]
+                  ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
+                final latest = sorted.first;
+
+                final weekEnd = weekStart.add(const Duration(days: 6));
+                final title = '${_formatShort(weekStart)} - ${_formatShort(weekEnd)}';
+                final subtitle = '${latest.records.length} workers • last updated ${_formatShort(latest.attendanceDate)}';
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: ListTile(
+                    tileColor: AppTheme.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    title: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            color: AppTheme.darkGray,
+                          ),
+                    ),
+                    subtitle: Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.mediumGray,
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _openWeekDetails(
+                      context,
+                      title: title,
+                      records: latest.records,
+                    ),
+                  ),
+                );
+              }),
+          ],
+        ),
+      );
     }
 
-    final weeks = byWeek.keys.toList()..sort((a, b) => b.compareTo(a));
+    final attendanceStream = FirebaseService.instance.firestore
+        .collectionGroup('attendance')
+        .where('recorderId', isEqualTo: user.id)
+        .orderBy('attendanceDateTs', descending: true)
+        .snapshots();
 
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         title: const Text(
           'Settings',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        children: [
-          Text(
-            'Attendance History',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w900,
-                  color: AppTheme.darkGray,
-                ),
-          ),
-          const SizedBox(height: 12),
-          if (weeks.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppTheme.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppTheme.deepBlue.withValues(alpha: 0.08)),
-              ),
-              child: Text(
-                'No attendance history yet.',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                      fontWeight: FontWeight.w700,
+      body: StreamBuilder<QuerySnapshot>(
+        stream: attendanceStream,
+        builder: (context, snapshot) {
+          List<AttendanceModel> remoteAll = const <AttendanceModel>[];
+          if (snapshot.hasData) {
+            remoteAll = snapshot.data!.docs
+                .map((d) {
+                  final raw = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+                  raw['id'] = d.id;
+                  if (raw['attendanceDate'] == null && raw['attendanceDateTs'] != null) {
+                    raw['attendanceDate'] = _toDateTime(raw['attendanceDateTs']).toIso8601String();
+                  }
+                  if (raw['createdAt'] == null && raw['createdAtTs'] != null) {
+                    raw['createdAt'] = _toDateTime(raw['createdAtTs']).toIso8601String();
+                  }
+                  if (raw['updatedAt'] == null && raw['updatedAtTs'] != null) {
+                    raw['updatedAt'] = _toDateTime(raw['updatedAtTs']).toIso8601String();
+                  }
+                  return AttendanceModel.fromJson(raw);
+                })
+                .toList();
+          }
+
+          final all = _mergeAttendance(local: localAll, remote: remoteAll);
+          final Map<DateTime, List<AttendanceModel>> byWeek = {};
+          for (final a in all) {
+            final weekStart = _startOfWeek(a.attendanceDate);
+            byWeek.putIfAbsent(weekStart, () => []).add(a);
+          }
+          final weeks = byWeek.keys.toList()..sort((a, b) => b.compareTo(a));
+
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            children: [
+              Text(
+                'Attendance History',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color: AppTheme.darkGray,
                     ),
               ),
-            )
-          else
-            ...weeks.map((weekStart) {
-              final list = byWeek[weekStart] ?? const <AttendanceModel>[];
-              final sorted = [...list]
-                ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
-              final latest = sorted.first;
-
-              final weekEnd = weekStart.add(const Duration(days: 5));
-              final title = '${_formatShort(weekStart)} - ${_formatShort(weekEnd)}';
-              final subtitle =
-                  '${latest.records.length} workers • last updated ${_formatShort(latest.attendanceDate)}';
-
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: ListTile(
-                  tileColor: AppTheme.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    side: BorderSide(
-                      color: AppTheme.deepBlue.withValues(alpha: 0.08),
-                    ),
-                  ),
-                  title: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w900,
-                          color: AppTheme.darkGray,
+              const SizedBox(height: 12),
+              if (snapshot.hasError)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    'Unable to refresh attendance history. Showing offline records.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.errorRed,
+                          fontWeight: FontWeight.w700,
                         ),
                   ),
-                  subtitle: Text(
-                    subtitle,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                ),
+              if (!snapshot.hasData)
+                const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+              else if (weeks.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppTheme.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppTheme.deepBlue.withValues(alpha: 0.08)),
+                  ),
+                  child: Text(
+                    'No attendance history yet.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: AppTheme.mediumGray,
                           fontWeight: FontWeight.w700,
                         ),
                   ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _openWeekDetails(
-                    context,
-                    title: title,
-                    records: latest.records,
-                  ),
-                ),
-              );
-            }),
-        ],
+                )
+              else
+                ...weeks.map((weekStart) {
+                  final list = byWeek[weekStart] ?? const <AttendanceModel>[];
+                  final sorted = [...list]
+                    ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
+                  final latest = sorted.first;
+
+                  final weekEnd = weekStart.add(const Duration(days: 6));
+                  final title = '${_formatShort(weekStart)} - ${_formatShort(weekEnd)}';
+                  final subtitle = '${latest.records.length} workers • last updated ${_formatShort(latest.attendanceDate)}';
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: ListTile(
+                      tileColor: AppTheme.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        side: BorderSide(
+                          color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                        ),
+                      ),
+                      title: Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w900,
+                              color: AppTheme.darkGray,
+                            ),
+                      ),
+                      subtitle: Text(
+                        subtitle,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _openWeekDetails(
+                        context,
+                        title: title,
+                        records: latest.records,
+                      ),
+                    ),
+                  );
+                }),
+            ],
+          );
+        },
       ),
     );
   }
