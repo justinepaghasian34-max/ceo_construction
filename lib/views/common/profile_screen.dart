@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
+import '../../utils/password_validator.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -25,8 +26,33 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     if (user == null || firebaseUser == null) return;
 
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from gallery'),
+                onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take a photo'),
+                onTap: () => Navigator.pop(ctx, ImageSource.camera),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (source == null) return;
+
     final picked = await _picker.pickImage(
-      source: ImageSource.gallery,
+      source: source,
       maxWidth: 400,
       maxHeight: 400,
       imageQuality: 60,
@@ -139,18 +165,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: CircleAvatar(
               radius: 44,
               backgroundColor: AppTheme.deepBlue.withAlpha(40),
-              backgroundImage: (user.profileImageUrl != null && user.profileImageUrl!.isNotEmpty)
+              backgroundImage: (user.profileImageUrl != null &&
+                      user.profileImageUrl!.isNotEmpty)
                   ? NetworkImage(user.profileImageUrl!)
-                  : null,
-              child: (user.profileImageUrl == null || user.profileImageUrl!.isEmpty)
-                  ? Text(
-                      user.displayName.isNotEmpty ? user.displayName[0].toUpperCase() : '?',
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: AppTheme.deepBlue,
-                          ),
-                    )
-                  : null,
+                  : const AssetImage(AppConstants.officeLogoAsset)
+                      as ImageProvider,
             ),
           ),
           Positioned(
@@ -472,19 +491,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ],
           );
         case _SettingsSection.security:
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              buildPlaceholderSection(
-                'Security & Access',
-                'Manage password, login sessions, and account access.',
-              ),
-            ],
-          );
+          return _ChangePasswordCard();
         case _SettingsSection.apiKeys:
           return buildPlaceholderSection(
             'API Keys',
-            'Manage API keys and integrations for system access.',
+            'API secrets are stored in Cloud Functions, not in this app. Contact the administrator for integrations.',
           );
         case _SettingsSection.shortcuts:
           return buildPlaceholderSection(
@@ -796,4 +807,125 @@ enum _SettingsSection {
   security,
   apiKeys,
   shortcuts,
+}
+
+class _ChangePasswordCard extends StatefulWidget {
+  @override
+  State<_ChangePasswordCard> createState() => _ChangePasswordCardState();
+}
+
+class _ChangePasswordCardState extends State<_ChangePasswordCard> {
+  final _formKey = GlobalKey<FormState>();
+  final _current = TextEditingController();
+  final _next = TextEditingController();
+  final _confirm = TextEditingController();
+  bool _busy = false;
+  bool _obscure = true;
+
+  @override
+  void dispose() {
+    _current.dispose();
+    _next.dispose();
+    _confirm.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    final result = await AuthService.instance.changePassword(
+      _current.text,
+      _next.text,
+    );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.success ? AppTheme.softGreen : AppTheme.errorRed,
+      ),
+    );
+    if (result.success) {
+      _current.clear();
+      _next.clear();
+      _confirm.clear();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.black.withValues(alpha: 0.06)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Security & Access',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Sessions expire after 30 minutes idle or 12 hours total. Passwords are hashed by Firebase Auth and never stored in this app.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: AppTheme.mediumGray,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _current,
+                obscureText: _obscure,
+                decoration: const InputDecoration(labelText: 'Current password'),
+                validator: (v) =>
+                    (v == null || v.isEmpty) ? 'Enter your current password' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _next,
+                obscureText: _obscure,
+                decoration: InputDecoration(
+                  labelText: 'New password',
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                  ),
+                ),
+                validator: validatePassword,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _confirm,
+                obscureText: _obscure,
+                decoration: const InputDecoration(labelText: 'Confirm new password'),
+                validator: (v) {
+                  if (v != _next.text) return 'Passwords do not match';
+                  return validatePassword(v);
+                },
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _busy ? null : _submit,
+                child: _busy
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Update password'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

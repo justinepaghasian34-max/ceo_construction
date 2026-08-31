@@ -8,6 +8,7 @@ import '../../services/archive_service.dart';
 import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
+import 'widgets/budget_management_panel.dart';
 
 class AdminFinancialMonitoring extends StatelessWidget {
   const AdminFinancialMonitoring({super.key});
@@ -80,158 +81,165 @@ class AdminFinancialMonitoring extends StatelessWidget {
                       builder: (context, constraints) {
                         final isCardsNarrow = constraints.maxWidth < 700;
 
-                      Widget buildStatCard({
-                        required IconData icon,
-                        required Color iconColor,
-                        required String label,
-                        required String value,
-                      }) {
-                        return AppCard(
-                          onTap: () => _showFullBudgetVsExpensesTable(
-                            context,
-                            data.summaries,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(8),
-                                    decoration: BoxDecoration(
-                                      color: iconColor.withAlpha(24),
-                                      borderRadius: BorderRadius.circular(12),
+                        Widget buildStatCard({
+                          required IconData icon,
+                          required Color iconColor,
+                          required String label,
+                          required String value,
+                        }) {
+                          return AppCard(
+                            onTap: () => _showFullBudgetVsExpensesTable(
+                              context,
+                              data.summaries,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: iconColor.withAlpha(24),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Icon(icon,
+                                          color: iconColor, size: 20),
                                     ),
-                                    child: Icon(icon, color: iconColor, size: 20),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      label,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(color: AppTheme.mediumGray),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        label,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall
+                                            ?.copyWith(
+                                                color: AppTheme.mediumGray),
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                value,
-                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                      color: AppTheme.primaryBlue,
-                                    ),
-                              ),
-                            ],
-                          ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  value,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleMedium
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                        color: AppTheme.primaryBlue,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        final totalBudgetCard = buildStatCard(
+                          icon: Icons.account_balance,
+                          iconColor: AppTheme.deepBlue,
+                          label: 'Total approved budget',
+                          value: _formatCurrency(data.totalBudget),
                         );
-                      }
 
-                    final totalBudgetCard = buildStatCard(
-                      icon: Icons.account_balance,
-                      iconColor: AppTheme.deepBlue,
-                      label: 'Total approved budget',
-                      value: _formatCurrency(data.totalBudget),
-                    );
+                        final totalExpensesCard = buildStatCard(
+                          icon: Icons.trending_up,
+                          iconColor: AppTheme.accentYellow,
+                          label: 'Total recorded expenses',
+                          value: _formatCurrency(data.totalExpenses),
+                        );
 
-                    final totalExpensesCard = buildStatCard(
-                      icon: Icons.trending_up,
-                      iconColor: AppTheme.accentYellow,
-                      label: 'Total recorded expenses',
-                      value: _formatCurrency(data.totalExpenses),
-                    );
+                        final utilizationText = data.totalBudget <= 0
+                            ? '—'
+                            : '${(data.totalExpenses / data.totalBudget * 100).clamp(0, 999).toStringAsFixed(1)}%';
 
-                    final utilizationText = data.totalBudget <= 0
-                        ? '—'
-                        : '${(data.totalExpenses / data.totalBudget * 100).clamp(0, 999).toStringAsFixed(1)}%';
+                        final overBudgetLabel = data.overBudgetProjects == 1
+                            ? 'project'
+                            : 'projects';
 
-                    final overBudgetLabel = data.overBudgetProjects == 1
-                        ? 'project'
-                        : 'projects';
+                        final utilizationCard = buildStatCard(
+                          icon: Icons.pie_chart,
+                          iconColor: AppTheme.softGreen,
+                          label:
+                              'Overall utilization  ${data.overBudgetProjects} $overBudgetLabel over budget',
+                          value: utilizationText,
+                        );
 
-                    final utilizationCard = buildStatCard(
-                      icon: Icons.pie_chart,
-                      iconColor: AppTheme.softGreen,
-                      label:
-                          'Overall utilization  ${data.overBudgetProjects} $overBudgetLabel over budget',
-                      value: utilizationText,
-                    );
+                        if (isCardsNarrow) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              totalBudgetCard,
+                              const SizedBox(height: 12),
+                              totalExpensesCard,
+                              const SizedBox(height: 12),
+                              utilizationCard,
+                            ],
+                          );
+                        }
 
-                    if (isCardsNarrow) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          totalBudgetCard,
-                          const SizedBox(height: 12),
-                          totalExpensesCard,
-                          const SizedBox(height: 12),
-                          utilizationCard,
-                        ],
-                      );
-                    }
-
-                    return Column(
-                      children: [
-                        Row(
+                        return Column(
                           children: [
-                            Expanded(child: totalBudgetCard),
-                            const SizedBox(width: 12),
-                            Expanded(child: totalExpensesCard),
+                            Row(
+                              children: [
+                                Expanded(child: totalBudgetCard),
+                                const SizedBox(width: 12),
+                                Expanded(child: totalExpensesCard),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            utilizationCard,
                           ],
-                        ),
-                        const SizedBox(height: 12),
-                        utilizationCard,
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Budget vs expenses per project',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                GestureDetector(
-                  onTap: () => _showFullBudgetVsExpensesTable(
-                    context,
-                    data.summaries,
-                  ),
-                  child: GlassDataTableTheme(
-                    child: LayoutBuilder(
-                      builder: (context, tableConstraints) {
-                        return _buildBudgetVsExpensesTable(
-                          context,
-                          visibleSummaries,
-                          minWidth: tableConstraints.maxWidth,
                         );
                       },
                     ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    'Tap table to view all projects',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.mediumGray,
+                    const SizedBox(height: 16),
+                    Text(
+                      'Budget vs expenses per project',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    GestureDetector(
+                      onTap: () => _showFullBudgetVsExpensesTable(
+                        context,
+                        data.summaries,
+                      ),
+                      child: GlassDataTableTheme(
+                        child: LayoutBuilder(
+                          builder: (context, tableConstraints) {
+                            return _buildBudgetVsExpensesTable(
+                              context,
+                              visibleSummaries,
+                              minWidth: tableConstraints.maxWidth,
+                            );
+                          },
                         ),
-                  ),
-                ),
-              ],
-            );
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        'Tap table to view all projects',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                            ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    const BudgetManagementPanel(),
+                  ],
+                );
 
-            return content;
-          },
-        ),
-      );
+                return content;
+              },
+            ),
+          );
         },
       ),
     );
@@ -239,11 +247,9 @@ class AdminFinancialMonitoring extends StatelessWidget {
 
   Widget _buildBudgetVsExpensesTable(
     BuildContext context,
-    List<_ProjectFinancialSummary> summaries,
-    {
+    List<_ProjectFinancialSummary> summaries, {
     double? minWidth,
-  }
-  ) {
+  }) {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: ConstrainedBox(
@@ -280,8 +286,10 @@ class AdminFinancialMonitoring extends StatelessWidget {
         final maxWidth = size.width < 900 ? size.width * 0.94 : 820.0;
 
         return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: maxWidth,
@@ -297,7 +305,9 @@ class AdminFinancialMonitoring extends StatelessWidget {
                       Expanded(
                         child: Text(
                           'Budget vs expenses per project',
-                          style: Theme.of(dialogContext).textTheme.titleMedium
+                          style: Theme.of(dialogContext)
+                              .textTheme
+                              .titleMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ),
@@ -352,10 +362,8 @@ class AdminFinancialMonitoring extends StatelessWidget {
       if (rawAmount is num) {
         amount = rawAmount.toDouble();
       } else if (rawAmount is String) {
-        final cleaned = rawAmount
-            .replaceAll(',', '')
-            .replaceAll('₱', '')
-            .trim();
+        final cleaned =
+            rawAmount.replaceAll(',', '').replaceAll('₱', '').trim();
         amount = double.tryParse(cleaned) ?? 0.0;
       } else {
         amount = 0.0;
@@ -389,11 +397,9 @@ class AdminFinancialMonitoring extends StatelessWidget {
           (expensesByProject[projectId] ?? 0.0) + amount;
       totalExpenses += amount;
 
-      final subject = (data['subject'] ?? data['description'] ?? 'Expense')
-          .toString();
-      expenseDetailsByProject
-          .putIfAbsent(projectId, () => [])
-          .add(
+      final subject =
+          (data['subject'] ?? data['description'] ?? 'Expense').toString();
+      expenseDetailsByProject.putIfAbsent(projectId, () => []).add(
             _ExpenseDetail(
               category: category,
               description: subject,
@@ -414,10 +420,8 @@ class AdminFinancialMonitoring extends StatelessWidget {
       if (rawAmount is num) {
         amount = rawAmount.toDouble();
       } else if (rawAmount is String) {
-        final cleaned = rawAmount
-            .replaceAll(',', '')
-            .replaceAll('₱', '')
-            .trim();
+        final cleaned =
+            rawAmount.replaceAll(',', '').replaceAll('₱', '').trim();
         amount = double.tryParse(cleaned) ?? 0.0;
       } else {
         amount = 0.0;
@@ -435,9 +439,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
 
       final status = (data['status'] ?? '').toString();
       final description = status.isEmpty ? 'Payroll' : 'Payroll ($status)';
-      expenseDetailsByProject
-          .putIfAbsent(projectId, () => [])
-          .add(
+      expenseDetailsByProject.putIfAbsent(projectId, () => []).add(
             _ExpenseDetail(
               category: 'payroll',
               description: description,
@@ -473,10 +475,8 @@ class AdminFinancialMonitoring extends StatelessWidget {
       if (budgetRaw is num) {
         budget = budgetRaw.toDouble();
       } else if (budgetRaw is String) {
-        final cleaned = budgetRaw
-            .replaceAll(',', '')
-            .replaceAll('₱', '')
-            .trim();
+        final cleaned =
+            budgetRaw.replaceAll(',', '').replaceAll('₱', '').trim();
         budget = double.tryParse(cleaned) ?? 0.0;
       } else {
         budget = 0.0;
@@ -485,8 +485,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
       final materialsExpenses = materialsExpensesByProject[projectId] ?? 0.0;
       final payrollExpenses = payrollExpensesByProject[projectId] ?? 0.0;
       final otherExpenses = otherExpensesByProject[projectId] ?? 0.0;
-      final expenses =
-          expensesByProject[projectId] ??
+      final expenses = expensesByProject[projectId] ??
           (materialsExpenses + payrollExpenses + otherExpenses);
 
       totalBudget += budget;
@@ -648,9 +647,9 @@ DataRow _buildProjectFinancialRow(
         Text(
           _formatCurrency(item.expenses),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: AppTheme.primaryBlue,
-            decoration: TextDecoration.underline,
-          ),
+                color: AppTheme.primaryBlue,
+                decoration: TextDecoration.underline,
+              ),
         ),
         onTap: () => _showExpenseBreakdown(context, item),
       ),
@@ -680,15 +679,12 @@ void _showExpenseBreakdown(
     context: context,
     barrierDismissible: true,
     builder: (dialogContext) {
-      final materials = item.expenseDetails
-          .where((e) => e.category == 'materials')
-          .toList();
-      final payroll = item.expenseDetails
-          .where((e) => e.category == 'payroll')
-          .toList();
-      final other = item.expenseDetails
-          .where((e) => e.category == 'other')
-          .toList();
+      final materials =
+          item.expenseDetails.where((e) => e.category == 'materials').toList();
+      final payroll =
+          item.expenseDetails.where((e) => e.category == 'payroll').toList();
+      final other =
+          item.expenseDetails.where((e) => e.category == 'other').toList();
 
       Widget buildCategorySection({
         required String title,
@@ -726,9 +722,10 @@ void _showExpenseBreakdown(
                   alignment: Alignment.centerLeft,
                   child: Text(
                     'No records for this category.',
-                    style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.mediumGray,
-                        ),
+                    style:
+                        Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                            ),
                   ),
                 ),
               )
@@ -772,7 +769,9 @@ void _showExpenseBreakdown(
                     Expanded(
                       child: Text(
                         'Expense breakdown',
-                        style: Theme.of(dialogContext).textTheme.titleMedium
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .titleMedium
                             ?.copyWith(fontWeight: FontWeight.w700),
                       ),
                     ),
@@ -790,13 +789,17 @@ void _showExpenseBreakdown(
                     children: [
                       Text(
                         item.name,
-                        style: Theme.of(dialogContext).textTheme.bodySmall
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .bodySmall
                             ?.copyWith(color: AppTheme.mediumGray),
                       ),
                       const SizedBox(height: 12),
                       Text(
                         'Total expenses: ${_formatCurrency(item.expenses)}',
-                        style: Theme.of(dialogContext).textTheme.bodyMedium
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .bodyMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 8),

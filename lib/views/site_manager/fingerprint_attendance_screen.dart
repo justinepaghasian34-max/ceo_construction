@@ -267,7 +267,7 @@ class _FingerprintAttendanceScreenState
       backgroundColor: const Color(0xFFF5F6FA),
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        backgroundColor: AppTheme.deepBlue,
+        backgroundColor: AppTheme.residentBlue,
         foregroundColor: Colors.white,
         elevation: 0,
         leading: widget.showBack
@@ -379,7 +379,7 @@ class _FingerprintAttendanceScreenState
                   height: 130,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: AppTheme.deepBlue.withValues(alpha: 0.06),
+                    color: AppTheme.residentBlue.withValues(alpha: 0.06),
                     boxShadow: [
                       BoxShadow(
                         color: AppTheme.warningOrange.withValues(alpha: alpha),
@@ -395,7 +395,7 @@ class _FingerprintAttendanceScreenState
                         ? AppTheme.softGreen
                         : isFailure
                             ? AppTheme.errorRed
-                            : AppTheme.deepBlue,
+                            : AppTheme.residentBlue,
                   ),
                 ),
               );

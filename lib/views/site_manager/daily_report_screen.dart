@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/daily_report_model.dart';
@@ -9,6 +8,7 @@ import '../../services/sync_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/geo_tag_service.dart';
 import '../../services/audit_log_service.dart';
+import '../../services/weather_service.dart';
 import '../../models/user_model.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
@@ -81,41 +81,18 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
       return;
     }
 
-    const String apiKey = '36d74affc54853e817cac837ebaf6d8a';
-    const String city =
-        'Oroquieta City,PH'; // Set to your actual city, e.g. 'Davao,PH'
-
-    // Avoid making failing calls if the developer hasn't configured the key/city yet.
-    if (apiKey.isEmpty || city.isEmpty) {
-      return;
-    }
-
     try {
-      final dio = Dio();
-      final response = await dio.get(
-        'https://api.openweathermap.org/data/2.5/weather',
-        queryParameters: {'q': city, 'appid': apiKey, 'units': 'metric'},
+      final report = await WeatherService.instance.getOpenMeteoLiveReport(
+        lat: 8.4858,
+        lon: 123.8048,
       );
-
       if (!mounted) return;
-
-      final data = response.data as Map<String, dynamic>?;
-      if (data == null) return;
-
-      final weatherList = data['weather'] as List<dynamic>?;
-      final main = data['main'] as Map<String, dynamic>?;
-      if (weatherList == null || weatherList.isEmpty || main == null) return;
-
-      final description = (weatherList.first['description'] ?? '').toString();
-      final tempValue = (main['temp'] ?? 0);
-      final double temp = tempValue is num ? tempValue.toDouble() : 0.0;
-
       setState(() {
         if (_weatherController.text.isEmpty) {
-          _weatherController.text = description;
+          _weatherController.text = report.rainForecast;
         }
-        if (_temperatureController.text.isEmpty) {
-          _temperatureController.text = temp.toStringAsFixed(1);
+        if (_temperatureController.text.isEmpty && report.rawTempC != null) {
+          _temperatureController.text = report.rawTempC!.toStringAsFixed(1);
         }
       });
     } catch (_) {
@@ -205,7 +182,7 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.calendar_today, color: AppTheme.deepBlue),
+                  Icon(Icons.calendar_today, color: AppTheme.residentBlue),
                   const SizedBox(width: 12),
                   Text(
                     '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}',
@@ -366,7 +343,7 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
                         AppIconButton(
                           icon: Icons.edit,
                           onPressed: () => editWorkAccomplishment(index),
-                          iconColor: AppTheme.deepBlue,
+                          iconColor: AppTheme.residentBlue,
                         ),
                         AppIconButton(
                           icon: Icons.delete,

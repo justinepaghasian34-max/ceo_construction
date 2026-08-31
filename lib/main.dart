@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'services/firebase_service.dart';
 import 'services/hive_service.dart';
+import 'services/session_timeout_service.dart';
 import 'services/local_notification_service.dart';
 import 'services/sync_service.dart';
 import 'services/audit_log_service.dart';
@@ -43,7 +44,10 @@ void main() async {
 
     await FirebaseService.initialize().timeout(const Duration(seconds: 10));
     await HiveService.initialize().timeout(const Duration(seconds: 20));
-    await SyncService.instance.initialize().timeout(const Duration(seconds: 10));
+    SessionTimeoutService.instance.start();
+    await SyncService.instance
+        .initialize()
+        .timeout(const Duration(seconds: 10));
     await LocalNotificationService.instance
         .initialize()
         .timeout(const Duration(seconds: 10));
@@ -54,7 +58,9 @@ void main() async {
     startupStack = st;
   }
 
-  runApp(ProviderScope(child: CeoConsApp(startupError: startupError, startupStack: startupStack)));
+  runApp(ProviderScope(
+      child:
+          CeoConsApp(startupError: startupError, startupStack: startupStack)));
 }
 
 class CeoConsApp extends ConsumerWidget {
@@ -111,11 +117,13 @@ class CeoConsApp extends ConsumerWidget {
       );
     }
 
-    return MaterialApp.router(
-      title: AppConstants.appName,
-      theme: AppTheme.lightTheme,
-      routerConfig: ref.watch(goRouterProvider),
-      debugShowCheckedModeBanner: false,
+    return SessionActivityListener(
+      child: MaterialApp.router(
+        title: AppConstants.appName,
+        theme: AppTheme.lightTheme,
+        routerConfig: ref.watch(goRouterProvider),
+        debugShowCheckedModeBanner: false,
+      ),
     );
   }
 }
@@ -185,12 +193,12 @@ class SiteManagerHome extends StatelessWidget {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: const Text(
-          'Site Manager',
+          'Resident Engineer',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),
       ),
-      body: const Center(child: Text('Site Manager Home')),
+      body: const Center(child: Text('Resident Engineer Home')),
     );
   }
 }
@@ -232,4 +240,3 @@ class CeoHome extends StatelessWidget {
     );
   }
 }
-

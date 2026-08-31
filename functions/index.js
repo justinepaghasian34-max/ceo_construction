@@ -19,6 +19,8 @@ const visualCrossingApiKey = defineSecret('VISUAL_CROSSING_API_KEY');
 
 const sendgridApiKey = defineSecret('SENDGRID_API_KEY');
 const sendgridFromEmail = defineString('SENDGRID_FROM_EMAIL', { default: '' });
+const smtpUserParam = defineString('SMTP_USER', { default: '' });
+const smtpPassParam = defineString('SMTP_PASS', { default: '' });
 
 let _geminiModelCache = {
   model: null,
@@ -46,7 +48,103 @@ async function geminiListModels({ apiKey, apiVersion }) {
   return Array.isArray(json?.models) ? json.models : [];
 }
 
-async function sendSendGridEmail({ apiKey, fromEmail, toEmail, subject, text }) {
+function gmailAuthError() {
+  return new functions.https.HttpsError(
+    'failed-precondition',
+    'Could not send the 6-digit code. Gmail rejected the sender login. Create a Gmail App Password (Google Account > Security > 2-Step Verification > App passwords) and set it as the SMTP password.'
+  );
+}
+
+async function sendAppEmail({ toEmail, subject, text, html }) {
+  const to = String(toEmail || '').trim();
+  if (!to) {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing recipient email.');
+  }
+
+  let sendgridKey = '';
+  let sendgridFrom = '';
+  try {
+    sendgridKey = String(sendgridApiKey.value() || '').trim();
+  } catch (_) {}
+  try {
+    sendgridFrom = String(sendgridFromEmail.value() || '').trim();
+  } catch (_) {}
+
+  if (sendgridKey && sendgridFrom) {
+    await sendSendGridEmail({
+      apiKey: sendgridKey,
+      fromEmail: sendgridFrom,
+      toEmail: to,
+      subject,
+      text,
+      html,
+    });
+    return;
+  }
+
+  let smtpUser = '';
+  let smtpPass = '';
+  try {
+    smtpUser = String(smtpUserParam.value() || '').trim();
+  } catch (_) {}
+  try {
+    smtpPass = String(smtpPassParam.value() || '').replace(/\s+/g, '').trim();
+  } catch (_) {}
+  if (!smtpUser) {
+    smtpUser = String(functions.config()?.smtp?.user || process.env.SMTP_USER || '').trim();
+  }
+  if (!smtpPass) {
+    smtpPass = String(functions.config()?.smtp?.pass || process.env.SMTP_PASS || '')
+      .replace(/\s+/g, '')
+      .trim();
+  }
+  if (!smtpUser || !smtpPass) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Email sending is not configured. Set a Gmail App Password as SMTP credentials.'
+    );
+  }
+
+  const nodemailer = require('nodemailer');
+  const mail = {
+    from: `CEO Construction <${smtpUser}>`,
+    to,
+    subject: String(subject || 'Your verification code'),
+    text: String(text || ''),
+    html: html ? String(html) : undefined,
+  };
+
+  const attempts = [
+    { host: 'smtp.gmail.com', port: 465, secure: true },
+    { host: 'smtp.gmail.com', port: 587, secure: false },
+  ];
+
+  let lastErr;
+  for (const transport of attempts) {
+    const transporter = nodemailer.createTransport({
+      ...transport,
+      requireTLS: transport.port === 587,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+      auth: { user: smtpUser, pass: smtpPass },
+    });
+    try {
+      await transporter.sendMail(mail);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const code = String(err?.code || '');
+      const msg = String(err?.message || err);
+      if (code === 'EAUTH' || msg.toLowerCase().includes('invalid login')) {
+        throw gmailAuthError();
+      }
+    }
+  }
+  throw lastErr;
+}
+
+async function sendSendGridEmail({ apiKey, fromEmail, toEmail, subject, text, html }) {
   if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
     throw new functions.https.HttpsError('failed-precondition', 'SendGrid API key is not configured.');
   }
@@ -74,7 +172,12 @@ async function sendSendGridEmail({ apiKey, fromEmail, toEmail, subject, text }) 
         },
       ],
       from: { email: from },
-      content: [{ type: 'text/plain', value: String(text || '') }],
+      content: html
+        ? [
+            { type: 'text/plain', value: String(text || '') },
+            { type: 'text/html', value: String(html) },
+          ]
+        : [{ type: 'text/plain', value: String(text || '') }],
     }),
   });
 
@@ -88,8 +191,7 @@ async function sendSendGridEmail({ apiKey, fromEmail, toEmail, subject, text }) 
 }
 
 function generateOtpCode() {
-  // 6-digit OTP
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(crypto.randomInt(0, 1000000)).padStart(6, '0');
 }
 
 function hashOtp({ code, salt }) {
@@ -100,9 +202,192 @@ function hashOtp({ code, salt }) {
   return h.digest('hex');
 }
 
+function hashesEqual(a, b) {
+  const left = Buffer.from(String(a), 'utf8');
+  const right = Buffer.from(String(b), 'utf8');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+async function syncRoleClaim(uid) {
+  if (!uid) return;
+  try {
+    const snap = await admin.firestore().collection('users').doc(uid).get();
+    const role = String((snap.data() || {}).role || '').trim();
+    if (!role) return;
+    await admin.auth().setCustomUserClaims(uid, { role });
+  } catch (err) {
+    console.warn('syncRoleClaim failed', err?.message);
+  }
+}
+
+function hashIdentifier(value) {
+  return crypto.createHash('sha256').update(String(value || '').trim().toLowerCase()).digest('hex');
+}
+
+function clientIp(context) {
+  const req = context && context.rawRequest;
+  const forwarded = req && req.headers && req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return (req && (req.ip || req.connection && req.connection.remoteAddress)) || 'unknown';
+}
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+const RESET_WINDOW_MS = 60 * 60 * 1000;
+const RESET_MAX_PER_EMAIL = 3;
+const RESET_MAX_PER_IP = 10;
+const MAX_SESSION_SECONDS = 12 * 60 * 60;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_SEND_WINDOW_MS = 60 * 60 * 1000;
+const OTP_SEND_MAX = 5;
+
+function assertFreshSession(auth) {
+  const authTime = Number(auth?.token?.auth_time || 0);
+  if (!authTime) return;
+  const ageSeconds = Math.floor(Date.now() / 1000) - authTime;
+  if (ageSeconds > MAX_SESSION_SECONDS) {
+    throw new functions.https.HttpsError(
+      'unauthenticated',
+      'Session expired. Please sign in again.'
+    );
+  }
+}
+
+async function consumeRateLimit({ key, windowMs, max }) {
+  const ref = admin.firestore().collection('auth_rate_limits').doc(key);
+  await admin.firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const now = Date.now();
+    const data = snap.exists ? snap.data() || {} : {};
+    let windowStart = Number(data.windowStartMs || 0);
+    let count = Number(data.count || 0);
+    if (!windowStart || now - windowStart > windowMs) {
+      windowStart = now;
+      count = 0;
+    }
+    if (count >= max) {
+      const retryMs = Math.max(1000, windowMs - (now - windowStart));
+      throw new functions.https.HttpsError(
+        'resource-exhausted',
+        'Too many attempts. Try again later.',
+        { retryAfterSeconds: Math.ceil(retryMs / 1000) }
+      );
+    }
+    tx.set(
+      ref,
+      {
+        count: count + 1,
+        windowStartMs: windowStart,
+        updatedAtMs: now,
+      },
+      { merge: true }
+    );
+  });
+}
+
+async function readLoginLock(email) {
+  const key = `login_${hashIdentifier(email)}`;
+  const snap = await admin.firestore().collection('auth_rate_limits').doc(key).get();
+  if (!snap.exists) return;
+  const data = snap.data() || {};
+  const windowStart = Number(data.windowStartMs || 0);
+  const count = Number(data.count || 0);
+  const now = Date.now();
+  if (windowStart && now - windowStart <= LOGIN_WINDOW_MS && count >= LOGIN_MAX_FAILURES) {
+    const retryMs = Math.max(1000, LOGIN_WINDOW_MS - (now - windowStart));
+    throw new functions.https.HttpsError(
+      'resource-exhausted',
+      'Too many failed sign-in attempts. Try again later.',
+      { retryAfterSeconds: Math.ceil(retryMs / 1000) }
+    );
+  }
+}
+
+exports.checkLoginAllowed = functions.https.onCall(async (data, context) => {
+  const email = String((data && data.email) || '').trim().toLowerCase();
+  if (!email) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+  }
+  await readLoginLock(email);
+  await readLoginLock(`ip:${clientIp(context)}`);
+  return { ok: true };
+});
+
+exports.recordAuthFailure = functions.https.onCall(async (data, context) => {
+  const email = String((data && data.email) || '').trim().toLowerCase();
+  if (!email) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+  }
+  await consumeRateLimit({
+    key: `login_${hashIdentifier(email)}`,
+    windowMs: LOGIN_WINDOW_MS,
+    max: LOGIN_MAX_FAILURES,
+  });
+  await consumeRateLimit({
+    key: `login_${hashIdentifier(`ip:${clientIp(context)}`)}`,
+    windowMs: LOGIN_WINDOW_MS,
+    max: LOGIN_MAX_FAILURES,
+  });
+  return { ok: true };
+});
+
+exports.recordAuthSuccess = functions.https.onCall(async (data) => {
+  const email = String((data && data.email) || '').trim().toLowerCase();
+  if (!email) return { ok: true };
+  const ref = admin.firestore().collection('auth_rate_limits').doc(`login_${hashIdentifier(email)}`);
+  await ref.delete().catch(() => null);
+  try {
+    const user = await admin.auth().getUserByEmail(email);
+    await syncRoleClaim(user.uid);
+  } catch (_) {}
+  return { ok: true };
+});
+
+exports.requestPasswordReset = functions
+  .runWith({ secrets: [sendgridApiKey] })
+  .https.onCall(async (data, context) => {
+    const email = String((data && data.email) || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new functions.https.HttpsError('invalid-argument', 'Enter a valid email address.');
+    }
+
+    await consumeRateLimit({
+      key: `reset_${hashIdentifier(email)}`,
+      windowMs: RESET_WINDOW_MS,
+      max: RESET_MAX_PER_EMAIL,
+    });
+    await consumeRateLimit({
+      key: `reset_${hashIdentifier(`ip:${clientIp(context)}`)}`,
+      windowMs: RESET_WINDOW_MS,
+      max: RESET_MAX_PER_IP,
+    });
+
+    try {
+      const link = await admin.auth().generatePasswordResetLink(email);
+      await sendAppEmail({
+        toEmail: email,
+        subject: 'Reset your CEO Construction password (expires in 1 hour)',
+        text:
+          `A password reset was requested for this email.\n\n` +
+          `This link expires in 1 hour:\n${link}\n\n` +
+          `If you did not request this, you can ignore this email.`,
+      });
+    } catch (err) {
+      // Do not reveal whether the account exists.
+      console.warn('requestPasswordReset: send skipped', err?.message);
+    }
+
+    return { ok: true };
+  });
+
+
 exports.sendEmailOtp = functions
   .runWith({ secrets: [sendgridApiKey] })
   .https.onCall(async (data, context) => {
+    try {
     const auth = await resolveAuth(context, data);
     const uid = auth?.uid;
     if (!uid) {
@@ -111,23 +396,48 @@ exports.sendEmailOtp = functions
 
     const userRef = admin.firestore().collection('users').doc(uid);
     const userSnap = await userRef.get();
-    if (!userSnap.exists) {
-      throw new functions.https.HttpsError('not-found', 'User profile not found');
-    }
-
-    const userData = userSnap.data() || {};
-    const email = String(userData.email || '').trim();
+    // Deliver to this signed-in account (any provider: Gmail, Outlook, Yahoo, school, etc.).
+    const tokenEmail = String(auth.token?.email || '').trim().toLowerCase();
+    const profileEmail = userSnap.exists
+      ? String((userSnap.data() || {}).email || '').trim().toLowerCase()
+      : '';
+    const email = tokenEmail || profileEmail;
     if (!email) {
       throw new functions.https.HttpsError('failed-precondition', 'User has no email on file');
     }
 
     const nowMs = Date.now();
+    const otpRef = admin.firestore().collection('email_otps').doc(uid);
+    const existing = await otpRef.get();
+    if (existing.exists) {
+      const prev = existing.data() || {};
+      const lastSent = Number(prev.lastSentAtMs || 0);
+      if (lastSent && nowMs - lastSent < OTP_RESEND_COOLDOWN_MS) {
+        throw new functions.https.HttpsError(
+          'resource-exhausted',
+          'Please wait before requesting another code.'
+        );
+      }
+      const sendCount = Number(prev.sendCount || 0);
+      const sendWindowStart = Number(prev.sendWindowStartMs || 0);
+      if (sendWindowStart && nowMs - sendWindowStart <= OTP_SEND_WINDOW_MS && sendCount >= OTP_SEND_MAX) {
+        throw new functions.https.HttpsError(
+          'resource-exhausted',
+          'Too many OTP requests. Try again later.'
+        );
+      }
+    }
+
     const code = generateOtpCode();
     const salt = crypto.randomBytes(16).toString('hex');
     const codeHash = hashOtp({ code, salt });
     const expiresAtMs = nowMs + 10 * 60 * 1000;
+    const prev = existing.exists ? existing.data() || {} : {};
+    const sendWindowStart = Number(prev.sendWindowStartMs || 0);
+    const sendCount = Number(prev.sendCount || 0);
+    const nextSendCount =
+      sendWindowStart && nowMs - sendWindowStart <= OTP_SEND_WINDOW_MS ? sendCount + 1 : 1;
 
-    const otpRef = admin.firestore().collection('email_otps').doc(uid);
     await otpRef.set(
       {
         uid,
@@ -138,22 +448,43 @@ exports.sendEmailOtp = functions
         expiresAtMs,
         attempts: 0,
         lastSentAtMs: nowMs,
+        sendCount: nextSendCount,
+        sendWindowStartMs:
+          sendWindowStart && nowMs - sendWindowStart <= OTP_SEND_WINDOW_MS
+            ? sendWindowStart
+            : nowMs,
       },
       { merge: true }
     );
 
-    const fromEmail = sendgridFromEmail.value();
-    const apiKey = sendgridApiKey.value();
-
-    await sendSendGridEmail({
-      apiKey,
-      fromEmail,
+    await sendAppEmail({
       toEmail: email,
-      subject: 'Your OTP Code (CEO Construction)',
-      text: `Your OTP code is: ${code}\n\nThis code will expire in 10 minutes. If you did not request this, please ignore this email.`,
+      subject: 'Your CEO Construction verification code',
+      text:
+        `Your verification code is: ${code}\n\n` +
+        `Enter this 6-digit code in the app to verify your email.\n` +
+        `This code expires in 10 minutes. If you did not request this, ignore this email.`,
+      html:
+        `<p>Your CEO Construction verification code is:</p>` +
+        `<p style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace">${code}</p>` +
+        `<p>Enter this 6-digit code in the app. It expires in 10 minutes.</p>` +
+        `<p>If you did not request this, ignore this email.</p>`,
     });
 
     return { ok: true };
+    } catch (err) {
+      if (err instanceof functions.https.HttpsError) throw err;
+      const code = String(err?.code || '');
+      const msg = String(err?.message || err);
+      console.error('sendEmailOtp failed', { code, message: msg });
+      if (code === 'EAUTH' || msg.toLowerCase().includes('invalid login')) {
+        throw gmailAuthError();
+      }
+      throw new functions.https.HttpsError(
+        'unavailable',
+        'Could not send the verification email. Please try again.'
+      );
+    }
   });
 
 exports.verifyEmailOtp = functions
@@ -192,10 +523,12 @@ exports.verifyEmailOtp = functions
     const expectedHash = String(otp.codeHash || '').trim();
     const gotHash = hashOtp({ code, salt });
 
-    if (!salt || !expectedHash || gotHash !== expectedHash) {
+    if (!salt || !expectedHash || !hashesEqual(gotHash, expectedHash)) {
       await otpRef.set({ attempts: attempts + 1 }, { merge: true });
       throw new functions.https.HttpsError('permission-denied', 'Invalid code');
     }
+
+    await admin.auth().updateUser(uid, { emailVerified: true });
 
     await admin.firestore().collection('users').doc(uid).set(
       {
@@ -206,9 +539,39 @@ exports.verifyEmailOtp = functions
       { merge: true }
     );
 
+    await syncRoleClaim(uid);
+
     await otpRef.delete().catch(() => null);
     return { ok: true };
   });
+
+exports.confirmEmailVerified = functions.https.onCall(async (data, context) => {
+  const auth = await resolveAuth(context, data);
+  const uid = auth?.uid;
+  if (!uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const record = await admin.auth().getUser(uid);
+  if (!record.emailVerified) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Email is not verified yet. Open the link in your inbox and spam folder, then tap Continue.'
+    );
+  }
+
+  await admin.firestore().collection('users').doc(uid).set(
+    {
+      otpVerified: true,
+      otpVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: new Date().toISOString(),
+    },
+    { merge: true }
+  );
+  await syncRoleClaim(uid);
+  return { ok: true };
+});
+
 
 function orderGenerateContentModels(models) {
   const supported = models
@@ -223,13 +586,14 @@ function orderGenerateContentModels(models) {
 
   // Prefer explicit versioned models over generic ones.
   const preference = [
+    'gemini-2.5-flash',
     'gemini-2.0-flash-001',
     'gemini-2.0-flash-lite',
     'gemini-2.5',
+    'gemini-2.0-flash',
     'gemini-1.5-flash',
     'gemini-1.5-pro',
     'gemini-2.0-pro',
-    'gemini-2.0-flash',
   ];
 
   const scored = supported.map((name) => {
@@ -307,6 +671,82 @@ async function getWorkingGeminiModel({ apiKey, requestedModel, forceRefresh = fa
   }
 
   return chosen;
+}
+
+function guessImageMime(fileName) {
+  const lower = String(fileName || '').toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return 'image/jpeg';
+}
+
+async function downloadImageAsBase64(storagePath, imageUrl) {
+  const path = typeof storagePath === 'string' ? storagePath.trim() : '';
+  if (path) {
+    try {
+      const file = admin.storage().bucket().file(path);
+      const [bytes] = await file.download();
+      if (bytes && bytes.length) {
+        return Buffer.from(bytes).toString('base64');
+      }
+    } catch (e) {
+      console.warn('downloadImageAsBase64: storage download failed', {
+        storagePath: path,
+        message: e?.message,
+      });
+    }
+  }
+
+  const url = typeof imageUrl === 'string' ? imageUrl.trim() : '';
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn('downloadImageAsBase64: http download failed', { status: res.status });
+      return null;
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) return null;
+    return buf.toString('base64');
+  } catch (e) {
+    console.warn('downloadImageAsBase64: http download error', { message: e?.message });
+    return null;
+  }
+}
+
+function parseGeminiJson(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const decoded = JSON.parse(text);
+    if (decoded && typeof decoded === 'object') return decoded;
+  } catch (_) {}
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const decoded = JSON.parse(text.substring(start, end + 1));
+      if (decoded && typeof decoded === 'object') return decoded;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function toProgressPercent(value) {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function normalizeStageProgress(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const read = (key) => toProgressPercent(raw[key]);
+  return {
+    foundation: read('foundation') ?? 0,
+    structural: read('structural') ?? 0,
+    roofing: read('roofing') ?? 0,
+    walls: read('walls') ?? 0,
+  };
 }
 
 const GOVTRACK_CHAT_SYSTEM_INSTRUCTION =
@@ -887,7 +1327,9 @@ async function resolveAuth(context, data) {
   });
 
   if (context && context.auth) {
-    return { uid: context.auth.uid, token: context.auth.token || {} };
+    const auth = { uid: context.auth.uid, token: context.auth.token || {} };
+    assertFreshSession(auth);
+    return auth;
   }
 
   const idToken = incomingToken;
@@ -912,8 +1354,11 @@ async function resolveAuth(context, data) {
       iss: decoded?.iss || null,
       projectId,
     });
-    return { uid: decoded.uid, token: decoded };
+    const auth = { uid: decoded.uid, token: decoded };
+    assertFreshSession(auth);
+    return auth;
   } catch (e) {
+    if (e instanceof functions.https.HttpsError) throw e;
     const message = typeof e?.message === 'string' ? e.message : 'Invalid authentication token';
     const code = typeof e?.code === 'string' ? e.code : undefined;
     console.error('resolveAuth verifyIdToken failed:', {
@@ -1009,6 +1454,10 @@ async function requireProjectAccess({ auth, role, projectId }) {
   const userData = userSnap.exists ? (userSnap.data() || {}) : {};
   const assigned = Array.isArray(userData.assignedProjects) ? userData.assignedProjects : [];
   if (assigned.includes(projectId)) return;
+
+  const authEmail = String((auth.token && auth.token.email) || userData.email || '').trim().toLowerCase();
+  const engineerEmail = String(projectData.projectEngineerEmail || '').trim().toLowerCase();
+  if (authEmail && engineerEmail && authEmail === engineerEmail) return;
 
   throw new functions.https.HttpsError('permission-denied', 'You do not have access to this project.');
 }
@@ -1355,14 +1804,22 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
       };
     }
 
-    const [result] = await visionClient.annotateImage({
-      image: { source: { imageUri: imageSource } },
-      features: [
-        { type: 'LABEL_DETECTION', maxResults: 10 },
-        { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
-        { type: 'TEXT_DETECTION', maxResults: 5 },
-      ],
-    });
+    let result = {};
+    try {
+      const annotated = await visionClient.annotateImage({
+        image: { source: { imageUri: imageSource } },
+        features: [
+          { type: 'LABEL_DETECTION', maxResults: 10 },
+          { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
+          { type: 'TEXT_DETECTION', maxResults: 5 },
+        ],
+      });
+      result = annotated?.[0] || {};
+    } catch (visionErr) {
+      console.warn('verifyProgressImage: Vision annotate failed; continuing', {
+        message: visionErr?.message,
+      });
+    }
 
     const labelAnnotations = Array.isArray(result?.labelAnnotations)
       ? result.labelAnnotations
@@ -2740,7 +3197,7 @@ exports.generateGovTrackReportGemini = functions
     if (locationRaw) {
       weatherContext = await fetchOpenMeteoLive(locationRaw);
       if (!weatherContext) {
-        const vcKey = visualCrossingApiKey.value();
+      const vcKey = visualCrossingApiKey.value();
         weatherContext = await fetchVisualCrossingForecast(locationRaw, vcKey, 7);
       }
     }
@@ -2977,39 +3434,39 @@ exports.estimateProgressPercent = functions
     };
 
     try {
-      const [result] = await visionClient.annotateImage({
-        image: { source: { imageUri: imageSource } },
-        features: [{ type: 'TEXT_DETECTION', maxResults: 5 }],
-      });
+    const [result] = await visionClient.annotateImage({
+      image: { source: { imageUri: imageSource } },
+      features: [{ type: 'TEXT_DETECTION', maxResults: 5 }],
+    });
 
-      const textAnnotations = Array.isArray(result?.textAnnotations)
-        ? result.textAnnotations
-        : [];
+    const textAnnotations = Array.isArray(result?.textAnnotations)
+      ? result.textAnnotations
+      : [];
       extractedText =
-        textAnnotations.length > 0 && typeof textAnnotations[0].description === 'string'
-          ? textAnnotations[0].description
-          : '';
+      textAnnotations.length > 0 && typeof textAnnotations[0].description === 'string'
+        ? textAnnotations[0].description
+        : '';
 
-      if (extractedText) {
-        const match = extractedText.match(/(\d{1,3})\s*%/);
-        if (match && match[1]) {
-          const n = Number(match[1]);
-          if (!Number.isNaN(n)) {
+    if (extractedText) {
+      const match = extractedText.match(/(\d{1,3})\s*%/);
+      if (match && match[1]) {
+        const n = Number(match[1]);
+        if (!Number.isNaN(n)) {
             ocrPercent = Math.max(0, Math.min(100, n));
           }
         }
 
-        const patterns = [
-          ['foundation', /(foundation)[^\d]{0,20}(\d{1,3})\s*%/i],
-          ['structural', /(structural|columns|beams|slab|frame)[^\d]{0,20}(\d{1,3})\s*%/i],
-          ['roofing', /(roof|roofing)[^\d]{0,20}(\d{1,3})\s*%/i],
-          ['walls', /(wall|walls|masonry|plaster)[^\d]{0,20}(\d{1,3})\s*%/i],
-        ];
-        for (const [key, re] of patterns) {
-          const m = extractedText.match(re);
-          if (m && m[2]) {
-            const n = Number(m[2]);
-            if (Number.isFinite(n)) {
+      const patterns = [
+        ['foundation', /(foundation)[^\d]{0,20}(\d{1,3})\s*%/i],
+        ['structural', /(structural|columns|beams|slab|frame)[^\d]{0,20}(\d{1,3})\s*%/i],
+        ['roofing', /(roof|roofing)[^\d]{0,20}(\d{1,3})\s*%/i],
+        ['walls', /(wall|walls|masonry|plaster)[^\d]{0,20}(\d{1,3})\s*%/i],
+      ];
+      for (const [key, re] of patterns) {
+        const m = extractedText.match(re);
+        if (m && m[2]) {
+          const n = Number(m[2]);
+          if (Number.isFinite(n)) {
               ocrStageProgress[key] = Math.max(0, Math.min(100, n));
             }
           }
@@ -3027,20 +3484,18 @@ exports.estimateProgressPercent = functions
     if (base64Image) {
       try {
         const apiKey = geminiApiKey.value();
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
+        const model = geminiModel.value();
         const prompt = 'As a Professional Civil Engineer, conduct a forensic visual audit of this construction site photo.\n\n'
-          + 'STEP 1: Identify visible components: Rebar, formwork, concrete pours, scaffolding, masonry units, roof trusses, or finishing paint.\n'
-          + 'STEP 2: Determine the current milestone (e.g., Foundation pouring, Column framing, Lintel beam setting).\n'
-          + 'STEP 3: Apply the Civil Engineering Weighted Progress Rule:\n'
+          + 'Score ONLY what is visibly built. Do not invent completed work.\n'
+          + 'Weighted overall progress:\n'
           + '  - Foundation: 0-20% of total project\n'
           + '  - Structural/Framing: 21-60% of total project\n'
           + '  - Masonry/Walls: 61-80% of total project\n'
-          + '  - Roofing/Finishing: 81-100% of total project\n\n'
+          + '  - Roofing/Finishing: 81-100% of total project\n'
+          + 'stageProgress is 0-100 completion of THAT stage. Use 0 if not visible.\n\n'
           + 'Return STRICT JSON ONLY:\n'
           + '{\n'
-          + '  "analysisReasoning": "Detailed explanation of visual cues found (e.g., \'I see Grade 60 rebars tied for columns, indicating structural phase\')",\n'
+          + '  "analysisReasoning": "Visible cues only",\n'
           + '  "identifiedMilestone": "String description",\n'
           + '  "progressPercent": <calculated_number_0_to_100>,\n'
           + '  "stageProgress": {\n'
@@ -3052,55 +3507,39 @@ exports.estimateProgressPercent = functions
           + '  "confidenceLevel": <0.0 to 1.0>,\n'
           + '  "notes": "Advice for the site manager based on visual state."\n'
           + '}';
-        
-        const result = await model.generateContent([
-          prompt,
-          {
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: base64Image,
-            },
-          },
-        ]);
-        const replyText = result.response.text();
-        let parsed = null;
-        try {
-          parsed = JSON.parse(replyText);
-        } catch (_) {
-          const start = replyText.indexOf('{');
-          const end = replyText.lastIndexOf('}');
-          if (start >= 0 && end > start) {
-            parsed = JSON.parse(replyText.substring(start, end + 1));
-          }
-        }
 
+        const { text: replyText } = await geminiGenerateWithContinuation({
+          apiKey,
+          model,
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: guessImageMime(fileName), data: base64Image } },
+            ],
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 700,
+          },
+          maxTurns: 0,
+        });
+        const parsed = parseGeminiJson(replyText);
         if (parsed) {
-          if (typeof parsed.progressPercent === 'number') {
-            geminiPercent = Math.max(0, Math.min(100, Math.round(parsed.progressPercent)));
-          }
-          if (parsed.stageProgress && typeof parsed.stageProgress === 'object') {
-            const sp = parsed.stageProgress;
-            geminiStageProgress = {
-              foundation: typeof sp.foundation === 'number' ? Math.max(0, Math.min(100, Math.round(sp.foundation))) : 0,
-              structural: typeof sp.structural === 'number' ? Math.max(0, Math.min(100, Math.round(sp.structural))) : 0,
-              roofing: typeof sp.roofing === 'number' ? Math.max(0, Math.min(100, Math.round(sp.roofing))) : 0,
-              walls: typeof sp.walls === 'number' ? Math.max(0, Math.min(100, Math.round(sp.walls))) : 0,
-            };
-          }
-          geminiNotes = parsed.notes || '';
+          geminiPercent = toProgressPercent(parsed.progressPercent);
+          geminiStageProgress = normalizeStageProgress(parsed.stageProgress);
+          geminiNotes = parsed.notes || parsed.analysisReasoning || '';
         }
       } catch (geminiErr) {
         console.warn('estimateProgressPercent: Gemini Vision analysis failed', geminiErr);
       }
     }
 
-    // 3. Merging results
-    let progressPercent = ocrPercent;
-    let method = 'vision_text_detection';
-
-    if (progressPercent == null && geminiPercent != null) {
-      progressPercent = geminiPercent;
-      method = 'gemini_vision_ml';
+    // Prefer visual analysis. Use OCR % only when the photo itself prints a percent.
+    let progressPercent = geminiPercent;
+    let method = geminiPercent != null ? 'gemini_vision_ml' : 'vision_text_detection';
+    if (progressPercent == null && ocrPercent != null) {
+      progressPercent = ocrPercent;
     }
 
     const stageProgress = {
@@ -3143,6 +3582,198 @@ exports.estimateProgressPercent = functions
     throw new functions.https.HttpsError('internal', message);
   }
 });
+
+// Site photos + saved blueprint in one Gemini Vision pass.
+exports.analyzeSiteProgressAgainstPlan = functions
+  .runWith({ secrets: [geminiApiKey], timeoutSeconds: 120, memory: '1GB' })
+  .https.onCall(async (data, context) => {
+    try {
+      const auth = await resolveAuth(context, data);
+      const role = await requireGovtrackRole(auth);
+
+      const projectId = typeof data?.projectId === 'string' ? data.projectId : null;
+      const projectName = typeof data?.projectName === 'string' ? data.projectName : null;
+      const approvedBudget = typeof data?.approvedBudget === 'number'
+        ? data.approvedBudget
+        : Number(data?.approvedBudget);
+      const blueprintUrl = typeof data?.blueprintUrl === 'string' ? data.blueprintUrl.trim() : '';
+      const blueprintStoragePath = typeof data?.blueprintStoragePath === 'string'
+        ? data.blueprintStoragePath.trim()
+        : '';
+      const extraBlueprintUrls = Array.isArray(data?.extraBlueprintUrls)
+        ? data.extraBlueprintUrls.map((u) => String(u || '').trim()).filter(Boolean)
+        : [];
+      const rawImages = Array.isArray(data?.images) ? data.images : [];
+
+      if (!projectId) {
+        throw new functions.https.HttpsError('invalid-argument', 'projectId is required.');
+      }
+      await requireProjectAccess({ auth, role, projectId });
+
+      if (!rawImages.length) {
+        throw new functions.https.HttpsError('invalid-argument', 'Upload at least one site photo.');
+      }
+
+      const siteImages = [];
+      for (const item of rawImages.slice(0, 6)) {
+        const imageUrl = typeof item?.imageUrl === 'string' ? item.imageUrl : '';
+        const storagePath = typeof item?.storagePath === 'string' ? item.storagePath : '';
+        const fileName = typeof item?.fileName === 'string' ? item.fileName : 'site_photo.jpg';
+        const base64 = await downloadImageAsBase64(storagePath, imageUrl);
+        if (!base64) continue;
+        siteImages.push({ imageUrl, storagePath, fileName, base64, mimeType: guessImageMime(fileName) });
+      }
+
+      if (!siteImages.length) {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          'Could not read the uploaded site photos. Try taking them again, then analyse.'
+        );
+      }
+
+      let blueprint = null;
+      const blueprintCandidates = [
+        { url: blueprintUrl, path: blueprintStoragePath, name: 'blueprint.jpg' },
+        ...extraBlueprintUrls.map((url) => ({ url, path: '', name: 'blueprint.jpg' })),
+      ];
+      for (const cand of blueprintCandidates) {
+        if (!cand.url && !cand.path) continue;
+        const base64 = await downloadImageAsBase64(cand.path, cand.url);
+        if (base64) {
+          blueprint = { ...cand, base64, mimeType: guessImageMime(cand.name) };
+          break;
+        }
+      }
+
+      const budgetStr = Number.isFinite(approvedBudget)
+        ? String(Math.round(approvedBudget))
+        : 'not provided';
+      const photoList = siteImages
+        .map((img, i) => `Site photo ${i + 1}: ${img.fileName}`)
+        .join('\n');
+      const prompt =
+        'You are a licensed civil engineer scoring construction progress from photos.\n\n'
+        + (blueprint
+          ? 'IMAGE 1 is the project BLUEPRINT / plan.\nThe remaining images are ACTUAL SITE PHOTOS.\n'
+          : 'All images are ACTUAL SITE PHOTOS. No blueprint was attached.\n')
+        + '\nHARD RULES:\n'
+        + '1. Score ONLY what is visibly built in the site photos.\n'
+        + '2. Compare site photos to the blueprint when present. Only the funded / highlighted / budgeted area counts toward %.\n'
+        + '3. Do not count empty lots, neighboring buildings, or unfunded wings drawn on the plan.\n'
+        + '4. Weighted overall progress:\n'
+        + '   Foundation 0-20, Structural 21-60, Walls 61-80, Roofing/finishing 81-100.\n'
+        + '   If only foundation is visible and incomplete, overall stays in 0-20.\n'
+        + '5. stageProgress is 0-100 completion OF THAT STAGE. Use 0 if not visible. Do not invent work.\n'
+        + '6. If photos are unclear, lower confidence and explain.\n\n'
+        + `PROJECT: ${projectName || projectId}\n`
+        + `APPROVED BUDGET: ${budgetStr}\n`
+        + `${photoList}\n\n`
+        + 'Return STRICT JSON only:\n'
+        + '{\n'
+        + '  "progressPercent": <number 0 to 100>,\n'
+        + '  "budgetedProgressPercent": <number 0 to 100>,\n'
+        + '  "stageProgress": { "foundation": 0, "structural": 0, "walls": 0, "roofing": 0 },\n'
+        + '  "firstWorkArea": "specific side or zone",\n'
+        + '  "workSequence": ["step 1", "step 2"],\n'
+        + '  "includedInBudget": ["funded areas"],\n'
+        + '  "excludedFromBudget": ["drawn but not funded"],\n'
+        + '  "labels": ["visible elements"],\n'
+        + '  "objects": ["visible objects"],\n'
+        + '  "perImage": [{ "fileName": "", "progressPercent": 0, "notes": "" }],\n'
+        + '  "analysisReasoning": "what you actually see",\n'
+        + '  "rationale": "one short paragraph",\n'
+        + '  "confidenceLevel": 0.0\n'
+        + '}';
+
+      const parts = [{ text: prompt }];
+      if (blueprint) {
+        parts.push({ inlineData: { mimeType: blueprint.mimeType, data: blueprint.base64 } });
+      }
+      for (const img of siteImages) {
+        parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+      }
+
+      const apiKey = geminiApiKey.value();
+      const model = geminiModel.value();
+      const { text: replyText } = await geminiGenerateWithContinuation({
+        apiKey,
+        model,
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1200,
+        },
+        maxTurns: 0,
+      });
+
+      const parsed = parseGeminiJson(replyText);
+      if (!parsed) {
+        throw new functions.https.HttpsError(
+          'unavailable',
+          'AI could not read these photos. Try clearer site photos and analyse again.'
+        );
+      }
+
+      const progressPercent =
+        toProgressPercent(parsed.budgetedProgressPercent) ??
+        toProgressPercent(parsed.progressPercent);
+      const stageProgress = normalizeStageProgress(parsed.stageProgress);
+      const labels = Array.isArray(parsed.labels)
+        ? parsed.labels.map((v) => String(v)).filter(Boolean).slice(0, 16)
+        : [];
+      const objects = Array.isArray(parsed.objects)
+        ? parsed.objects.map((v) => String(v)).filter(Boolean).slice(0, 16)
+        : [];
+      const workSequence = Array.isArray(parsed.workSequence)
+        ? parsed.workSequence.map((v) => String(v)).filter(Boolean).slice(0, 8)
+        : [];
+      const includedInBudget = Array.isArray(parsed.includedInBudget)
+        ? parsed.includedInBudget.map((v) => String(v)).filter(Boolean).slice(0, 8)
+        : [];
+      const excludedFromBudget = Array.isArray(parsed.excludedFromBudget)
+        ? parsed.excludedFromBudget.map((v) => String(v)).filter(Boolean).slice(0, 8)
+        : [];
+
+      const perImage = siteImages.map((img, i) => {
+        const fromAi = Array.isArray(parsed.perImage) ? parsed.perImage[i] : null;
+        return {
+          imageUrl: img.imageUrl || null,
+          fileName: img.fileName,
+          storagePath: img.storagePath || null,
+          progressPercent: toProgressPercent(fromAi?.progressPercent) ?? progressPercent,
+          notes: fromAi?.notes ? String(fromAi.notes) : '',
+          method: 'gemini_vision_blueprint',
+        };
+      });
+
+      return {
+        ok: true,
+        projectId,
+        projectName: projectName || null,
+        progressPercent,
+        budgetedProgressPercent: toProgressPercent(parsed.budgetedProgressPercent) ?? progressPercent,
+        stageProgress,
+        labels,
+        objects,
+        firstWorkArea: parsed.firstWorkArea ? String(parsed.firstWorkArea) : '',
+        workSequence,
+        includedInBudget,
+        excludedFromBudget,
+        analysisReasoning: parsed.analysisReasoning ? String(parsed.analysisReasoning) : '',
+        rationale: parsed.rationale ? String(parsed.rationale) : '',
+        confidenceLevel: typeof parsed.confidenceLevel === 'number' ? parsed.confidenceLevel : null,
+        perImage,
+        imageUrls: siteImages.map((img) => img.imageUrl).filter(Boolean),
+        hasBlueprint: Boolean(blueprint),
+        method: 'gemini_vision_blueprint',
+      };
+    } catch (error) {
+      console.error('analyzeSiteProgressAgainstPlan error:', error);
+      if (error instanceof functions.https.HttpsError) throw error;
+      const message = typeof error?.message === 'string' ? error.message : 'Analysis failed';
+      throw new functions.https.HttpsError('internal', message);
+    }
+  });
 
 // GovTrack AI Chat (MVP - no external LLM)
 exports.govtrackChat = functions

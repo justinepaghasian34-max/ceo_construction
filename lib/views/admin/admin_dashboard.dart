@@ -4,6 +4,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/hive_service.dart';
 import '../../services/auth_service.dart';
+import '../../utils/dialog_utils.dart';
 import '../../widgets/common/app_card.dart';
 
 class AdminDashboard extends StatelessWidget {
@@ -195,30 +196,19 @@ class AdminDashboard extends StatelessWidget {
   }
 
   void _showLogoutDialog(BuildContext context) {
-    showDialog(
+    showConfirmDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Logout'),
-        content: const Text('Are you sure you want to logout?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(dialogContext);
-              await AuthService.instance.signOut();
-              if (!context.mounted) return;
-              context.go(RouteNames.login);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.errorRed,
-            ),
-            child: const Text('Logout'),
-          ),
-        ],
-      ),
-    );
+      title: 'Logout',
+      message: 'Are you sure you want to logout?',
+      confirmText: 'Logout',
+      cancelText: 'Cancel',
+      isDangerous: true,
+    ).then((confirmed) async {
+      if (confirmed == true) {
+        await AuthService.instance.signOut();
+        if (!context.mounted) return;
+        context.go(RouteNames.login);
+      }
+    });
   }
 }

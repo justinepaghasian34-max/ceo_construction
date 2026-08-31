@@ -37,7 +37,7 @@ class SiteManagerCard extends StatelessWidget {
           ),
         ],
         border: Border.all(
-          color: AppTheme.deepBlue.withValues(alpha: 0.06),
+          color: AppTheme.residentBlue.withValues(alpha: 0.06),
         ),
       ),
       child: Padding(

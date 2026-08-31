@@ -262,7 +262,7 @@ class MaterialInventoryScreen extends StatelessWidget {
                                   label: 'Budget',
                                   value:
                                       '${budget.toStringAsFixed(1)} $unit',
-                                  color: AppTheme.deepBlue,
+                                  color: AppTheme.residentBlue,
                                 ),
                               ),
                               const SizedBox(width: 10),

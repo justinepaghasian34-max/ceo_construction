@@ -28,7 +28,6 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
   Timer? _resendTimer;
   int _resendSeconds = 0;
 
-  bool _registerMode = false;
   bool _autoSent = false;
 
   bool _entryVisible = false;
@@ -85,10 +84,7 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final mode = GoRouterState.of(context).uri.queryParameters['mode'];
-    _registerMode = mode == 'register';
-
-    if (_registerMode && !_autoSent) {
+    if (!_autoSent) {
       _autoSent = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -158,18 +154,35 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
     });
 
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable('sendEmailOtp');
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'sendEmailOtp',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
+      );
       await callable.call(<String, dynamic>{});
       if (!mounted) return;
       _setResendCooldown(60);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('OTP sent to your email.')),
+        const SnackBar(
+          content: Text('A 6-digit code was sent to your email. Check Inbox and Spam.'),
+        ),
       );
     } on FirebaseFunctionsException catch (e) {
       if (!mounted) return;
+      if (e.code == 'resource-exhausted') {
+        _setResendCooldown(60);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? 'Code already sent. Wait a minute to resend.')),
+        );
+        return;
+      }
       setState(() {
-        final msg = e.message ?? 'Failed to send OTP.';
-        _error = 'Failed to send OTP (${e.code}): $msg';
+        if (e.code == 'failed-precondition') {
+          _error =
+              'The code could not be emailed yet. Gmail blocked the sender login. Create a Gmail App Password and send it here so sending can be turned on.';
+        } else {
+          final msg = e.message ?? 'Failed to send code.';
+          _error = 'Failed to send code (${e.code}): $msg';
+        }
       });
     } catch (e) {
       if (!mounted) return;
@@ -225,23 +238,31 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
       <String, dynamic>{'verified': true},
     );
 
+    try {
+      await u.reload();
+      await u.getIdToken(true);
+    } catch (_) {}
+
     await AuthService.instance.refreshUserData();
 
-    if (_registerMode) {
-      await AuthService.instance.signOut();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Registration successful. Please sign in.'),
-          backgroundColor: AppTheme.softGreen,
-        ),
-      );
-      context.go(RouteNames.login);
-      return;
-    }
-
     if (!mounted) return;
-    context.go(RouteNames.siteManagerHome);
+    final role = AuthService.instance.userRole;
+    switch (role) {
+      case AppConstants.roleAdmin:
+        context.go(RouteNames.adminHome);
+        break;
+      case AppConstants.rolePayroll:
+        context.go(RouteNames.payrollHome);
+        break;
+      case AppConstants.roleMaterials:
+        context.go(RouteNames.materialsHome);
+        break;
+      case AppConstants.roleCeo:
+        context.go(RouteNames.ceoHome);
+        break;
+      default:
+        context.go(RouteNames.siteManagerHome);
+    }
   }
 
   Widget _buildOtpBoxes() {
@@ -304,13 +325,13 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
                               color: Colors.white,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: (isFocused ? const Color(0xFF2563EB) : const Color(0xFFCBD5E1))
+                                color: (isFocused ? AppTheme.residentBlue : const Color(0xFFCBD5E1))
                                     .withValues(alpha: borderOpacity),
                                 width: borderWidth,
                               ),
                               boxShadow: [
                                 BoxShadow(
-                                  color: (isFocused ? const Color(0xFF2563EB) : Colors.black)
+                                  color: (isFocused ? AppTheme.residentBlue : Colors.black)
                                       .withValues(alpha: glowOpacity),
                                   blurRadius: isFocused ? (18 + 8 * pulse) : 10,
                                   spreadRadius: isFocused ? 1.5 : 0.0,
@@ -403,7 +424,7 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        'Verification code sent',
+                        'We sent a 6-digit verification code to the email you registered. Enter it below. Check Inbox and Spam.',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                               color: const Color(0xFF64748B),
                               fontWeight: FontWeight.w700,
@@ -446,6 +467,7 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
                       _AnimatedVerifyButton(
                         enabled: _isOtpComplete && !_isVerifying,
                         loading: _isVerifying,
+                        label: 'Verify',
                         onPressed: _isVerifying
                             ? null
                             : () {
@@ -494,11 +516,13 @@ class _AnimatedVerifyButton extends StatefulWidget {
     required this.enabled,
     required this.loading,
     required this.onPressed,
+    this.label = 'Verify',
   });
 
   final bool enabled;
   final bool loading;
   final VoidCallback? onPressed;
+  final String label;
 
   @override
   State<_AnimatedVerifyButton> createState() => _AnimatedVerifyButtonState();
@@ -539,7 +563,7 @@ class _AnimatedVerifyButtonState extends State<_AnimatedVerifyButton>
   @override
   Widget build(BuildContext context) {
     final enabled = widget.enabled;
-    final bg = enabled ? const Color(0xFF2563EB) : const Color(0xFF94A3B8);
+    final bg = enabled ? AppTheme.residentBlue : const Color(0xFF94A3B8);
     final fg = Colors.white;
 
     return AnimatedOpacity(
@@ -589,7 +613,7 @@ class _AnimatedVerifyButtonState extends State<_AnimatedVerifyButton>
                           ),
                         )
                       : Text(
-                          'Verify',
+                          widget.label,
                           key: const ValueKey<String>('text'),
                           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                                 color: fg,

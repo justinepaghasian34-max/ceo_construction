@@ -43,7 +43,7 @@ class _SyncQueueScreenState extends State<SyncQueueScreen> {
             AppButton(
               text: _isSyncing ? 'Syncing...' : 'Sync Now',
               onPressed: _isSyncing ? null : _syncNow,
-              backgroundColor: AppTheme.deepBlue,
+              backgroundColor: AppTheme.residentBlue,
             ),
             const SizedBox(height: 16),
             if (items.isEmpty)

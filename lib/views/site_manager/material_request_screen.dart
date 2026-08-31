@@ -184,7 +184,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                 'Request Details',
                                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                       fontWeight: FontWeight.w900,
-                                      color: AppTheme.deepBlue,
+                                      color: AppTheme.residentBlue,
                                     ),
                               ),
                               if (projectId != null) ...[
@@ -463,7 +463,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                 'Priority',
                                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                       fontWeight: FontWeight.w900,
-                                      color: AppTheme.deepBlue,
+                                      color: AppTheme.residentBlue,
                                     ),
                               ),
                               const SizedBox(height: 10),
@@ -493,7 +493,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                     style: ButtonStyle(
                                       backgroundColor: WidgetStateProperty.resolveWith((states) {
                                         if (states.contains(WidgetState.selected)) {
-                                          return AppTheme.deepBlue;
+                                          return AppTheme.residentBlue;
                                         }
                                         return Colors.transparent;
                                       }),
@@ -501,10 +501,10 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                         if (states.contains(WidgetState.selected)) {
                                           return Colors.white;
                                         }
-                                        return AppTheme.deepBlue;
+                                        return AppTheme.residentBlue;
                                       }),
                                       side: WidgetStateProperty.all(
-                                        BorderSide(color: AppTheme.deepBlue.withValues(alpha: 0.35)),
+                                        BorderSide(color: AppTheme.residentBlue.withValues(alpha: 0.35)),
                                       ),
                                       padding: WidgetStateProperty.all(
                                         const EdgeInsets.symmetric(horizontal: 12, vertical: 10),

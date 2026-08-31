@@ -65,7 +65,7 @@ class WeeklyAttendanceChecklist extends StatelessWidget {
                         'Weekly Attendance',
                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.w900,
-                              color: const Color(0xFF1E3A8A),
+                              color: AppTheme.residentBlue,
                             ),
                       ),
                     ),
@@ -251,13 +251,13 @@ class _TableWorkerRow extends StatelessWidget {
                 children: [
                   CircleAvatar(
                     radius: 20,
-                    backgroundColor: const Color(0xFF1E3A8A).withValues(alpha: 0.1),
+                    backgroundColor: AppTheme.residentBlue.withValues(alpha: 0.1),
                     child: Text(
                       _initials(row.workerName),
                       style: const TextStyle(
                         fontWeight: FontWeight.w900,
                         fontSize: 12,
-                        color: Color(0xFF1E3A8A),
+                        color: AppTheme.residentBlue,
                       ),
                     ),
                   ),
@@ -325,7 +325,7 @@ class _TableWorkerRow extends StatelessWidget {
 
   static Color _rateColor(double rate) {
     if (rate >= 80) return const Color(0xFF16A34A);
-    if (rate >= 50) return const Color(0xFF2563EB);
+    if (rate >= 50) return AppTheme.residentBlue;
     if (rate > 0) return const Color(0xFFF97316);
     return const Color(0xFFEF4444);
   }

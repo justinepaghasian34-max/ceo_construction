@@ -245,7 +245,7 @@ class _ProjectProgressUpdateScreenState extends State<ProjectProgressUpdateScree
               '${_progress.toStringAsFixed(0)} %',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w800,
-                    color: AppTheme.deepBlue,
+                    color: AppTheme.residentBlue,
                   ),
             ),
           ),
@@ -255,7 +255,7 @@ class _ProjectProgressUpdateScreenState extends State<ProjectProgressUpdateScree
             onPressed: _isSaving ? null : _saveProgress,
             isLoading: _isSaving,
             width: double.infinity,
-            backgroundColor: AppTheme.deepBlue,
+            backgroundColor: AppTheme.residentBlue,
           ),
         ],
       );

@@ -47,12 +47,12 @@ class WorkerMonFriScheduleCard extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 22,
-                  backgroundColor: const Color(0xFF1E3A8A).withValues(alpha: 0.12),
+                  backgroundColor: AppTheme.residentBlue.withValues(alpha: 0.12),
                   child: Text(
                     _initials(row.workerName),
                     style: const TextStyle(
                       fontWeight: FontWeight.w900,
-                      color: Color(0xFF1E3A8A),
+                      color: AppTheme.residentBlue,
                       fontSize: 14,
                     ),
                   ),

@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -163,7 +166,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'You can self-register as Site Manager, Material Monitoring, or Payroll. Admin and CEO accounts are created by the system administrator.',
+                      'You can self-register as Admin, Site Manager, Material Monitoring, or Payroll.',
                       style: Theme.of(
                         context,
                       ).textTheme.bodyMedium?.copyWith(
@@ -172,7 +175,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Site Manager accounts must verify OTP (Email or SMS). Payroll and Material Monitoring accounts can continue immediately.',
+                      'Admin and Site Manager accounts must verify the email OTP. Payroll and Material Monitoring accounts can continue immediately.',
                       style: Theme.of(
                         context,
                       ).textTheme.bodySmall?.copyWith(
@@ -229,7 +232,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'You can self-register as Site Manager, Material Monitoring, or Payroll. Admin and CEO accounts are created by the system administrator.',
+              'You can self-register as Admin, Site Manager, Material Monitoring, or Payroll.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: AppTheme.mediumGray,
                   ),
@@ -296,7 +299,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           Row(
             children: [
               Image.asset(
-                'assets/images/City Engineering Office logo design.png',
+                'assets/images/image.png',
                 height: 92,
                 width: 92,
                 fit: BoxFit.contain,
@@ -399,6 +402,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
             DropdownButtonFormField<String>(
               initialValue: _selectedRole,
               items: const [
+                DropdownMenuItem(
+                  value: AppConstants.roleAdmin,
+                  child: Text('Admin'),
+                ),
                 DropdownMenuItem(
                   value: AppConstants.roleSiteManager,
                   child: Text('Site Manager'),
@@ -534,13 +541,28 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
 
     try {
       final authService = ref.read(authServiceProvider);
-      final result = await authService.registerWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-        firstName: _firstNameController.text.trim(),
-        lastName: _lastNameController.text.trim(),
-        role: _selectedRole,
-      );
+      final result = await authService
+          .registerWithEmailAndPassword(
+            email: _emailController.text.trim(),
+            password: _passwordController.text,
+            firstName: _firstNameController.text.trim(),
+            lastName: _lastNameController.text.trim(),
+            role: _selectedRole,
+          )
+          .timeout(
+            const Duration(seconds: 18),
+            onTimeout: () {
+              final signedIn = FirebaseAuth.instance.currentUser != null;
+              return AuthResult(
+                success: signedIn,
+                requiresEmailVerification: signedIn,
+                requiresOtp: signedIn,
+                message: signedIn
+                    ? 'Account created. Continue to enter your verification code.'
+                    : 'Registration timed out. If this email is already registered, sign in instead.',
+              );
+            },
+          );
 
       if (!mounted) return;
 
@@ -554,15 +576,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       );
 
       if (result.success) {
-        if (_selectedRole == AppConstants.roleSiteManager) {
-          context.go('${RouteNames.siteManagerOtp}?mode=register');
-        } else if (_selectedRole == AppConstants.rolePayroll) {
-          context.go(RouteNames.payrollHome);
-        } else if (_selectedRole == AppConstants.roleMaterials) {
-          context.go(RouteNames.materialsHome);
-        } else {
-          context.go(RouteNames.login);
-        }
+        context.go(RouteNames.siteManagerOtp);
       }
     } catch (e) {
       if (!mounted) return;

@@ -15,13 +15,21 @@ class AppConstants {
   // Privileged account emails
   static const String adminEmail = 'cherryantipuesto23@gmail.com';
 
+  static const String officeLogoAsset = 'assets/images/image.png';
+
   // Firestore Collections
   static const String usersCollection = 'users';
   static const String projectsCollection = 'projects';
   static const String notificationsCollection = 'notifications';
   static const String aiAnalysisCollection = 'ai_analysis';
   static const String auditLogsCollection = 'audit_logs';
+  static const String obligationsCollection = 'obligations';
+  static const String suppliersCollection = 'suppliers';
   static const String disbursementsCollection = 'disbursements';
+  static const String budgetsCollection = 'budgets';
+  static const String activityLogsCollection = 'activity_logs';
+
+  static const String currencySymbol = '₱';
 
   // Firestore Sub-collections
   static const String dailyReportsSubCollection = 'daily_reports';
@@ -75,6 +83,7 @@ class AppConstants {
   static const String notificationPayrollValidated = 'payroll_validated';
   static const String notificationPayrollPaid = 'payroll_paid';
   static const String notificationAIDelay = 'ai_delay_detected';
+  static const String notificationProgressReport = 'progress_report_submitted';
 
   // File Upload Limits
   static const int maxFileSize = 10 * 1024 * 1024; // 10MB
@@ -92,6 +101,14 @@ class AppConstants {
   // API Timeouts
   static const Duration apiTimeout = Duration(seconds: 30);
   static const Duration uploadTimeout = Duration(minutes: 5);
+
+  // Authentication / session
+  static const Duration sessionIdleTimeout = Duration(minutes: 30);
+  static const Duration sessionMaxLifetime = Duration(hours: 12);
+  static const Duration passwordResetLinkLifetime = Duration(hours: 1);
+  static const int loginMaxFailedAttempts = 5;
+  static const Duration loginLockoutWindow = Duration(minutes: 15);
+  static const int passwordResetMaxPerHour = 3;
 }
 
 class RouteNames {
@@ -125,6 +142,8 @@ class RouteNames {
   static const String syncQueue = '/site-manager/sync-queue';
   static const String govTrackAi = '/site-manager/govtrack-ai';
   static const String aiAssistantChat = '/site-manager/ai-assistant-chat';
+  static const String siteManagerWeatherForecast =
+      '/site-manager/weather-forecast';
 
   // Admin Routes
   static const String adminHome = '/admin';
@@ -138,7 +157,7 @@ class RouteNames {
   static const String adminMaterialMonitoring = '/admin/material-monitoring';
   static const String adminFinancialMonitoring = '/admin/financial-monitoring';
   static const String adminWeatherForecast = '/admin/weather-forecast';
-  static const String adminDemoScript = '/admin/demo-script';
+  static const String adminSiteWeatherMap = '/admin/site-weather-map';
 
   // Payroll Routes
   static const String payrollHome = '/payroll';
@@ -152,4 +171,5 @@ class RouteNames {
   static const String profile = '/profile';
   static const String settings = '/settings';
   static const String notifications = '/notifications';
+  static const String accessDenied = '/access-denied';
 }

@@ -22,6 +22,7 @@ class FirebaseService {
     final normalized = bucket.startsWith('gs://') ? bucket : 'gs://$bucket';
     return FirebaseStorage.instanceFor(bucket: normalized);
   }
+
   FirebaseMessaging get messaging => FirebaseMessaging.instance;
 
   // Initialize Firebase
@@ -64,8 +65,15 @@ class FirebaseService {
       firestore.collection('ai_analysis');
   CollectionReference get auditLogsCollection =>
       firestore.collection('audit_logs');
+  CollectionReference get obligationsCollection =>
+      firestore.collection('obligations');
+  CollectionReference get suppliersCollection =>
+      firestore.collection('suppliers');
   CollectionReference get disbursementsCollection =>
       firestore.collection('disbursements');
+  CollectionReference get budgetsCollection => firestore.collection('budgets');
+  CollectionReference get activityLogsCollection =>
+      firestore.collection('activity_logs');
   CollectionReference get materialTemplatesCollection =>
       firestore.collection('material_templates');
 
@@ -99,6 +107,68 @@ class FirebaseService {
     return '$year$sequenceStr';
   }
 
+  Future<DocumentSnapshot?> findUserByEmail(String email) async {
+    final needle = email.trim().toLowerCase();
+    if (needle.isEmpty) return null;
+
+    Future<DocumentSnapshot?> matchIn(QuerySnapshot snap) async {
+      for (final doc in snap.docs) {
+        final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+        if ((data['email'] ?? '').toString().trim().toLowerCase() == needle) {
+          return doc;
+        }
+      }
+      return null;
+    }
+
+    try {
+      final exact = await usersCollection
+          .where('email', isEqualTo: email.trim())
+          .limit(8)
+          .get();
+      final hit = await matchIn(exact);
+      if (hit != null) return hit;
+    } catch (_) {}
+
+    try {
+      final lower = await usersCollection
+          .where('email', isEqualTo: needle)
+          .limit(8)
+          .get();
+      final hit = await matchIn(lower);
+      if (hit != null) return hit;
+    } catch (_) {}
+
+    try {
+      final byRole = await usersCollection
+          .where('role', isEqualTo: 'site_manager')
+          .limit(80)
+          .get();
+      final hit = await matchIn(byRole);
+      if (hit != null) return hit;
+    } catch (_) {}
+
+    return null;
+  }
+
+  Future<void> addProjectToUserAssignments({
+    required String userId,
+    required String projectId,
+  }) async {
+    if (userId.isEmpty || projectId.isEmpty) return;
+    final ref = usersCollection.doc(userId);
+    final snap = await ref.get();
+    if (!snap.exists) return;
+    final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? {};
+    final assigned = List<dynamic>.from(data['assignedProjects'] ?? []);
+    if (assigned.contains(projectId)) return;
+    assigned.add(projectId);
+    await ref.update({
+      'assignedProjects': assigned,
+      'updatedAt': DateTime.now().toIso8601String(),
+    });
+  }
+
   // Project sub-collections
   CollectionReference dailyReportsCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('daily_reports');
@@ -121,14 +191,16 @@ class FirebaseService {
   CollectionReference payrollItemsCollection(
     String projectId,
     String payrollId,
-  ) => payrollCollection(projectId).doc(payrollId).collection('items');
+  ) =>
+      payrollCollection(projectId).doc(payrollId).collection('items');
 
   CollectionReference materialUsageCollection(
     String projectId,
     String reportId,
-  ) => dailyReportsCollection(
-    projectId,
-  ).doc(reportId).collection('material_usage');
+  ) =>
+      dailyReportsCollection(
+        projectId,
+      ).doc(reportId).collection('material_usage');
 
   CollectionReference historyCollection(String projectId) =>
       projectsCollection.doc(projectId).collection('history');

@@ -6,8 +6,13 @@ import '../../../core/theme/app_theme.dart';
 
 class SiteManagerBottomNav extends StatelessWidget {
   final int currentIndex;
+  final bool dark;
 
-  const SiteManagerBottomNav({super.key, required this.currentIndex});
+  const SiteManagerBottomNav({
+    super.key,
+    required this.currentIndex,
+    this.dark = false,
+  });
 
   void _go(BuildContext context, int index) {
     switch (index) {
@@ -28,26 +33,38 @@ class SiteManagerBottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bg = dark ? const Color(0xFF1E1F20) : Colors.white;
+    final selected = dark ? const Color(0xFFA8C7FA) : AppTheme.residentBlue;
+    final unselected = dark ? const Color(0xFFC4C7C5) : AppTheme.mediumGray;
+
     return SafeArea(
       top: false,
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.08),
-              blurRadius: 18,
-              offset: const Offset(0, -8),
-            ),
-          ],
+          color: bg,
+          border: dark
+              ? const Border(top: BorderSide(color: Color(0xFF2F3031)))
+              : null,
+          boxShadow: dark
+              ? null
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 10,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
         ),
         child: BottomNavigationBar(
           currentIndex: currentIndex,
           onTap: (i) => _go(context, i),
           type: BottomNavigationBarType.fixed,
-          selectedItemColor: AppTheme.deepBlue,
-          unselectedItemColor: AppTheme.mediumGray,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w700),
+          backgroundColor: bg,
+          elevation: 0,
+          selectedItemColor: selected,
+          unselectedItemColor: unselected,
+          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w400),
           items: const [
             BottomNavigationBarItem(
               icon: Icon(Icons.home_outlined),
@@ -57,7 +74,7 @@ class SiteManagerBottomNav extends StatelessWidget {
             BottomNavigationBarItem(
               icon: Icon(Icons.auto_awesome_outlined),
               activeIcon: Icon(Icons.auto_awesome),
-              label: 'GovTrack AI',
+              label: 'BuildIQ',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.people_outline),

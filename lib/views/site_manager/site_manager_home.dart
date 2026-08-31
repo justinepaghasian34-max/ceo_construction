@@ -9,12 +9,14 @@ import '../../services/sync_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
 import '../../services/weather_alert_service.dart';
+import '../../utils/dialog_utils.dart';
 import '../../models/user_model.dart';
 import '../../widgets/common/app_button.dart';
 import '../../widgets/common/status_chip.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
 import 'widgets/site_manager_dashboard_body.dart';
+import 'widgets/site_weather_card.dart';
 
 class SiteManagerHome extends ConsumerStatefulWidget {
   final bool showBottomNav;
@@ -84,7 +86,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     onPressed: () => Navigator.of(context).pop(),
                   )
                 : null),
-        title: const Text('Site Manager'),
+        title: const Text('Resident Engineer'),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 6),
@@ -148,6 +150,16 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: _buildActiveProjectCard(user),
             ),
+            // Live weather card — only shown when a project is assigned
+            if (user != null && user.assignedProjects.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: SiteWeatherCard(
+                  projectId: user.assignedProjects.first,
+                ),
+              ),
+            ],
             const SizedBox(height: 20),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -177,7 +189,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
         }),
         icon: const Icon(Icons.photo_camera),
         label: const Text('Upload Site Progress'),
-        backgroundColor: AppTheme.deepBlue,
+        backgroundColor: AppTheme.residentBlue,
         foregroundColor: AppTheme.white,
       ),
     );
@@ -185,8 +197,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
   Widget _buildDashboardBanner(UserModel? user) {
     final name = user == null
-        ? 'Site Manager'
-        : (user.firstName.isEmpty ? 'Site Manager' : user.firstName);
+        ? 'Resident Engineer'
+        : (user.firstName.isEmpty ? 'Resident Engineer' : user.firstName);
     final projectId = (user != null && user.assignedProjects.isNotEmpty)
         ? user.assignedProjects.first
         : null;
@@ -218,9 +230,9 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      AppTheme.deepBlueDark.withValues(alpha: 0.55),
-                      AppTheme.deepBlue.withValues(alpha: 0.30),
-                      AppTheme.deepBlue.withValues(alpha: 0.10),
+                      AppTheme.residentBlue.withValues(alpha: 0.55),
+                      AppTheme.residentBlue.withValues(alpha: 0.30),
+                      AppTheme.residentBlue.withValues(alpha: 0.10),
                     ],
                     stops: const [0.0, 0.55, 1.0],
                   ),
@@ -266,7 +278,10 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                               'Project: $projectId',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
                                     color: Colors.white.withValues(alpha: 0.92),
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -301,7 +316,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
         if (snapshot.hasData && snapshot.data!.exists) {
           final data = snapshot.data!.data() as Map<String, dynamic>?;
-          final rawName = (data?['name'] ?? data?['projectName'] ?? '').toString();
+          final rawName =
+              (data?['name'] ?? data?['projectName'] ?? '').toString();
           if (rawName.trim().isNotEmpty) {
             projectName = rawName.trim();
           }
@@ -326,36 +342,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                           ),
                     ),
                   ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppTheme.lightGray,
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: AppTheme.deepBlue.withValues(alpha: 0.10),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.wb_sunny_outlined,
-                          size: 14,
-                          color: AppTheme.warningOrange,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Sunny 30°C',
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.darkGray,
-                                  ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  SiteWeatherBadge(projectId: projectId),
                 ],
               ),
               const SizedBox(height: 10),
@@ -365,7 +352,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       fontWeight: FontWeight.w900,
-                      color: AppTheme.deepBlueDark,
+                      color: AppTheme.residentBlue,
                     ),
               ),
               const SizedBox(height: 10),
@@ -478,7 +465,7 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
         Expanded(
           child: metricCard(
             icon: Icons.description_outlined,
-            tone: AppTheme.deepBlue,
+            tone: AppTheme.residentBlue,
             label: "Today's Reports",
             metric: dailyReportsCount.toString(),
             subtitle: 'Submitted',
@@ -593,9 +580,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
     required Color Function(String) colorFor,
   }) {
     final status = (step['status'] ?? '').toString();
-    final progress = (step['progress'] is num)
-        ? (step['progress'] as num).toDouble()
-        : 0.0;
+    final progress =
+        (step['progress'] is num) ? (step['progress'] as num).toDouble() : 0.0;
     final confidence = (step['confidence'] is num)
         ? (step['confidence'] as num).toDouble()
         : null;
@@ -731,14 +717,17 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
               final data =
                   (docs.first.data() as Map?)?.cast<String, dynamic>() ?? {};
               final imageUrls = <String>[];
-              final listRaw = data['imageUrls'] ?? data['images'] ?? data['image_urls'];
+              final listRaw =
+                  data['imageUrls'] ?? data['images'] ?? data['image_urls'];
               if (listRaw is Iterable) {
                 for (final e in listRaw) {
                   final v = e?.toString().trim() ?? '';
                   if (v.isNotEmpty) imageUrls.add(v);
                 }
               }
-              final single = (data['imageUrl'] ?? data['image_url'] ?? '').toString().trim();
+              final single = (data['imageUrl'] ?? data['image_url'] ?? '')
+                  .toString()
+                  .trim();
               if (single.isNotEmpty && !imageUrls.contains(single)) {
                 imageUrls.insert(0, single);
               }
@@ -755,9 +744,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
               }
 
-              final pctText = (progress is num)
-                  ? '${progress.toStringAsFixed(0)}%'
-                  : '—';
+              final pctText =
+                  (progress is num) ? '${progress.toStringAsFixed(0)}%' : '—';
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -810,7 +798,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                                           child: Image.network(
                                             url,
                                             fit: BoxFit.contain,
-                                            errorBuilder: (_, __, ___) => const Center(
+                                            errorBuilder: (_, __, ___) =>
+                                                const Center(
                                               child: Icon(
                                                 Icons.broken_image_outlined,
                                                 color: Colors.white,
@@ -849,7 +838,9 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     children: [
                       Expanded(
                         child: Text(
-                          submittedBy.isEmpty ? 'Uploaded by: —' : 'Uploaded by: $submittedBy',
+                          submittedBy.isEmpty
+                              ? 'Uploaded by: —'
+                              : 'Uploaded by: $submittedBy',
                           style: Theme.of(context)
                               .textTheme
                               .bodySmall
@@ -868,13 +859,13 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                   ),
                   const SizedBox(height: 8),
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
-                      color: AppTheme.deepBlue.withValues(alpha: 0.06),
+                      color: AppTheme.residentBlue.withValues(alpha: 0.06),
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
-                        color: AppTheme.deepBlue.withValues(alpha: 0.12),
+                        color: AppTheme.residentBlue.withValues(alpha: 0.12),
                       ),
                     ),
                     child: Row(
@@ -882,18 +873,20 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                         Expanded(
                           child: Text(
                             'AI Estimated Progress',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: AppTheme.mediumGray,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppTheme.mediumGray,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                           ),
                         ),
                         Text(
                           pctText,
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                color: AppTheme.deepBlue,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w900,
+                                    color: AppTheme.residentBlue,
+                                  ),
                         ),
                       ],
                     ),
@@ -926,15 +919,15 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                   Text(
                     'All data synced',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: AppTheme.softGreen,
-                      fontWeight: FontWeight.w600,
-                    ),
+                          color: AppTheme.softGreen,
+                          fontWeight: FontWeight.w600,
+                        ),
                   ),
                   Text(
                     'Your data is up to date',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
+                          color: AppTheme.mediumGray,
+                        ),
                   ),
                 ],
               ),
@@ -964,15 +957,15 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                     Text(
                       syncStats.isSyncing ? 'Syncing data...' : 'Pending sync',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: AppTheme.warningOrange,
-                        fontWeight: FontWeight.w600,
-                      ),
+                            color: AppTheme.warningOrange,
+                            fontWeight: FontWeight.w600,
+                          ),
                     ),
                     Text(
                       '${syncStats.totalPending} items waiting to sync',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.mediumGray,
-                      ),
+                            color: AppTheme.mediumGray,
+                          ),
                     ),
                   ],
                 ),
@@ -1040,8 +1033,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                 child: Text(
                   'Recent Reports',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+                        fontWeight: FontWeight.w600,
+                      ),
                 ),
               ),
               TextButton(
@@ -1065,8 +1058,8 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
                   Text(
                     'No reports created yet',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
+                          color: AppTheme.mediumGray,
+                        ),
                   ),
                   const SizedBox(height: 8),
                   AppButton(
@@ -1079,51 +1072,57 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
             )
           else
             ...recentReports.map((report) => Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.lightGray,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.description,
-                    color: AppTheme.deepBlue,
-                    size: 20,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.lightGray,
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${report.reportDate.day}/${report.reportDate.month}/${report.reportDate.year}',
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.description,
+                        color: AppTheme.residentBlue,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${report.reportDate.day}/${report.reportDate.month}/${report.reportDate.year}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                            Text(
+                              '${report.workAccomplishments.length} accomplishments',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.mediumGray,
+                                  ),
+                            ),
+                          ],
                         ),
-                        Text(
-                          '${report.workAccomplishments.length} accomplishments',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.mediumGray,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                      ReportStatusChip(
+                        reportStatus: report.status,
+                        isSmall: true,
+                      ),
+                      const SizedBox(width: 8),
+                      SyncStatusChip(
+                        syncStatus: report.syncStatus,
+                        isSmall: true,
+                      ),
+                    ],
                   ),
-                  ReportStatusChip(
-                    reportStatus: report.status,
-                    isSmall: true,
-                  ),
-                  const SizedBox(width: 8),
-                  SyncStatusChip(
-                    syncStatus: report.syncStatus,
-                    isSmall: true,
-                  ),
-                ],
-              ),
-            )),
+                )),
         ],
       ),
     );
@@ -1131,15 +1130,16 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
 
   Future<void> _syncData() async {
     final result = await SyncService.instance.syncPendingData();
-    
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result.message),
-          backgroundColor: result.success ? AppTheme.softGreen : AppTheme.errorRed,
+          backgroundColor:
+              result.success ? AppTheme.softGreen : AppTheme.errorRed,
         ),
       );
-      
+
       setState(() {}); // Refresh the UI
     }
   }
@@ -1178,31 +1178,20 @@ class _SiteManagerHomeState extends ConsumerState<SiteManagerHome> {
   }
 
   void _showLogoutDialog(BuildContext context) {
-    showDialog(
+    showConfirmDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Logout'),
-        content: const Text('Are you sure you want to logout?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(dialogContext);
-              await AuthService.instance.signOut();
-              if (!context.mounted) return;
-              context.go(RouteNames.login);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.errorRed,
-            ),
-            child: const Text('Logout'),
-          ),
-        ],
-      ),
-    );
+      title: 'Logout',
+      message: 'Are you sure you want to logout?',
+      confirmText: 'Logout',
+      cancelText: 'Cancel',
+      isDangerous: true,
+    ).then((confirmed) async {
+      if (confirmed == true) {
+        await AuthService.instance.signOut();
+        if (!context.mounted) return;
+        context.go(RouteNames.login);
+      }
+    });
   }
 }
 
@@ -1221,7 +1210,7 @@ class _SiteManagerDrawer extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
               decoration: const BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFF1E3A8A), Color(0xFF2563EB)],
+                  colors: AppTheme.residentHeaderGradient,
                 ),
               ),
               child: Column(
@@ -1236,7 +1225,7 @@ class _SiteManagerDrawer extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Use the bottom bar for Home, GovTrack, Attendance, and Materials.',
+                    'Use the bottom bar for Home, BuildIQ, Attendance, and Materials.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Colors.white.withValues(alpha: 0.88),
                           height: 1.3,
@@ -1253,34 +1242,40 @@ class _SiteManagerDrawer extends StatelessWidget {
                   ListTile(
                     leading: const Icon(Icons.edit_note_outlined),
                     title: const Text('Daily Report'),
-                    onTap: () => state?._navigateFromDrawer(context, RouteNames.dailyReport),
+                    onTap: () => state?._navigateFromDrawer(
+                        context, RouteNames.dailyReport),
                   ),
                   ListTile(
                     leading: const Icon(Icons.description_outlined),
                     title: const Text('Reports'),
-                    onTap: () => state?._navigateFromDrawer(context, '/site-manager/reports'),
+                    onTap: () => state?._navigateFromDrawer(
+                        context, '/site-manager/reports'),
                   ),
                   ListTile(
                     leading: const Icon(Icons.sync),
                     title: const Text('Sync Queue'),
-                    onTap: () => state?._navigateFromDrawer(context, RouteNames.syncQueue),
+                    onTap: () => state?._navigateFromDrawer(
+                        context, RouteNames.syncQueue),
                   ),
                   const Divider(height: 20),
                   _drawerSectionLabel(context, 'Account'),
                   ListTile(
                     leading: const Icon(Icons.person_outline),
                     title: const Text('Profile'),
-                    onTap: () => state?._navigateFromDrawer(context, RouteNames.profile),
+                    onTap: () =>
+                        state?._navigateFromDrawer(context, RouteNames.profile),
                   ),
                   ListTile(
                     leading: const Icon(Icons.notifications_none),
                     title: const Text('Notifications'),
-                    onTap: () => state?._navigateFromDrawer(context, RouteNames.notifications),
+                    onTap: () => state?._navigateFromDrawer(
+                        context, RouteNames.notifications),
                   ),
                   ListTile(
                     leading: const Icon(Icons.settings_outlined),
                     title: const Text('Settings'),
-                    onTap: () => state?._navigateFromDrawer(context, RouteNames.settings),
+                    onTap: () => state?._navigateFromDrawer(
+                        context, RouteNames.settings),
                   ),
                 ],
               ),
@@ -1288,7 +1283,8 @@ class _SiteManagerDrawer extends StatelessWidget {
             const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.logout, color: AppTheme.errorRed),
-              title: const Text('Logout', style: TextStyle(color: AppTheme.errorRed)),
+              title: const Text('Logout',
+                  style: TextStyle(color: AppTheme.errorRed)),
               onTap: () {
                 Navigator.of(context).pop();
                 state?._showLogoutDialog(context);

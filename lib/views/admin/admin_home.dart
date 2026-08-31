@@ -1,3 +1,7 @@
+import 'dart:math' as math;
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
@@ -8,6 +12,7 @@ import '../../services/archive_service.dart';
 import '../../services/weather_service.dart';
 import '../../widgets/common/app_card.dart';
 import '../../widgets/common/motion_widgets.dart';
+import '../../widgets/common/storage_network_image.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 
@@ -30,11 +35,6 @@ class AdminHome extends StatelessWidget {
           onPressed: () => context.push(RouteNames.adminAuditTrail),
         ),
         IconButton(
-          icon: const Icon(Icons.help_outline),
-          tooltip: 'Demo script',
-          onPressed: () => context.push(RouteNames.adminDemoScript),
-        ),
-        IconButton(
           icon: const Icon(Icons.person_outline),
           onPressed: () => context.push(RouteNames.profile),
         ),
@@ -49,6 +49,8 @@ class AdminHome extends StatelessWidget {
           _buildSmartInsightCard(context),
           const SizedBox(height: 14),
           _buildKpiRow(context, hive),
+          const SizedBox(height: 14),
+          _buildSiteWeatherMapCard(context),
           const SizedBox(height: 14),
           _buildProjectActivityCard(context),
           const SizedBox(height: 24),
@@ -143,9 +145,8 @@ class AdminHome extends StatelessWidget {
         builder: (context, snapshot) {
           final temp = snapshot.data?.temperatureC;
           final description = snapshot.data?.description ?? '';
-          final workHours = (temp == null)
-              ? 7
-              : (temp <= 26 ? 9 : (temp <= 30 ? 8 : 7));
+          final workHours =
+              (temp == null) ? 7 : (temp <= 26 ? 9 : (temp <= 30 ? 8 : 7));
           final label = snapshot.connectionState == ConnectionState.waiting
               ? 'Loading…'
               : (description.isEmpty ? 'Weather Risk' : 'Weather Risk');
@@ -220,6 +221,97 @@ class AdminHome extends StatelessWidget {
     );
   }
 
+  Widget _buildSiteWeatherMapCard(BuildContext context) {
+    const borderRadius = 16.0;
+
+    final card = GlassCard(
+      borderRadius: borderRadius,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF3B82F6).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.thunderstorm_outlined,
+                    size: 18, color: Color(0xFF3B82F6)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Site Weather Map',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.softGreen.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  'Live',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppTheme.softGreen,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'View live weather conditions at all project sites on an '
+            'interactive map. Rain alerts are sent automatically.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.mediumGray,
+                ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _WeatherConditionDot(
+                  color: AppTheme.warningOrange, label: 'Sunny'),
+              const SizedBox(width: 12),
+              _WeatherConditionDot(
+                  color: AppTheme.mediumGray, label: 'Cloudy'),
+              const SizedBox(width: 12),
+              _WeatherConditionDot(
+                  color: const Color(0xFF3B82F6), label: 'Raining'),
+              const Spacer(),
+              Icon(
+                Icons.arrow_forward_rounded,
+                size: 16,
+                color: AppTheme.mediumGray.withValues(alpha: 0.5),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => context.push(RouteNames.adminSiteWeatherMap),
+          borderRadius: BorderRadius.circular(borderRadius),
+          child: card,
+        ),
+      ),
+    );
+  }
+
   Widget _buildProjectActivityCard(BuildContext context) {
     return GlassCard(
       borderRadius: 18,
@@ -244,10 +336,8 @@ class AdminHome extends StatelessWidget {
       if (rawAmount is num) {
         amount = rawAmount.toDouble();
       } else if (rawAmount is String) {
-        final cleaned = rawAmount
-            .replaceAll(',', '')
-            .replaceAll('₱', '')
-            .trim();
+        final cleaned =
+            rawAmount.replaceAll(',', '').replaceAll('₱', '').trim();
         amount = double.tryParse(cleaned) ?? 0.0;
       } else {
         amount = 0.0;
@@ -255,6 +345,48 @@ class AdminHome extends StatelessWidget {
       expensesByProject[projectId] =
           (expensesByProject[projectId] ?? 0) + amount;
     }
+
+    final coverByProjectId = <String, String>{};
+    final coverByProjectName = <String, String>{};
+    final latestAt = <String, DateTime>{};
+    try {
+      final reportsSnap = await firebase.aiAnalysisCollection
+          .where(
+            'kind',
+            whereIn: const <String>[
+              'govtrack_progress_report',
+              'govtrack_image_progress_submit',
+            ],
+          )
+          .get();
+      for (final report in reportsSnap.docs) {
+        final reportData = (report.data() as Map?)?.cast<String, dynamic>() ??
+            <String, dynamic>{};
+        final images = ProgressReportImages.extract(reportData);
+        if (images.isEmpty) continue;
+        final projectId = (reportData['projectId'] ?? '').toString();
+        final projectName = (reportData['projectName'] ?? '').toString();
+        DateTime created = DateTime.fromMillisecondsSinceEpoch(0);
+        final rawCreated = reportData['createdAt'];
+        if (rawCreated is Timestamp) created = rawCreated.toDate();
+        if (rawCreated is DateTime) created = rawCreated;
+        if (projectId.isNotEmpty) {
+          final prev = latestAt[projectId];
+          if (prev == null || created.isAfter(prev)) {
+            latestAt[projectId] = created;
+            coverByProjectId[projectId] = images.first;
+          }
+        }
+        if (projectName.isNotEmpty) {
+          final key = 'name:$projectName';
+          final prev = latestAt[key];
+          if (prev == null || created.isAfter(prev)) {
+            latestAt[key] = created;
+            coverByProjectName[projectName] = images.first;
+          }
+        }
+      }
+    } catch (_) {}
 
     final List<Map<String, dynamic>> summaries = [];
     for (final doc in projectsSnap.docs) {
@@ -281,10 +413,8 @@ class AdminHome extends StatelessWidget {
       if (budgetRaw is num) {
         budget = budgetRaw.toDouble();
       } else if (budgetRaw is String) {
-        final cleaned = budgetRaw
-            .replaceAll(',', '')
-            .replaceAll('₱', '')
-            .trim();
+        final cleaned =
+            budgetRaw.replaceAll(',', '').replaceAll('₱', '').trim();
         budget = double.tryParse(cleaned) ?? 0.0;
       } else {
         budget = 0.0;
@@ -292,12 +422,16 @@ class AdminHome extends StatelessWidget {
       final expenses = expensesByProject[projectId] ?? 0.0;
 
       summaries.add({
+        'id': projectId,
         'name': name,
         'status': status,
         'progress': progress,
         'budget': budget,
         'expenses': expenses,
         'siteManagerName': siteManagerName,
+        'coverImage': coverByProjectId[projectId] ??
+            coverByProjectName[name] ??
+            '',
       });
     }
 
@@ -401,7 +535,7 @@ class AdminHome extends StatelessWidget {
               dataRowMaxHeight: 128,
               columns: const [
                 DataColumn(label: Text('Project')),
-                DataColumn(label: Text('Site manager')),
+                DataColumn(label: Text('Resident Engineer')),
                 DataColumn(label: Text('Status')),
                 DataColumn(label: Text('Progress')),
                 DataColumn(label: Text('Budget & expense %')),
@@ -421,40 +555,55 @@ class AdminHome extends StatelessWidget {
     BuildContext context,
     List<Map<String, dynamic>> summaries,
   ) {
-    showModalBottomSheet<void>(
+    final size = MediaQuery.of(context).size;
+    final width = math.min(size.width * 0.88, 1100.0);
+    final height = math.min(size.height * 0.88, 860.0);
+
+    showGeneralDialog<void>(
       context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.8,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
+      barrierDismissible: true,
+      barrierLabel: 'Close all projects activity',
+      barrierColor: Colors.black.withValues(alpha: 0.45),
+      pageBuilder: (dialogContext, _, __) {
+        return Center(
+          child: Material(
+            color: Colors.white,
+            elevation: 18,
+            shadowColor: Colors.black38,
+            borderRadius: BorderRadius.circular(24),
+            clipBehavior: Clip.antiAlias,
+            child: SizedBox(
+              width: width,
+              height: height,
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Text(
-                        'All projects activity',
-                        style: Theme.of(sheetContext).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.of(sheetContext).pop(),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: _buildProjectActivityDataTable(
-                        sheetContext,
-                        summaries,
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 8, 8),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.apartment_rounded,
+                            color: AppTheme.deepBlue),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'All projects activity',
+                            style: Theme.of(dialogContext)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () =>
+                              Navigator.of(dialogContext).pop(),
+                        ),
+                      ],
                     ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _HorizontalProjectStrip(summaries: summaries),
                   ),
                 ],
               ),
@@ -484,9 +633,8 @@ class AdminHome extends StatelessWidget {
       healthLabel = 'No data';
       healthColor = AppTheme.mediumGray;
     } else {
-      final utilization = budget <= 0
-          ? 0.0
-          : (expenses / budget).clamp(0.0, 2.0);
+      final utilization =
+          budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 2.0);
       if (utilization < 0.7) {
         healthLabel = 'Healthy';
         healthColor = AppTheme.primaryBlue;
@@ -517,16 +665,13 @@ class AdminHome extends StatelessWidget {
       formattedStatus = status[0].toUpperCase() + status.substring(1);
     }
 
-    final double utilization = budget <= 0
-        ? 0.0
-        : (expenses / budget).clamp(0.0, 2.0);
-    final double utilizationPercent = budget <= 0
-        ? 0.0
-        : (utilization * 100).clamp(0.0, 999.0);
+    final double utilization =
+        budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 2.0);
+    final double utilizationPercent =
+        budget <= 0 ? 0.0 : (utilization * 100).clamp(0.0, 999.0);
 
-    final siteManagerLabel = siteManagerName.isEmpty
-        ? 'Unassigned'
-        : siteManagerName;
+    final siteManagerLabel =
+        siteManagerName.isEmpty ? 'Unassigned' : siteManagerName;
 
     return DataRow(
       cells: [
@@ -536,18 +681,9 @@ class AdminHome extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.business,
-                    size: 16,
-                    color: Colors.black.withValues(alpha: 0.75),
-                  ),
+                _ProjectCoverThumb(
+                  source: (item['coverImage'] ?? '').toString(),
+                  size: 48,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -559,8 +695,8 @@ class AdminHome extends StatelessWidget {
                         name,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                              fontWeight: FontWeight.w600,
+                            ),
                       ),
                     ],
                   ),
@@ -589,9 +725,9 @@ class AdminHome extends StatelessWidget {
             child: Text(
               formattedStatus,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: statusColor,
-                fontWeight: FontWeight.w600,
-              ),
+                    color: statusColor,
+                    fontWeight: FontWeight.w600,
+                  ),
             ),
           ),
         ),
@@ -633,9 +769,8 @@ class AdminHome extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 LinearProgressIndicator(
-                  value: budget <= 0
-                      ? 0.0
-                      : (expenses / budget).clamp(0.0, 1.0),
+                  value:
+                      budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 1.0),
                   backgroundColor: Colors.black.withValues(alpha: 0.06),
                   color: const Color(0xFF2DD4BF),
                 ),
@@ -658,9 +793,9 @@ class AdminHome extends StatelessWidget {
           Text(
             healthLabel,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: healthColor,
-              fontWeight: FontWeight.w600,
-            ),
+                  color: healthColor,
+                  fontWeight: FontWeight.w600,
+                ),
           ),
         ),
       ],
@@ -710,7 +845,8 @@ class _KpiCard extends StatelessWidget {
               const Spacer(),
               if (badgeText != null && badgeText!.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: (badgeColor ?? accent).withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(999),
@@ -770,6 +906,265 @@ class _KpiCard extends StatelessWidget {
           child: card,
         ),
       ),
+    );
+  }
+}
+
+class _HorizontalProjectStrip extends StatefulWidget {
+  const _HorizontalProjectStrip({required this.summaries});
+
+  final List<Map<String, dynamic>> summaries;
+
+  @override
+  State<_HorizontalProjectStrip> createState() =>
+      _HorizontalProjectStripState();
+}
+
+class _HorizontalProjectStripState extends State<_HorizontalProjectStrip> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || !_scroll.hasClients) return;
+    final next = _scroll.offset + event.scrollDelta.dy + event.scrollDelta.dx;
+    _scroll.jumpTo(
+      next.clamp(0.0, _scroll.position.maxScrollExtent),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tileSize = math.min(
+          constraints.maxHeight - 36,
+          math.max(420.0, constraints.maxWidth * 0.42),
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (widget.summaries.length > 1)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Text(
+                  'Scroll left or right to see every site',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              ),
+            Expanded(
+              child: Listener(
+                onPointerSignal: _onPointerSignal,
+                child: Scrollbar(
+                  controller: _scroll,
+                  thumbVisibility: true,
+                  child: ListView.separated(
+                    controller: _scroll,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: widget.summaries.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 12),
+                    itemBuilder: (context, index) {
+                      return _ProjectActivityTile(
+                        item: widget.summaries[index],
+                        size: tileSize,
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _ProjectCoverThumb extends StatelessWidget {
+  const _ProjectCoverThumb({required this.source, this.size = 48});
+
+  final String source;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 3,
+      shadowColor: Colors.black26,
+      borderRadius: BorderRadius.circular(6),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: source.trim().isEmpty
+            ? ColoredBox(
+                color: AppTheme.lightGray,
+                child: Icon(
+                  Icons.apartment_outlined,
+                  size: size * 0.42,
+                  color: AppTheme.mediumGray,
+                ),
+              )
+            : StorageNetworkImage(source: source, fit: BoxFit.cover),
+      ),
+    );
+  }
+}
+
+class _ProjectActivityTile extends StatelessWidget {
+  const _ProjectActivityTile({
+    required this.item,
+    this.size = 260,
+  });
+
+  final Map<String, dynamic> item;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = (item['name'] ?? 'Untitled').toString();
+    final siteManagerName = (item['siteManagerName'] ?? '').toString();
+    final status = (item['status'] ?? '').toString();
+    final progress = (item['progress'] is num)
+        ? (item['progress'] as num).toDouble()
+        : 0.0;
+    final budget = (item['budget'] is num)
+        ? (item['budget'] as num).toDouble()
+        : 0.0;
+    final expenses = (item['expenses'] is num)
+        ? (item['expenses'] as num).toDouble()
+        : 0.0;
+    final cover = (item['coverImage'] ?? '').toString();
+    final formattedStatus = status.isEmpty
+        ? '—'
+        : status[0].toUpperCase() + status.substring(1);
+
+    return Material(
+      elevation: 5,
+      shadowColor: Colors.black26,
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(6),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: cover.isEmpty
+                  ? ColoredBox(
+                      color: AppTheme.lightGray,
+                      child: Icon(
+                        Icons.apartment_outlined,
+                        size: 42,
+                        color: AppTheme.mediumGray,
+                      ),
+                    )
+                  : StorageNetworkImage(source: cover, fit: BoxFit.cover),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    siteManagerName.isEmpty ? 'Unassigned' : siteManagerName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppTheme.softGreen.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          formattedStatus,
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: AppTheme.softGreen,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${progress.toStringAsFixed(0)}%',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    budget <= 0
+                        ? 'Budget: —'
+                        : 'Budget: ${budget.toStringAsFixed(0)}  ·  Expense: ${expenses.toStringAsFixed(0)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WeatherConditionDot extends StatelessWidget {
+  const _WeatherConditionDot({required this.color, required this.label});
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+        ),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppTheme.mediumGray,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+      ],
     );
   }
 }

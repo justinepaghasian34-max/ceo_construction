@@ -37,7 +37,8 @@ class SiteManagerDashboardBody extends StatelessWidget {
     return RefreshIndicator(
       onRefresh: onRefresh,
       child: ListView(
-        padding: EdgeInsets.only(bottom: 88 + MediaQuery.of(context).padding.bottom),
+        padding:
+            EdgeInsets.only(bottom: 88 + MediaQuery.of(context).padding.bottom),
         children: [
           _DashboardHeader(user: user, syncStats: syncStats),
           if (projectId != null) ...[
@@ -51,7 +52,8 @@ class SiteManagerDashboardBody extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: _AiInsightsRow(onTap: () => context.go(RouteNames.govTrackAi)),
+              child: _AiInsightsRow(
+                  onTap: () => context.go(RouteNames.govTrackAi)),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -98,10 +100,19 @@ class _DashboardHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final firstName = (user?.firstName ?? '').trim();
-    final greetingName = firstName.isEmpty ? 'Site Manager' : firstName;
+    final greetingName = firstName.isEmpty ? 'Resident Engineer' : firstName;
     final syncLabel = syncStats.isSyncing
         ? 'Syncing…'
-        : (syncStats.totalPending > 0 ? '${syncStats.totalPending} pending' : 'Synced • Just now');
+        : (syncStats.totalPending > 0
+            ? '${syncStats.totalPending} pending'
+            : 'Synced');
+
+    final hour = DateTime.now().hour;
+    final greeting = hour < 12
+        ? 'Good morning'
+        : hour < 17
+            ? 'Good afternoon'
+            : 'Good evening';
 
     return Container(
       width: double.infinity,
@@ -109,7 +120,7 @@ class _DashboardHeader extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF1E3A8A), Color(0xFF2563EB), Color(0xFF3B82F6)],
+          colors: AppTheme.residentHeaderGradient,
         ),
         borderRadius: BorderRadius.only(
           bottomLeft: Radius.circular(24),
@@ -127,32 +138,40 @@ class _DashboardHeader extends StatelessWidget {
                 Builder(
                   builder: (ctx) => IconButton(
                     onPressed: () => Scaffold.of(ctx).openDrawer(),
+                    visualDensity: VisualDensity.compact,
                     icon: const Icon(Icons.menu, color: Colors.white),
                   ),
                 ),
                 Expanded(
                   child: Text(
-                    'Good Morning, $greetingName 👋',
+                    firstName.isEmpty ? greeting : '$greeting, $firstName',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           color: Colors.white,
-                          fontWeight: FontWeight.w900,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 18,
                         ),
                   ),
                 ),
                 IconButton(
+                  visualDensity: VisualDensity.compact,
                   onPressed: () => context.push(RouteNames.notifications),
-                  icon: const Icon(Icons.notifications_none, color: Colors.white),
+                  icon:
+                      const Icon(Icons.notifications_none, color: Colors.white),
                 ),
                 IconButton(
+                  visualDensity: VisualDensity.compact,
                   onPressed: () => context.push(RouteNames.profile),
                   icon: CircleAvatar(
                     radius: 16,
                     backgroundColor: Colors.white.withValues(alpha: 0.2),
                     child: Text(
-                      greetingName.isNotEmpty ? greetingName[0].toUpperCase() : 'S',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+                      greetingName.isNotEmpty
+                          ? greetingName[0].toUpperCase()
+                          : 'S',
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w900),
                     ),
                   ),
                 ),
@@ -163,14 +182,16 @@ class _DashboardHeader extends StatelessWidget {
               children: [
                 Expanded(
                   child: _ProjectNameChip(
-                    projectId: (user != null && user!.assignedProjects.isNotEmpty)
-                        ? user!.assignedProjects.first
-                        : null,
+                    projectId:
+                        (user != null && user!.assignedProjects.isNotEmpty)
+                            ? user!.assignedProjects.first
+                            : null,
                   ),
                 ),
                 const SizedBox(width: 10),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(999),
@@ -179,7 +200,9 @@ class _DashboardHeader extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        syncStats.totalPending > 0 ? Icons.cloud_sync : Icons.check_circle,
+                        syncStats.totalPending > 0
+                            ? Icons.cloud_sync
+                            : Icons.check_circle,
                         size: 14,
                         color: Colors.white,
                       ),
@@ -218,7 +241,8 @@ class _ProjectNameChip extends StatelessWidget {
         var label = projectId!;
         if (snap.hasData && snap.data!.exists) {
           final data = snap.data!.data() as Map<String, dynamic>?;
-          final name = (data?['name'] ?? data?['projectName'] ?? '').toString().trim();
+          final name =
+              (data?['name'] ?? data?['projectName'] ?? '').toString().trim();
           if (name.isNotEmpty) label = name;
         }
         return Container(
@@ -230,7 +254,8 @@ class _ProjectNameChip extends StatelessWidget {
           ),
           child: Row(
             children: [
-              const Icon(Icons.apartment_outlined, color: Colors.white, size: 18),
+              const Icon(Icons.apartment_outlined,
+                  color: Colors.white, size: 18),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -243,7 +268,8 @@ class _ProjectNameChip extends StatelessWidget {
                       ),
                 ),
               ),
-              const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white),
+              const Icon(Icons.keyboard_arrow_down_rounded,
+                  color: Colors.white),
             ],
           ),
         );
@@ -262,13 +288,18 @@ class _HeroProjectCard extends StatelessWidget {
       future: FirebaseService.instance.projectsCollection.doc(projectId).get(),
       builder: (context, snap) {
         final data = (snap.data?.data() as Map<String, dynamic>?) ?? {};
-        final name = (data['name'] ?? data['projectName'] ?? 'Active Project').toString();
-        final subtitle = (data['description'] ?? 'Commercial Building Project').toString();
+        final name = (data['name'] ?? data['projectName'] ?? 'Active Project')
+            .toString();
+        final subtitle =
+            (data['description'] ?? 'Commercial Building Project').toString();
         final progressRaw = data['progressPercentage'] ?? data['progress'];
         final progress = progressRaw is num
             ? progressRaw.toDouble().clamp(0, 100)
-            : (double.tryParse(progressRaw?.toString().replaceAll('%', '').trim() ?? '') ?? 0);
-        final target = _formatTargetDate(data['targetCompletion'] ?? data['endDate']);
+            : (double.tryParse(
+                    progressRaw?.toString().replaceAll('%', '').trim() ?? '') ??
+                0);
+        final target =
+            _formatTargetDate(data['targetCompletion'] ?? data['endDate']);
 
         return ClipRRect(
           borderRadius: BorderRadius.circular(20),
@@ -280,7 +311,8 @@ class _HeroProjectCard extends StatelessWidget {
                 child: Image.asset(
                   'assets/images/unnamed.jpg',
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(color: AppTheme.deepBlue),
+                  errorBuilder: (_, __, ___) =>
+                      Container(color: AppTheme.residentBlue),
                 ),
               ),
               Positioned.fill(
@@ -305,14 +337,18 @@ class _HeroProjectCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF2563EB),
+                        color: AppTheme.residentBlue,
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: const Text(
                         'ACTIVE PROJECT',
-                        style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900),
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -329,7 +365,10 @@ class _HeroProjectCard extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.white70),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: Colors.white70),
                     ),
                   ],
                 ),
@@ -367,9 +406,9 @@ class _HeroProjectCard extends StatelessWidget {
                 bottom: 14,
                 child: Row(
                   children: [
-                    _HeroStatPill(icon: Icons.people_outline, label: '34 Workers On Site'),
-                    const SizedBox(width: 8),
-                    const _HeroStatPill(icon: Icons.wb_sunny_outlined, label: 'Sunny 30°C'),
+                    _HeroStatPill(
+                        icon: Icons.people_outline,
+                        label: 'Workers On Site'),
                   ],
                 ),
               ),
@@ -417,7 +456,10 @@ class _HeroStatPill extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700),
               ),
             ),
           ],
@@ -453,6 +495,21 @@ class _OverviewGrid extends StatelessWidget {
     final attendance = userId == null
         ? hive.totalAttendanceRecords
         : hive.getAttendanceByRecorder(userId).length;
+
+    // Live material low-stock count from Hive
+    final allMaterials = hive.getAllMaterialInventory();
+    final lowStockCount = allMaterials.where((m) {
+      final qty = m['quantity'] ?? m['currentStock'] ?? m['stock'];
+      final min = m['minimumStock'] ?? m['minStock'] ?? m['threshold'] ?? 10;
+      final q = qty is num ? qty.toDouble() : double.tryParse(qty?.toString() ?? '') ?? 0;
+      final t = min is num ? min.toDouble() : double.tryParse(min?.toString() ?? '') ?? 10;
+      return q <= t;
+    }).length;
+
+    // Open issues count from Hive requests
+    final pendingRequests = hive.getAllMaterialRequests()
+        .where((r) => (r['status'] ?? '').toString().toLowerCase() == 'pending')
+        .length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -496,10 +553,10 @@ class _OverviewGrid extends StatelessWidget {
               child: _OverviewTile(
                 color: const Color(0xFFF97316),
                 icon: Icons.inventory_2_outlined,
-                title: 'Materials Status',
-                value: '3',
-                subtitle: 'Low Stock Items',
-                progress: 0.25,
+                title: 'Materials',
+                value: lowStockCount > 0 ? '$lowStockCount' : 'OK',
+                subtitle: lowStockCount > 0 ? 'Low Stock' : 'All stocked',
+                progress: lowStockCount > 0 ? 0.25 : 0.9,
                 onTap: () => context.push(RouteNames.siteManagerMaterials),
               ),
             ),
@@ -507,11 +564,11 @@ class _OverviewGrid extends StatelessWidget {
             Expanded(
               child: _OverviewTile(
                 color: const Color(0xFFEF4444),
-                icon: Icons.warning_amber_rounded,
-                title: 'Site Risks',
-                value: '2',
-                subtitle: 'Active Warnings',
-                progress: 0.2,
+                icon: Icons.pending_actions_outlined,
+                title: 'Requests',
+                value: '$pendingRequests',
+                subtitle: 'Pending',
+                progress: pendingRequests > 0 ? 0.4 : 0.05,
                 onTap: () => context.go(RouteNames.govTrackAi),
               ),
             ),
@@ -554,37 +611,43 @@ class _OverviewTile extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 22),
-          const SizedBox(height: 8),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: AppTheme.mediumGray,
-                  fontWeight: FontWeight.w800,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: color, size: 22),
+                const SizedBox(height: 8),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: AppTheme.mediumGray,
+                        fontWeight: FontWeight.w800,
+                      ),
                 ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
-          ),
-          Text(
-            subtitle,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: LinearProgressIndicator(
-              value: progress.clamp(0, 1),
-              minHeight: 5,
-              backgroundColor: color.withValues(alpha: 0.15),
-              color: color,
-            ),
-          ),
-        ],
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w900),
+                ),
+                Text(
+                  subtitle,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: AppTheme.mediumGray),
+                ),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: progress.clamp(0, 1),
+                    minHeight: 5,
+                    backgroundColor: color.withValues(alpha: 0.15),
+                    color: color,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -599,7 +662,7 @@ class _AskGovtrackBar extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Material(
-        color: AppTheme.deepBlue,
+        color: AppTheme.residentBlue,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: () => context.go(RouteNames.govTrackAi),
@@ -612,7 +675,7 @@ class _AskGovtrackBar extends StatelessWidget {
                 Icon(Icons.auto_awesome, color: Colors.white, size: 22),
                 SizedBox(width: 10),
                 Text(
-                  'Ask GovTrack AI',
+                  'Ask BuildIQ',
                   style: TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w800,
@@ -634,24 +697,33 @@ class _AiInsightsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const items = <_InsightItem>[
+    // Pull live data from Hive for real insight cards
+    final hive = HiveService.instance;
+    final pendingSync = hive.pendingSyncItemsCount;
+    final deliveries = hive.getAllDeliveries().length;
+
+    final items = <_InsightItem>[
       _InsightItem(
-        Icons.warning_amber_rounded,
-        Color(0xFFFBBF24),
-        'Concrete delivery delayed by 2 days',
-        'Ask GovTrack',
+        Icons.auto_awesome,
+        const Color(0xFF8B5CF6),
+        'Ask BuildIQ about your project progress, materials, and safety.',
+        'Open',
       ),
       _InsightItem(
-        Icons.trending_up,
-        Color(0xFF22C55E),
-        'Worker attendance improved by 12%',
-        'Ask GovTrack',
+        Icons.sync,
+        pendingSync > 0 ? const Color(0xFFFBBF24) : const Color(0xFF22C55E),
+        pendingSync > 0
+            ? '$pendingSync item${pendingSync == 1 ? '' : 's'} pending sync'
+            : 'All data synced to server.',
+        'Sync now',
       ),
       _InsightItem(
-        Icons.cloud_outlined,
-        Color(0xFF3B82F6),
-        'Rain forecast may affect outdoor work',
-        'Ask GovTrack',
+        Icons.local_shipping_outlined,
+        const Color(0xFF3B82F6),
+        deliveries > 0
+            ? '$deliveries material deliver${deliveries == 1 ? 'y' : 'ies'} on record.'
+            : 'No deliveries recorded yet.',
+        'View',
       ),
     ];
 
@@ -664,13 +736,16 @@ class _AiInsightsRow extends StatelessWidget {
             const SizedBox(width: 6),
             Expanded(
               child: Text(
-                'GovTrack AI Insights',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                'Quick Insights',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(fontWeight: FontWeight.w900),
               ),
             ),
             TextButton(
               onPressed: onTap,
-              child: const Text('Open GovTrack'),
+              child: const Text('Open BuildIQ'),
             ),
           ],
         ),
@@ -681,7 +756,8 @@ class _AiInsightsRow extends StatelessWidget {
             scrollDirection: Axis.horizontal,
             itemCount: items.length,
             separatorBuilder: (_, __) => const SizedBox(width: 10),
-            itemBuilder: (context, i) => _InsightCard(item: items[i], onTap: onTap),
+            itemBuilder: (context, i) =>
+                _InsightCard(item: items[i], onTap: onTap),
           ),
         ),
       ],
@@ -738,7 +814,7 @@ class _InsightCard extends StatelessWidget {
                 Text(
                   item.action,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppTheme.deepBlue,
+                        color: AppTheme.residentBlue,
                         fontWeight: FontWeight.w900,
                       ),
                 ),
@@ -816,7 +892,8 @@ class _TodayActivityCard extends StatelessWidget {
   Future<List<_ActivityItem>> _load() async {
     final items = <_ActivityItem>[];
     try {
-      final projectRef = FirebaseService.instance.projectsCollection.doc(projectId);
+      final projectRef =
+          FirebaseService.instance.projectsCollection.doc(projectId);
       final attendance = await projectRef
           .collection(AppConstants.attendanceSubCollection)
           .orderBy('createdAt', descending: true)
@@ -889,14 +966,18 @@ class _TodayActivityCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       "Today's Activity",
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w900),
                     ),
                   ),
                   TextButton(
                     onPressed: () => context.push(RouteNames.attendance),
                     style: TextButton.styleFrom(
-                      foregroundColor: AppTheme.deepBlue,
-                      textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                      foregroundColor: AppTheme.residentBlue,
+                      textStyle: const TextStyle(
+                          fontWeight: FontWeight.w800, fontSize: 12),
                     ),
                     child: const Text('See All'),
                   ),
@@ -1023,10 +1104,12 @@ class _WeatherAndQuickActions extends StatelessWidget {
       builder: (context, c) {
         final stacked = c.maxWidth < 700;
         final weather = FutureBuilder<DocumentSnapshot>(
-          future: FirebaseService.instance.projectsCollection.doc(projectId).get(),
+          future:
+              FirebaseService.instance.projectsCollection.doc(projectId).get(),
           builder: (context, snap) {
             final raw = snap.data?.data();
-            final loc = raw is Map ? (raw['location'] ?? '').toString().trim() : '';
+            final loc =
+                raw is Map ? (raw['location'] ?? '').toString().trim() : '';
             return SiteWeatherConditionsCard(
               projectLocation: loc.isEmpty ? null : loc,
               margin: EdgeInsets.zero,
@@ -1040,7 +1123,11 @@ class _WeatherAndQuickActions extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Quick Actions', style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
+              Text('Quick Actions',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w900)),
               const SizedBox(height: 10),
               Row(
                 children: [
@@ -1048,7 +1135,8 @@ class _WeatherAndQuickActions extends StatelessWidget {
                     child: _QuickActionButton(
                       icon: Icons.photo_camera_outlined,
                       label: 'Upload Site Photo',
-                      onTap: () => onProjectAction(hasProject, () => context.push(RouteNames.projectProgressUpdate)),
+                      onTap: () => onProjectAction(hasProject,
+                          () => context.push(RouteNames.projectProgressUpdate)),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -1056,7 +1144,8 @@ class _WeatherAndQuickActions extends StatelessWidget {
                     child: _QuickActionButton(
                       icon: Icons.people_outline,
                       label: 'Add Attendance',
-                      onTap: () => onProjectAction(hasProject, () => context.push(RouteNames.attendance)),
+                      onTap: () => onProjectAction(hasProject,
+                          () => context.push(RouteNames.attendance)),
                     ),
                   ),
                 ],
@@ -1068,7 +1157,8 @@ class _WeatherAndQuickActions extends StatelessWidget {
                     child: _QuickActionButton(
                       icon: Icons.inventory_2_outlined,
                       label: 'Request Materials',
-                      onTap: () => onProjectAction(hasProject, () => context.push(RouteNames.materialRequest)),
+                      onTap: () => onProjectAction(hasProject,
+                          () => context.push(RouteNames.materialRequest)),
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -1086,7 +1176,8 @@ class _WeatherAndQuickActions extends StatelessWidget {
         );
 
         if (stacked) {
-          return Column(children: [weather, const SizedBox(height: 12), actions]);
+          return Column(
+              children: [weather, const SizedBox(height: 12), actions]);
         }
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1102,7 +1193,8 @@ class _WeatherAndQuickActions extends StatelessWidget {
 }
 
 class _QuickActionButton extends StatelessWidget {
-  const _QuickActionButton({required this.icon, required this.label, required this.onTap});
+  const _QuickActionButton(
+      {required this.icon, required this.label, required this.onTap});
   final IconData icon;
   final String label;
   final VoidCallback onTap;
@@ -1121,12 +1213,15 @@ class _QuickActionButton extends StatelessWidget {
         ),
         child: Column(
           children: [
-            Icon(icon, color: AppTheme.deepBlue),
+            Icon(icon, color: AppTheme.residentBlue),
             const SizedBox(height: 6),
             Text(
               label,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w800),
+              style: Theme.of(context)
+                  .textTheme
+                  .labelSmall
+                  ?.copyWith(fontWeight: FontWeight.w800),
             ),
           ],
         ),
@@ -1163,7 +1258,10 @@ class _LatestPhotosRow extends StatelessWidget {
                   child: Center(
                     child: Text(
                       'No site photos yet',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: AppTheme.mediumGray),
                     ),
                   ),
                 );
@@ -1174,7 +1272,8 @@ class _LatestPhotosRow extends StatelessWidget {
                 itemCount: docs.length.clamp(0, 6),
                 separatorBuilder: (_, __) => const SizedBox(width: 8),
                 itemBuilder: (context, i) {
-                  final data = (docs[i].data() as Map?)?.cast<String, dynamic>() ?? {};
+                  final data =
+                      (docs[i].data() as Map?)?.cast<String, dynamic>() ?? {};
                   final url = (data['imageUrl'] ?? '').toString();
                   return ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -1216,7 +1315,10 @@ class _SectionTitle extends StatelessWidget {
         Expanded(
           child: Text(
             title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w900),
           ),
         ),
         TextButton(onPressed: onSeeAll, child: const Text('See All')),

@@ -28,10 +28,12 @@ class AdminMaterialMonitoring extends StatefulWidget {
   final AdminSidebarMode sidebarMode;
 
   @override
-  State<AdminMaterialMonitoring> createState() => _AdminMaterialMonitoringState();
+  State<AdminMaterialMonitoring> createState() =>
+      _AdminMaterialMonitoringState();
 }
 
-class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with SingleTickerProviderStateMixin {
+class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
+    with SingleTickerProviderStateMixin {
   static const List<String> _fallbackMaterials = [
     'Cement',
     'Sand',
@@ -142,12 +144,16 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
       final existingAllocNames = <String>{
         for (final d in allocSnap.docs)
-          norm(((d.data() as Map?)?.cast<String, dynamic>() ?? const {})['materialName']?.toString() ?? ''),
+          norm(((d.data() as Map?)?.cast<String, dynamic>() ??
+                      const {})['materialName']
+                  ?.toString() ??
+              ''),
       }..remove('');
 
       final inventoryItems = <Map<String, dynamic>>[];
       for (final d in invSnap.docs) {
-        final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        final data =
+            (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
         final name = (data['materialName'] ?? '').toString();
         final unit = (data['unit'] ?? '').toString();
         final unitPrice = data['unitPrice'] ?? data['price'];
@@ -165,7 +171,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
       if (inventoryItems.isEmpty) {
         rootMessenger.showSnackBar(
           const SnackBar(
-            content: Text('All inventory materials are already assigned/budgeted for this project.'),
+            content: Text(
+                'All inventory materials are already assigned/budgeted for this project.'),
             backgroundColor: AppTheme.softGreen,
           ),
         );
@@ -181,7 +188,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
               final controllers = <String, TextEditingController>{
                 for (final it in inventoryItems)
-                  norm((it['materialName'] ?? '').toString()): TextEditingController(),
+                  norm((it['materialName'] ?? '').toString()):
+                      TextEditingController(),
               };
 
               Future<void> save() async {
@@ -233,7 +241,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     setStateDialog(() => isSaving = false);
                     rootMessenger.showSnackBar(
                       const SnackBar(
-                        content: Text('Enter a valid budget quantity for at least one material.'),
+                        content: Text(
+                            'Enter a valid budget quantity for at least one material.'),
                         backgroundColor: AppTheme.errorRed,
                       ),
                     );
@@ -245,7 +254,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     navigator.pop();
                     rootMessenger.showSnackBar(
                       SnackBar(
-                        content: Text('Added $added materials to site budget (assigned materials).'),
+                        content: Text(
+                            'Added $added materials to site budget (assigned materials).'),
                         backgroundColor: AppTheme.softGreen,
                       ),
                     );
@@ -266,7 +276,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     navigator.pop();
                     rootMessenger.showSnackBar(
                       SnackBar(
-                        content: Text('Saved offline ($added). Will sync to Firestore when online.'),
+                        content: Text(
+                            'Saved offline ($added). Will sync to Firestore when online.'),
                         backgroundColor: AppTheme.warningOrange,
                       ),
                     );
@@ -303,7 +314,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         child: ListView.separated(
                           shrinkWrap: true,
                           itemCount: inventoryItems.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 10),
                           itemBuilder: (context, i) {
                             final it = inventoryItems[i];
                             final name = (it['materialName'] ?? '').toString();
@@ -317,7 +329,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                     name,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontWeight: FontWeight.w800),
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w800),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
@@ -338,7 +351,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                   flex: 3,
                                   child: TextField(
                                     controller: controllers[key],
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(
+                                            decimal: true),
                                     enabled: !isSaving,
                                     decoration: const InputDecoration(
                                       labelText: 'Budget qty',
@@ -355,7 +370,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 ),
                 actions: [
                   TextButton(
-                    onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                    onPressed: isSaving
+                        ? null
+                        : () => Navigator.of(dialogContext).pop(),
                     child: const Text('Cancel'),
                   ),
                   FilledButton(
@@ -364,7 +381,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
                           )
                         : const Text('Save'),
                   ),
@@ -427,7 +445,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 if (!mounted) return;
                 rootMessenger.showSnackBar(
                   const SnackBar(
-                    content: Text('Please select where to save: Inventory and/or Site budget.'),
+                    content: Text(
+                        'Please select where to save: Inventory and/or Site budget.'),
                     backgroundColor: AppTheme.errorRed,
                   ),
                 );
@@ -451,7 +470,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 if (!mounted) return;
                 rootMessenger.showSnackBar(
                   const SnackBar(
-                    content: Text('Please enter material name, unit, and a valid stock.'),
+                    content: Text(
+                        'Please enter material name, unit, and a valid stock.'),
                     backgroundColor: AppTheme.errorRed,
                   ),
                 );
@@ -481,7 +501,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     'materialName': name,
                     'unit': unit,
                     'stock': stock,
-                    if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                    if (unitPrice != null && unitPrice >= 0)
+                      'unitPrice': unitPrice,
                     'projectId': projectId,
                     'projectName': _selectedProjectName,
                     'createdAt': FieldValue.serverTimestamp(),
@@ -496,7 +517,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         'createdAt': nowIso,
                         'updatedAt': nowIso,
                       };
-                      await HiveService.instance.saveMaterialInventory(docRef.id, queuedPayload);
+                      await HiveService.instance
+                          .saveMaterialInventory(docRef.id, queuedPayload);
                       await SyncService.instance.addToSyncQueue(
                         'material_inventory_upsert',
                         <String, dynamic>{
@@ -523,7 +545,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     'budgetQuantity': budget,
                     'requiredQuantity': budget,
                     'usedQuantity': 0,
-                    if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                    if (unitPrice != null && unitPrice >= 0)
+                      'unitPrice': unitPrice,
                     'projectId': projectId,
                     'projectName': _selectedProjectName,
                     'createdAt': FieldValue.serverTimestamp(),
@@ -589,7 +612,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       value: saveToInventory,
                       onChanged: isSaving
                           ? null
-                          : (v) => setStateDialog(() => saveToInventory = v ?? false),
+                          : (v) => setStateDialog(
+                              () => saveToInventory = v ?? false),
                       title: const Text('Save to inventory'),
                       controlAffinity: ListTileControlAffinity.leading,
                     ),
@@ -598,45 +622,55 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       value: saveToBudget,
                       onChanged: isSaving
                           ? null
-                          : (v) => setStateDialog(() => saveToBudget = v ?? false),
-                      title: const Text('Save to site budget (Assigned materials)'),
+                          : (v) =>
+                              setStateDialog(() => saveToBudget = v ?? false),
+                      title: const Text(
+                          'Save to site budget (Assigned materials)'),
                       controlAffinity: ListTileControlAffinity.leading,
                     ),
                     TextField(
                       controller: nameController,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Material name'),
+                      decoration:
+                          const InputDecoration(labelText: 'Material name'),
                     ),
                     const SizedBox(height: 8),
                     TextField(
                       controller: unitController,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Unit (e.g. bag, pcs)'),
+                      decoration: const InputDecoration(
+                          labelText: 'Unit (e.g. bag, pcs)'),
                     ),
                     const SizedBox(height: 8),
                     if (saveToInventory) ...[
                       TextField(
                         controller: stockController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
                         textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(labelText: 'Initial stock'),
+                        decoration:
+                            const InputDecoration(labelText: 'Initial stock'),
                       ),
                       const SizedBox(height: 8),
                       TextField(
                         controller: unitPriceController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
                         textInputAction: TextInputAction.next,
-                        decoration: const InputDecoration(labelText: 'Unit price (₱)'),
+                        decoration:
+                            const InputDecoration(labelText: 'Unit price (₱)'),
                       ),
                       const SizedBox(height: 12),
                     ],
                     if (saveToBudget) ...[
                       TextField(
                         controller: budgetController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
                         textInputAction: TextInputAction.done,
                         onSubmitted: (_) => save(),
-                        decoration: const InputDecoration(labelText: 'Budget quantity'),
+                        decoration:
+                            const InputDecoration(labelText: 'Budget quantity'),
                       ),
                     ],
                   ],
@@ -644,7 +678,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
               ),
               actions: [
                 TextButton(
-                  onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  onPressed:
+                      isSaving ? null : () => Navigator.of(dialogContext).pop(),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
@@ -670,8 +705,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
   @override
   Widget build(BuildContext context) {
-    final projectStream = FirebaseService.instance.projectsCollection
-        .snapshots();
+    final projectStream =
+        FirebaseService.instance.projectsCollection.snapshots();
 
     return StreamBuilder<QuerySnapshot>(
       stream: projectStream,
@@ -714,7 +749,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
             if (!mounted) return;
             if (_selectedProjectId != null) return;
             final d = projectDocs.first;
-            final data = (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+            final data = (d.data() as Map?)?.cast<String, dynamic>() ??
+                <String, dynamic>{};
             setState(() {
               _selectedProjectId = d.id;
               _selectedProjectName = (data['name'] ?? '').toString();
@@ -725,7 +761,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
         final selectedProjectId = _selectedProjectId;
         final inventoryStream = selectedProjectId == null
             ? Stream<QuerySnapshot>.empty()
-            : FirebaseService.instance.materialInventoryCollection(selectedProjectId)
+            : FirebaseService.instance
+                .materialInventoryCollection(selectedProjectId)
                 .orderBy('materialName')
                 .snapshots();
 
@@ -770,7 +807,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
             }
 
             final inventoryItems = invSnap.data?.docs
-                    .map((d) => ((d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{})..['id'] = d.id)
+                    .map((d) => ((d.data() as Map?)?.cast<String, dynamic>() ??
+                        <String, dynamic>{})
+                      ..['id'] = d.id)
                     .toList() ??
                 <Map<String, dynamic>>[];
 
@@ -784,7 +823,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
               if (priceRaw is num) {
                 price = priceRaw.toDouble();
               } else if (priceRaw is String) {
-                final cleaned = priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
+                final cleaned =
+                    priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
                 price = double.tryParse(cleaned);
               }
               if (price != null) {
@@ -811,7 +851,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
                     showSidebar: widget.showSidebar,
-                sidebarMode: widget.sidebarMode,
+                    sidebarMode: widget.sidebarMode,
                     bottomNavigationBar: widget.showBottomNav
                         ? const AdminBottomNavBar(
                             current: AdminNavItem.materialInventory,
@@ -822,13 +862,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         padding: const EdgeInsets.all(16),
                         child: Text(
                           'Failed to load deliveries: ${deliveriesSnap.error}',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(
-                                color: AppTheme.errorRed,
-                                fontWeight: FontWeight.w700,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: AppTheme.errorRed,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -840,7 +878,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                   return AdminGlassScaffold(
                     title: 'Material & Inventory Monitoring',
                     showSidebar: widget.showSidebar,
-                sidebarMode: widget.sidebarMode,
+                    sidebarMode: widget.sidebarMode,
                     bottomNavigationBar: widget.showBottomNav
                         ? const AdminBottomNavBar(
                             current: AdminNavItem.materialInventory,
@@ -868,7 +906,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       return AdminGlassScaffold(
                         title: 'Material & Inventory Monitoring',
                         showSidebar: widget.showSidebar,
-                sidebarMode: widget.sidebarMode,
+                        sidebarMode: widget.sidebarMode,
                         bottomNavigationBar: widget.showBottomNav
                             ? const AdminBottomNavBar(
                                 current: AdminNavItem.materialInventory,
@@ -897,7 +935,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       return AdminGlassScaffold(
                         title: 'Material & Inventory Monitoring',
                         showSidebar: widget.showSidebar,
-                sidebarMode: widget.sidebarMode,
+                        sidebarMode: widget.sidebarMode,
                         bottomNavigationBar: widget.showBottomNav
                             ? const AdminBottomNavBar(
                                 current: AdminNavItem.materialInventory,
@@ -932,9 +970,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     final List<_MaterialUsageEntry> monthUsageEntries = [];
 
                     for (final usage in combinedDocs) {
-                      final isDelivery =
-                          (usage['type'] ?? '').toString() ==
-                              'material_request_release';
+                      final isDelivery = (usage['type'] ?? '').toString() ==
+                          'material_request_release';
 
                       final name = (usage['materialName'] ??
                               usage['name'] ??
@@ -1001,7 +1038,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       }
                     }
 
-                    final Map<String, List<_MaterialUsageEntry>> usageByProject = {};
+                    final Map<String, List<_MaterialUsageEntry>>
+                        usageByProject = {};
                     for (final e in usageEntries) {
                       usageByProject.putIfAbsent(e.projectId, () => []).add(e);
                     }
@@ -1018,7 +1056,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         siteTotalCost += entry.totalCost ?? 0.0;
                         siteMaterials.add(entry.materialName);
                         if (entry.date != null) {
-                          if (lastUsageDate == null || entry.date!.isAfter(lastUsageDate)) {
+                          if (lastUsageDate == null ||
+                              entry.date!.isAfter(lastUsageDate)) {
                             lastUsageDate = entry.date;
                           }
                         }
@@ -1036,7 +1075,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       );
                     });
 
-                    siteSummaries.sort((a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+                    siteSummaries.sort(
+                        (a, b) => b.totalQuantity.compareTo(a.totalQuantity));
 
                     return AdminGlassScaffold(
                       title: 'Material & Inventory Monitoring',
@@ -1073,7 +1113,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         ),
                       ],
                       showSidebar: widget.showSidebar,
-                sidebarMode: widget.sidebarMode,
+                      sidebarMode: widget.sidebarMode,
                       bottomNavigationBar: widget.showBottomNav
                           ? const AdminBottomNavBar(
                               current: AdminNavItem.materialInventory,
@@ -1086,347 +1126,405 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-              Text(
-                'Select project',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.mediumGray,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const SizedBox(height: 6),
-              Builder(
-                builder: (context) {
-                  final typedProjectDocs = projectDocs
-                      .cast<QueryDocumentSnapshot<Map<String, dynamic>>>();
-
-                  final options = typedProjectDocs
-                      .map((d) {
-                        final data = (d.data() as Map?)?.cast<String, dynamic>() ??
-                            <String, dynamic>{};
-                        return <String, String>{
-                          'id': d.id,
-                          'name': (data['name'] ?? d.id).toString(),
-                        };
-                      })
-                      .toList();
-
-                  options.sort((a, b) =>
-                      (a['name'] ?? '').compareTo((b['name'] ?? '')));
-                  _projectOptions = options;
-
-                  if (typedProjectDocs.isEmpty) {
-                    return const Text(
-                      'No projects found.',
-                      style: TextStyle(color: Colors.black54),
-                    );
-                  }
-
-                  final currentSelected = selectedProjectId;
-                  final isCurrentValid = currentSelected != null &&
-                      typedProjectDocs.any((d) => d.id == currentSelected);
-
-                  final effectiveId =
-                      isCurrentValid ? currentSelected : typedProjectDocs.first.id;
-
-                  if (!isCurrentValid) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!mounted) return;
-                      final first = typedProjectDocs.first;
-                      final data = (first.data() as Map?)?.cast<String, dynamic>() ??
-                          <String, dynamic>{};
-                      setState(() {
-                        _selectedProjectId = first.id;
-                        _selectedProjectName = (data['name'] ?? '').toString();
-                      });
-                    });
-                  }
-
-                  return DropdownButtonFormField<String>(
-                    initialValue: effectiveId,
-                    items: [
-                      for (final d in typedProjectDocs)
-                        () {
-                          final data = (d.data() as Map?)?.cast<String, dynamic>() ??
-                              <String, dynamic>{};
-                          final name = (data['name'] ?? d.id).toString();
-                          return DropdownMenuItem<String>(
-                            value: d.id,
-                            child: Text(name, overflow: TextOverflow.ellipsis),
-                          );
-                        }(),
-                    ],
-                    onChanged: (v) {
-                      if (v == null) return;
-                      final doc = typedProjectDocs.firstWhere(
-                        (e) => e.id == v,
-                        orElse: () => typedProjectDocs.first,
-                      );
-                      final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
-                          <String, dynamic>{};
-                      setState(() {
-                        _selectedProjectId = v;
-                        _selectedProjectName = (data['name'] ?? '').toString();
-                      });
-                    },
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: OutlineInputBorder(),
-                    ),
-                  );
-                },
-              ),
-
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final isNarrow = constraints.maxWidth < 700;
-
-                  Widget buildStatCard({
-                    required IconData icon,
-                    required Color iconColor,
-                    required String label,
-                    required String value,
-                    VoidCallback? onTap,
-                  }) {
-                    final card = AppCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: iconColor.withAlpha(24),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Icon(
-                                  icon,
-                                  color: iconColor,
-                                  size: 20,
-                                ),
+                              Text(
+                                'Select project',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppTheme.mediumGray,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                               ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  label,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                              const SizedBox(height: 6),
+                              Builder(
+                                builder: (context) {
+                                  final typedProjectDocs = projectDocs.cast<
+                                      QueryDocumentSnapshot<
+                                          Map<String, dynamic>>>();
+
+                                  final options = typedProjectDocs.map((d) {
+                                    final data = (d.data() as Map?)
+                                            ?.cast<String, dynamic>() ??
+                                        <String, dynamic>{};
+                                    return <String, String>{
+                                      'id': d.id,
+                                      'name': (data['name'] ?? d.id).toString(),
+                                    };
+                                  }).toList();
+
+                                  options.sort((a, b) => (a['name'] ?? '')
+                                      .compareTo((b['name'] ?? '')));
+                                  _projectOptions = options;
+
+                                  if (typedProjectDocs.isEmpty) {
+                                    return const Text(
+                                      'No projects found.',
+                                      style: TextStyle(color: Colors.black54),
+                                    );
+                                  }
+
+                                  final currentSelected = selectedProjectId;
+                                  final isCurrentValid = currentSelected !=
+                                          null &&
+                                      typedProjectDocs
+                                          .any((d) => d.id == currentSelected);
+
+                                  final effectiveId = isCurrentValid
+                                      ? currentSelected
+                                      : typedProjectDocs.first.id;
+
+                                  if (!isCurrentValid) {
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                      if (!mounted) return;
+                                      final first = typedProjectDocs.first;
+                                      final data = (first.data() as Map?)
+                                              ?.cast<String, dynamic>() ??
+                                          <String, dynamic>{};
+                                      setState(() {
+                                        _selectedProjectId = first.id;
+                                        _selectedProjectName =
+                                            (data['name'] ?? '').toString();
+                                      });
+                                    });
+                                  }
+
+                                  return DropdownButtonFormField<String>(
+                                    initialValue: effectiveId,
+                                    items: [
+                                      for (final d in typedProjectDocs)
+                                        () {
+                                          final data = (d.data() as Map?)
+                                                  ?.cast<String, dynamic>() ??
+                                              <String, dynamic>{};
+                                          final name =
+                                              (data['name'] ?? d.id).toString();
+                                          return DropdownMenuItem<String>(
+                                            value: d.id,
+                                            child: Text(name,
+                                                overflow:
+                                                    TextOverflow.ellipsis),
+                                          );
+                                        }(),
+                                    ],
+                                    onChanged: (v) {
+                                      if (v == null) return;
+                                      final doc = typedProjectDocs.firstWhere(
+                                        (e) => e.id == v,
+                                        orElse: () => typedProjectDocs.first,
+                                      );
+                                      final data = (doc.data() as Map?)
+                                              ?.cast<String, dynamic>() ??
+                                          <String, dynamic>{};
+                                      setState(() {
+                                        _selectedProjectId = v;
+                                        _selectedProjectName =
+                                            (data['name'] ?? '').toString();
+                                      });
+                                    },
+                                    decoration: const InputDecoration(
+                                      isDense: true,
+                                      border: OutlineInputBorder(),
+                                    ),
+                                  );
+                                },
+                              ),
+                              LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final isNarrow = constraints.maxWidth < 700;
+
+                                  Widget buildStatCard({
+                                    required IconData icon,
+                                    required Color iconColor,
+                                    required String label,
+                                    required String value,
+                                    VoidCallback? onTap,
+                                  }) {
+                                    final card = AppCard(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.all(8),
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      iconColor.withAlpha(24),
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                                child: Icon(
+                                                  icon,
+                                                  color: iconColor,
+                                                  size: 20,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  label,
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodySmall
+                                                      ?.copyWith(
+                                                          color: AppTheme
+                                                              .mediumGray),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            value,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .titleMedium
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w700,
+                                                  color: AppTheme.primaryBlue,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+
+                                    if (onTap == null) return card;
+
+                                    return GestureDetector(
+                                      onTap: onTap,
+                                      child: card,
+                                    );
+                                  }
+
+                                  final totalStockCard = buildStatCard(
+                                    icon: Icons.inventory_2_outlined,
+                                    iconColor: AppTheme.deepBlue,
+                                    label: 'Total material in stock',
+                                    value: totalStock.toStringAsFixed(1),
+                                    onTap: inventoryItems.isEmpty
+                                        ? null
+                                        : () => _showFullInventoryTable(
+                                              context,
+                                              inventoryItems,
+                                            ),
+                                  );
+
+                                  final usedThisMonthCard = buildStatCard(
+                                    icon: Icons.stacked_bar_chart,
+                                    iconColor: AppTheme.accentYellow,
+                                    label: 'Material used this month',
+                                    value: monthQuantity.toStringAsFixed(1),
+                                    onTap: monthUsageEntries.isEmpty
+                                        ? null
+                                        : () => _showFullMaterialUsageTable(
+                                              context,
+                                              'This month',
+                                              monthUsageEntries,
+                                            ),
+                                  );
+
+                                  if (isNarrow) {
+                                    return Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        totalStockCard,
+                                        const SizedBox(height: 12),
+                                        usedThisMonthCard,
+                                      ],
+                                    );
+                                  }
+
+                                  return Row(
+                                    children: [
+                                      Expanded(child: totalStockCard),
+                                      const SizedBox(width: 12),
+                                      Expanded(child: usedThisMonthCard),
+                                    ],
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'Distribution per site',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (siteSummaries.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 4),
+                                  child: Text(
+                                    'Top site by material usage: '
+                                    '${siteSummaries.first.siteLabel} '
+                                    '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: AppTheme.mediumGray,
+                                        ),
+                                  ),
+                                ),
+                              if (siteSummaries.isEmpty)
+                                Text(
+                                  'No material distribution recorded yet.',
                                   style: Theme.of(context)
                                       .textTheme
-                                      .bodySmall
-                                      ?.copyWith(color: AppTheme.mediumGray),
-                                ),
+                                      .bodyMedium
+                                      ?.copyWith(
+                                        color: AppTheme.mediumGray,
+                                      ),
+                                )
+                              else
+                                for (final summary in siteSummaries) ...[
+                                  Text(
+                                    'Site: ${summary.siteLabel}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  GestureDetector(
+                                    onTap: () => _showFullSiteDistributionTable(
+                                      context,
+                                      siteSummaries,
+                                    ),
+                                    child: GlassDataTableTheme(
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          return SingleChildScrollView(
+                                            scrollDirection: Axis.horizontal,
+                                            child: ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                  minWidth:
+                                                      constraints.maxWidth),
+                                              child: DataTable(
+                                                columnSpacing: 16,
+                                                columns: const [
+                                                  DataColumn(
+                                                      label: Text('Materials')),
+                                                  DataColumn(
+                                                      label: Text(
+                                                          'Total qty used')),
+                                                  DataColumn(
+                                                      label:
+                                                          Text('Total cost')),
+                                                  DataColumn(
+                                                      label:
+                                                          Text('Last usage')),
+                                                ],
+                                                rows: [
+                                                  _buildSiteDistributionRow(
+                                                      context, summary),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                ],
+                              const SizedBox(height: 16),
+                              Text(
+                                'Material usage details',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                               ),
+                              const SizedBox(height: 8),
+                              if (usageByProject.isEmpty)
+                                Text(
+                                  'No material usage records yet.',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodyMedium
+                                      ?.copyWith(
+                                        color: AppTheme.mediumGray,
+                                      ),
+                                ),
+                              if (usageByProject.isNotEmpty)
+                                const SizedBox(height: 4),
+                              for (final entry in usageByProject.entries) ...[
+                                Text(
+                                  'Site: ${siteLabel(entry.key)}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodyMedium
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                                const SizedBox(height: 4),
+                                GestureDetector(
+                                  onTap: () => _showFullMaterialUsageTable(
+                                    context,
+                                    siteLabel(entry.key),
+                                    entry.value,
+                                  ),
+                                  child: GlassDataTableTheme(
+                                    child: LayoutBuilder(
+                                      builder: (context, constraints) {
+                                        return SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: ConstrainedBox(
+                                            constraints: BoxConstraints(
+                                              minWidth: constraints.maxWidth,
+                                            ),
+                                            child: DataTable(
+                                              columnSpacing: 16,
+                                              columns: const [
+                                                DataColumn(
+                                                    label: Text('Material')),
+                                                DataColumn(label: Text('Qty')),
+                                                DataColumn(label: Text('Unit')),
+                                                DataColumn(
+                                                    label: Text('Unit price')),
+                                                DataColumn(label: Text('Cost')),
+                                                DataColumn(
+                                                    label: Text('Status')),
+                                                DataColumn(
+                                                    label: Text('Report ID')),
+                                                DataColumn(label: Text('Date')),
+                                              ],
+                                              rows: [
+                                                for (final usage in entry.value)
+                                                  _buildMaterialUsageRow(
+                                                      context, usage),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                              ],
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          Text(
-                            value,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.primaryBlue,
-                                ),
-                          ),
-                        ],
-                      ),
-                    );
-
-                    if (onTap == null) return card;
-
-                    return GestureDetector(
-                      onTap: onTap,
-                      child: card,
-                    );
-                  }
-
-                  final totalStockCard = buildStatCard(
-                    icon: Icons.inventory_2_outlined,
-                    iconColor: AppTheme.deepBlue,
-                    label: 'Total material in stock',
-                    value: totalStock.toStringAsFixed(1),
-                    onTap: inventoryItems.isEmpty
-                        ? null
-                        : () => _showFullInventoryTable(
-                              context,
-                              inventoryItems,
-                            ),
-                  );
-
-                  final usedThisMonthCard = buildStatCard(
-                    icon: Icons.stacked_bar_chart,
-                    iconColor: AppTheme.accentYellow,
-                    label: 'Material used this month',
-                    value: monthQuantity.toStringAsFixed(1),
-                    onTap: monthUsageEntries.isEmpty
-                        ? null
-                        : () => _showFullMaterialUsageTable(
-                              context,
-                              'This month',
-                              monthUsageEntries,
-                            ),
-                  );
-
-                  if (isNarrow) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        totalStockCard,
-                        const SizedBox(height: 12),
-                        usedThisMonthCard,
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    children: [
-                      Expanded(child: totalStockCard),
-                      const SizedBox(width: 12),
-                      Expanded(child: usedThisMonthCard),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Distribution per site',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              if (siteSummaries.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(
-                    'Top site by material usage: '
-                    '${siteSummaries.first.siteLabel} '
-                    '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.mediumGray,
                         ),
-                  ),
-                ),
-              if (siteSummaries.isEmpty)
-                Text(
-                  'No material distribution recorded yet.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppTheme.mediumGray,
                       ),
-                )
-              else
-                for (final summary in siteSummaries) ...[
-                  Text(
-                    'Site: ${summary.siteLabel}',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  GestureDetector(
-                    onTap: () => _showFullSiteDistributionTable(
-                      context,
-                      siteSummaries,
-                    ),
-                    child: GlassDataTableTheme(
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: ConstrainedBox(
-                              constraints:
-                                  BoxConstraints(minWidth: constraints.maxWidth),
-                              child: DataTable(
-                                columnSpacing: 16,
-                                columns: const [
-                                  DataColumn(label: Text('Materials')),
-                                  DataColumn(label: Text('Total qty used')),
-                                  DataColumn(label: Text('Total cost')),
-                                  DataColumn(label: Text('Last usage')),
-                                ],
-                                rows: [
-                                  _buildSiteDistributionRow(context, summary),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-              const SizedBox(height: 16),
-              Text(
-                'Material usage details',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const SizedBox(height: 8),
-              if (usageByProject.isEmpty)
-                Text(
-                  'No material usage records yet.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: AppTheme.mediumGray,
-                      ),
-                ),
-              if (usageByProject.isNotEmpty) const SizedBox(height: 4),
-              for (final entry in usageByProject.entries) ...[
-                Text(
-                  'Site: ${siteLabel(entry.key)}',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 4),
-                GestureDetector(
-                  onTap: () => _showFullMaterialUsageTable(
-                    context,
-                    siteLabel(entry.key),
-                    entry.value,
-                  ),
-                  child: GlassDataTableTheme(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              minWidth: constraints.maxWidth,
-                            ),
-                            child: DataTable(
-                              columnSpacing: 16,
-                              columns: const [
-                                DataColumn(label: Text('Material')),
-                                DataColumn(label: Text('Qty')),
-                                DataColumn(label: Text('Unit')),
-                                DataColumn(label: Text('Unit price')),
-                                DataColumn(label: Text('Cost')),
-                                DataColumn(label: Text('Status')),
-                                DataColumn(label: Text('Report ID')),
-                                DataColumn(label: Text('Date')),
-                              ],
-                              rows: [
-                                for (final usage in entry.value)
-                                  _buildMaterialUsageRow(context, usage),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-            ],
-          ),
-        ),
-      ),
                     );
                   },
                 );
@@ -1502,18 +1600,23 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                         ),
                                         child: DataTable(
                                           columnSpacing: 16,
-                                          headingTextStyle: Theme.of(sheetContext)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w600,
-                                                color: AppTheme.mediumGray,
-                                              ),
+                                          headingTextStyle:
+                                              Theme.of(sheetContext)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                    color: AppTheme.mediumGray,
+                                                  ),
                                           columns: const [
-                                            DataColumn(label: Text('Materials')),
-                                            DataColumn(label: Text('Total qty used')),
-                                            DataColumn(label: Text('Total cost')),
-                                            DataColumn(label: Text('Last usage')),
+                                            DataColumn(
+                                                label: Text('Materials')),
+                                            DataColumn(
+                                                label: Text('Total qty used')),
+                                            DataColumn(
+                                                label: Text('Total cost')),
+                                            DataColumn(
+                                                label: Text('Last usage')),
                                           ],
                                           rows: [
                                             _buildSiteDistributionRow(
@@ -1628,17 +1731,18 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                         final unitPrice = unitPriceRaw is num
                                             ? unitPriceRaw.toDouble()
                                             : double.tryParse(
-                                                unitPriceRaw?.toString() ??
-                                                    '');
+                                                unitPriceRaw?.toString() ?? '');
 
                                         return DataRow(
                                           cells: [
                                             DataCell(
                                               SizedBox(
-                                                width: constraints.maxWidth * 0.38,
+                                                width:
+                                                    constraints.maxWidth * 0.38,
                                                 child: Text(
                                                   name.isEmpty ? '-' : name,
-                                                  overflow: TextOverflow.ellipsis,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
                                               ),
                                             ),
@@ -1651,7 +1755,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                             DataCell(
                                               Text(unitPrice == null
                                                   ? '-'
-                                                  : unitPrice.toStringAsFixed(2)),
+                                                  : unitPrice
+                                                      .toStringAsFixed(2)),
                                             ),
                                           ],
                                         );
@@ -1745,7 +1850,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                   ],
                                   rows: [
                                     for (final usage in usages)
-                                      _buildMaterialUsageRow(sheetContext, usage),
+                                      _buildMaterialUsageRow(
+                                          sheetContext, usage),
                                   ],
                                 ),
                               ),
@@ -1795,7 +1901,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 constraints: const BoxConstraints(maxWidth: 820),
                 child: Material(
                   color: Colors.white,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(22)),
                   child: SizedBox(
                     height: MediaQuery.of(sheetContext).size.height * 0.82,
                     child: Column(
@@ -1819,13 +1926,17 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                               Expanded(
                                 child: Text(
                                   'Material requests',
-                                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                                  style: Theme.of(sheetContext)
+                                      .textTheme
+                                      .titleLarge
+                                      ?.copyWith(
                                         fontWeight: FontWeight.w700,
                                       ),
                                 ),
                               ),
                               IconButton(
-                                onPressed: () => Navigator.of(sheetContext).pop(),
+                                onPressed: () =>
+                                    Navigator.of(sheetContext).pop(),
                                 icon: const Icon(Icons.close),
                                 tooltip: 'Close',
                               ),
@@ -1838,7 +1949,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                             decoration: BoxDecoration(
                               color: const Color(0xFFF3F4F6),
                               borderRadius: BorderRadius.circular(14),
-                              border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+                              border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.06)),
                             ),
                             child: TabBar(
                               dividerHeight: 0,
@@ -1856,7 +1968,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                               ),
                               labelColor: AppTheme.deepBlue,
                               unselectedLabelColor: AppTheme.mediumGray,
-                              labelStyle: const TextStyle(fontWeight: FontWeight.w700),
+                              labelStyle:
+                                  const TextStyle(fontWeight: FontWeight.w700),
                               tabs: const [
                                 Tab(text: 'Pending'),
                                 Tab(text: 'Released'),
@@ -1874,7 +1987,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                               ),
                               _buildMaterialRequestList(
                                 releasedStream,
-                                emptyMessage: 'No released material requests yet.',
+                                emptyMessage:
+                                    'No released material requests yet.',
                                 showReleasedLabel: true,
                               ),
                             ],
@@ -1944,15 +2058,12 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
           itemBuilder: (context, index) {
             final doc = docs[index];
             final data = doc.data();
-            final subject =
-                (data['subject'] ?? 'Material request').toString();
+            final subject = (data['subject'] ?? 'Material request').toString();
             final details = (data['details'] ?? '').toString();
-            final projectId =
-                (data['projectId'] ?? 'Unknown site').toString();
+            final projectId = (data['projectId'] ?? 'Unknown site').toString();
             final projectName = (data['projectName'] ?? '').toString();
             final createdBy = (data['createdBy'] ?? '').toString();
-            final createdByName =
-                (data['createdByName'] ?? '').toString();
+            final createdByName = (data['createdByName'] ?? '').toString();
 
             final siteLabel = projectName.isNotEmpty ? projectName : projectId;
 
@@ -1967,7 +2078,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+                  border:
+                      Border.all(color: Colors.black.withValues(alpha: 0.06)),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.05),
@@ -1984,22 +2096,31 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         Expanded(
                           child: Text(
                             subject,
-                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
                                   fontWeight: FontWeight.w700,
                                 ),
                           ),
                         ),
                         if (showReleasedLabel)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
                             decoration: BoxDecoration(
                               color: AppTheme.softGreen.withValues(alpha: 0.14),
                               borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: AppTheme.softGreen.withValues(alpha: 0.35)),
+                              border: Border.all(
+                                  color: AppTheme.softGreen
+                                      .withValues(alpha: 0.35)),
                             ),
                             child: Text(
                               'Released',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
                                     color: AppTheme.softGreen,
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -2011,18 +2132,25 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       const SizedBox(height: 6),
                       Text(
                         details,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppTheme.mediumGray),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: AppTheme.mediumGray),
                       ),
                     ],
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        const Icon(Icons.location_on_outlined, size: 16, color: AppTheme.mediumGray),
+                        const Icon(Icons.location_on_outlined,
+                            size: 16, color: AppTheme.mediumGray),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
                             siteLabel,
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: AppTheme.mediumGray),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -2031,12 +2159,16 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        const Icon(Icons.person_outline, size: 16, color: AppTheme.mediumGray),
+                        const Icon(Icons.person_outline,
+                            size: 16, color: AppTheme.mediumGray),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            'Site manager: ${managerText.isEmpty ? 'Unknown' : managerText}',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                            'Resident Engineer: ${managerText.isEmpty ? 'Unknown' : managerText}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: AppTheme.mediumGray),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -2046,7 +2178,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       const SizedBox(height: 4),
                       Text(
                         'Project ID: $projectId',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: AppTheme.mediumGray),
                       ),
                     ],
                     const SizedBox(height: 10),
@@ -2054,13 +2189,15 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       children: [
                         Text(
                           'Open to approve / reject',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: AppTheme.deepBlue,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.deepBlue,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                         const Spacer(),
-                        const Icon(Icons.arrow_forward_ios, size: 14, color: AppTheme.mediumGray),
+                        const Icon(Icons.arrow_forward_ios,
+                            size: 14, color: AppTheme.mediumGray),
                       ],
                     ),
                   ],
@@ -2090,7 +2227,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
         (createdByName.isNotEmpty ? createdByName : createdBy).trim();
 
     Map<String, dynamic>? allocationData;
-    if (projectId.isNotEmpty && projectId != 'Unknown site' && allocationId.isNotEmpty) {
+    if (projectId.isNotEmpty &&
+        projectId != 'Unknown site' &&
+        allocationId.isNotEmpty) {
       try {
         final allocSnap = await FirebaseService.instance
             .materialAllocationsCollection(projectId)
@@ -2113,7 +2252,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
     final inventoryItems = inventoryItemsSnap.docs
         .map(
           (d) => <String, dynamic>{
-            ...(d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{},
+            ...(d.data() as Map?)?.cast<String, dynamic>() ??
+                <String, dynamic>{},
             'id': d.id,
           },
         )
@@ -2137,11 +2277,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
             double? allocationUnitPrice;
             if (allocationData != null) {
-              final raw = allocationData['unitPrice'] ?? allocationData['price'];
+              final raw =
+                  allocationData['unitPrice'] ?? allocationData['price'];
               if (raw is num) {
                 allocationUnitPrice = raw.toDouble();
               } else if (raw is String) {
-                final cleaned = raw.replaceAll(',', '').replaceAll('₱', '').trim();
+                final cleaned =
+                    raw.replaceAll(',', '').replaceAll('₱', '').trim();
                 allocationUnitPrice = double.tryParse(cleaned);
               }
             }
@@ -2155,24 +2297,23 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     double.tryParse(stockRaw?.toString() ?? '0') ?? 0.0;
               }
 
-              final priceRaw =
-                  selectedInventory!['unitPrice'] ?? selectedInventory!['price'];
+              final priceRaw = selectedInventory!['unitPrice'] ??
+                  selectedInventory!['price'];
               if (priceRaw is num) {
                 unitPrice = priceRaw.toDouble();
               } else if (priceRaw is String) {
-                final cleaned = priceRaw
-                    .replaceAll(',', '')
-                    .replaceAll('₱', '')
-                    .trim();
+                final cleaned =
+                    priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
                 unitPrice = double.tryParse(cleaned);
               }
 
               unitLabel = (selectedInventory!['unit'] ?? '').toString();
             }
 
-            final chosenUnitPrice = (allocationUnitPrice != null && allocationUnitPrice > 0)
-                ? allocationUnitPrice
-                : unitPrice;
+            final chosenUnitPrice =
+                (allocationUnitPrice != null && allocationUnitPrice > 0)
+                    ? allocationUnitPrice
+                    : unitPrice;
 
             double? calculatedAmount;
             final quantityText = quantityController.text.trim();
@@ -2186,7 +2327,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
               calculatedAmount = chosenUnitPrice * quantity;
             }
 
-            final requestedMaterial = (data['materialName'] ?? subject).toString();
+            final requestedMaterial =
+                (data['materialName'] ?? subject).toString();
 
             Future<void> rejectAction() async {
               final comment = commentController.text.trim();
@@ -2243,8 +2385,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 return;
               }
 
-              final priceRaw =
-                  selectedInventory!['unitPrice'] ?? selectedInventory!['price'];
+              final priceRaw = selectedInventory!['unitPrice'] ??
+                  selectedInventory!['price'];
               double? unitPriceForExpense;
               if (allocationUnitPrice != null && allocationUnitPrice > 0) {
                 unitPriceForExpense = allocationUnitPrice;
@@ -2252,10 +2394,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 if (priceRaw is num) {
                   unitPriceForExpense = priceRaw.toDouble();
                 } else if (priceRaw is String) {
-                  final cleaned = priceRaw
-                      .replaceAll(',', '')
-                      .replaceAll('₱', '')
-                      .trim();
+                  final cleaned =
+                      priceRaw.replaceAll(',', '').replaceAll('₱', '').trim();
                   unitPriceForExpense = double.tryParse(cleaned);
                 }
               }
@@ -2290,7 +2430,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
             return Dialog(
               backgroundColor: Colors.transparent,
-              insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+              insetPadding:
+                  const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 980),
                 child: ClipRRect(
@@ -2330,7 +2471,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleLarge
-                                          ?.copyWith(fontWeight: FontWeight.w800),
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w800),
                                     ),
                                     const SizedBox(height: 6),
                                     Text(
@@ -2340,13 +2482,15 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
-                                          ?.copyWith(color: AppTheme.mediumGray),
+                                          ?.copyWith(
+                                              color: AppTheme.mediumGray),
                                     ),
                                   ],
                                 ),
                               ),
                               IconButton(
-                                onPressed: () => Navigator.of(dialogContext).pop(),
+                                onPressed: () =>
+                                    Navigator.of(dialogContext).pop(),
                                 icon: const Icon(Icons.close),
                                 tooltip: 'Close',
                               ),
@@ -2354,7 +2498,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                           ),
                         );
 
-                        Widget infoRow(IconData icon, String label, String value) {
+                        Widget infoRow(
+                            IconData icon, String label, String value) {
                           return Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -2369,7 +2514,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodySmall
-                                          ?.copyWith(color: AppTheme.mediumGray),
+                                          ?.copyWith(
+                                              color: AppTheme.mediumGray),
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
@@ -2377,7 +2523,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyMedium
-                                          ?.copyWith(fontWeight: FontWeight.w700),
+                                          ?.copyWith(
+                                              fontWeight: FontWeight.w700),
                                     ),
                                   ],
                                 ),
@@ -2413,13 +2560,16 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                   children: [
                                     infoRow(
                                       Icons.person_outline,
-                                      'Site Manager',
-                                      managerDisplay.isEmpty ? 'Unknown' : managerDisplay,
+                                      'Resident Engineer',
+                                      managerDisplay.isEmpty
+                                          ? 'Unknown'
+                                          : managerDisplay,
                                     ),
                                     const SizedBox(height: 12),
                                     Container(
                                       height: 1,
-                                      color: Colors.black.withValues(alpha: 0.06),
+                                      color:
+                                          Colors.black.withValues(alpha: 0.06),
                                     ),
                                     const SizedBox(height: 12),
                                     infoRow(
@@ -2455,7 +2605,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       height: 26,
                                       decoration: BoxDecoration(
                                         color: const Color(0xFFFFF3CD),
-                                        borderRadius: BorderRadius.circular(999),
+                                        borderRadius:
+                                            BorderRadius.circular(999),
                                       ),
                                       child: const Icon(
                                         Icons.schedule,
@@ -2470,7 +2621,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodyMedium
-                                            ?.copyWith(fontWeight: FontWeight.w700),
+                                            ?.copyWith(
+                                                fontWeight: FontWeight.w700),
                                       ),
                                     ),
                                   ],
@@ -2510,16 +2662,18 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                     () {
                                       final id = (item['id'] ?? '').toString();
                                       final name =
-                                          (item['materialName'] ?? 'Material').toString();
-                                      final unit = (item['unit'] ?? '').toString();
+                                          (item['materialName'] ?? 'Material')
+                                              .toString();
+                                      final unit =
+                                          (item['unit'] ?? '').toString();
                                       final stockRaw = item['stock'];
                                       double stock;
                                       if (stockRaw is num) {
                                         stock = stockRaw.toDouble();
                                       } else {
-                                        stock =
-                                            double.tryParse(stockRaw?.toString() ?? '0') ??
-                                                0.0;
+                                        stock = double.tryParse(
+                                                stockRaw?.toString() ?? '0') ??
+                                            0.0;
                                       }
                                       return DropdownMenuItem<String>(
                                         value: id,
@@ -2540,12 +2694,14 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
 
                                     final extra = _fallbackMaterials
                                         .where(
-                                          (m) =>
-                                              !inventoryNames.contains(m.toLowerCase()),
+                                          (m) => !inventoryNames
+                                              .contains(m.toLowerCase()),
                                         )
                                         .toList();
                                     extra.sort(
-                                      (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
+                                      (a, b) => a
+                                          .toLowerCase()
+                                          .compareTo(b.toLowerCase()),
                                     );
 
                                     return extra
@@ -2558,7 +2714,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                               style: Theme.of(context)
                                                   .textTheme
                                                   .bodyMedium
-                                                  ?.copyWith(color: AppTheme.mediumGray),
+                                                  ?.copyWith(
+                                                      color:
+                                                          AppTheme.mediumGray),
                                             ),
                                           ),
                                         )
@@ -2571,12 +2729,15 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                 onChanged: (value) {
                                   setStateDialog(() {
                                     selectedInventoryId = value;
-                                    if (value != null && value.startsWith('manual:')) {
+                                    if (value != null &&
+                                        value.startsWith('manual:')) {
                                       selectedInventory = null;
                                     } else {
-                                      selectedInventory = inventoryItems.firstWhere(
+                                      selectedInventory =
+                                          inventoryItems.firstWhere(
                                         (item) =>
-                                            (item['id'] ?? '').toString() == value,
+                                            (item['id'] ?? '').toString() ==
+                                            value,
                                         orElse: () => <String, dynamic>{},
                                       );
                                     }
@@ -2584,7 +2745,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                 },
                               ),
                               const SizedBox(height: 10),
-                              if (availableStock != null && unitLabel.isNotEmpty)
+                              if (availableStock != null &&
+                                  unitLabel.isNotEmpty)
                                 Text(
                                   'Available stock: ${availableStock.toStringAsFixed(1)} $unitLabel',
                                   style: Theme.of(context)
@@ -2600,7 +2762,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                       .bodySmall
                                       ?.copyWith(color: AppTheme.mediumGray),
                                 ),
-                              if (calculatedAmount != null && quantity != null && quantity > 0)
+                              if (calculatedAmount != null &&
+                                  quantity != null &&
+                                  quantity > 0)
                                 Text(
                                   'This release cost: ₱${calculatedAmount.toStringAsFixed(2)}',
                                   style: Theme.of(context)
@@ -2652,7 +2816,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                                     SizedBox(width: 320, child: leftPanel),
                                     Container(
                                       width: 1,
-                                      color: Colors.black.withValues(alpha: 0.06),
+                                      color:
+                                          Colors.black.withValues(alpha: 0.06),
                                     ),
                                     Expanded(child: formPanel),
                                   ],
@@ -2711,20 +2876,26 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 .doc(allocationId);
             final allocSnap = await tx.get(allocationRef);
             if (!allocSnap.exists) {
-              throw Exception('Assigned material allocation not found. Ask admin to re-assign/budget materials.');
+              throw Exception(
+                  'Assigned material allocation not found. Ask admin to re-assign/budget materials.');
             }
-            final allocData = (allocSnap.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+            final allocData =
+                (allocSnap.data() as Map?)?.cast<String, dynamic>() ??
+                    <String, dynamic>{};
 
             double readNum(dynamic v) {
               if (v is num) return v.toDouble();
-              return double.tryParse((v ?? '').toString().replaceAll(',', '')) ?? 0.0;
+              return double.tryParse(
+                      (v ?? '').toString().replaceAll(',', '')) ??
+                  0.0;
             }
 
             final budget = readNum(allocData['budgetQuantity']);
             final used = readNum(allocData['usedQuantity']);
             final remaining = (budget - used).clamp(0.0, double.infinity);
             if (releasedQuantity > remaining) {
-              throw Exception('Release exceeds remaining allocation. Remaining: ${remaining.toStringAsFixed(1)}');
+              throw Exception(
+                  'Release exceeds remaining allocation. Remaining: ${remaining.toStringAsFixed(1)}');
             }
 
             tx.update(allocationRef, {
@@ -2754,7 +2925,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
         'status': status,
         'adminComment': comment,
         'handledAt': nowIso,
-        if (status == AppConstants.materialRequestApproved) 'approvedAt': nowIso,
+        if (status == AppConstants.materialRequestApproved)
+          'approvedAt': nowIso,
         if (status == AppConstants.materialRequestApproved)
           'release': {
             'inventoryItemId': inventoryItemId,
@@ -2947,12 +3119,16 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 budgetController.text.trim().replaceAll(',', ''),
               );
 
-              if (name.isEmpty || unit.isEmpty || budget == null || budget <= 0) {
+              if (name.isEmpty ||
+                  unit.isEmpty ||
+                  budget == null ||
+                  budget <= 0) {
                 setStateDialog(() => isSaving = false);
                 if (!mounted) return;
                 rootMessenger.showSnackBar(
                   const SnackBar(
-                    content: Text('Please enter material name, unit, and a valid budget quantity.'),
+                    content: Text(
+                        'Please enter material name, unit, and a valid budget quantity.'),
                     backgroundColor: AppTheme.errorRed,
                   ),
                 );
@@ -2971,10 +3147,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                   'budgetQuantity': budget,
                   'requiredQuantity': budget,
                   'usedQuantity': 0,
-                  if (unitPrice != null && unitPrice >= 0) 'unitPrice': unitPrice,
+                  if (unitPrice != null && unitPrice >= 0)
+                    'unitPrice': unitPrice,
                   'projectId': selectedProjectId,
-                  'projectName':
-                      (selectedProjectName ?? nameForProject(selectedProjectId)),
+                  'projectName': (selectedProjectName ??
+                      nameForProject(selectedProjectId)),
                   'createdAt': FieldValue.serverTimestamp(),
                   'updatedAt': FieldValue.serverTimestamp(),
                 };
@@ -3002,8 +3179,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                         if (unitPrice != null && unitPrice >= 0)
                           'unitPrice': unitPrice,
                         'projectId': selectedProjectId,
-                        'projectName':
-                            (selectedProjectName ?? nameForProject(selectedProjectId)),
+                        'projectName': (selectedProjectName ??
+                            nameForProject(selectedProjectId)),
                         'createdAt': FieldValue.serverTimestamp(),
                         'updatedAt': FieldValue.serverTimestamp(),
                       });
@@ -3035,7 +3212,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                 if (!mounted) return;
                 rootMessenger.showSnackBar(
                   const SnackBar(
-                    content: Text('Material assigned/budgeted for this project.'),
+                    content:
+                        Text('Material assigned/budgeted for this project.'),
                     backgroundColor: AppTheme.softGreen,
                   ),
                 );
@@ -3092,35 +3270,42 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                     TextField(
                       controller: nameController,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Material name'),
+                      decoration:
+                          const InputDecoration(labelText: 'Material name'),
                     ),
                     const SizedBox(height: 8),
                     TextField(
                       controller: unitController,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Unit (e.g. bag, m³)'),
+                      decoration: const InputDecoration(
+                          labelText: 'Unit (e.g. bag, m³)'),
                     ),
                     const SizedBox(height: 8),
                     TextField(
                       controller: unitPriceController,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Unit price (₱)'),
+                      decoration:
+                          const InputDecoration(labelText: 'Unit price (₱)'),
                     ),
                     const SizedBox(height: 8),
                     TextField(
                       controller: budgetController,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                       textInputAction: TextInputAction.done,
                       onSubmitted: (_) => save(),
-                      decoration: const InputDecoration(labelText: 'Budget quantity'),
+                      decoration:
+                          const InputDecoration(labelText: 'Budget quantity'),
                     ),
                   ],
                 ),
               ),
               actions: [
                 TextButton(
-                  onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                  onPressed:
+                      isSaving ? null : () => Navigator.of(dialogContext).pop(),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
@@ -3129,7 +3314,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring> with 
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
                         )
                       : const Text('Save'),
                 ),
@@ -3226,7 +3412,8 @@ DataRow _buildSiteDistributionRow(
   );
 }
 
-DataRow _buildMaterialUsageRow(BuildContext context, _MaterialUsageEntry entry) {
+DataRow _buildMaterialUsageRow(
+    BuildContext context, _MaterialUsageEntry entry) {
   String dateText = '';
   if (entry.date != null) {
     final d = entry.date!;

@@ -5,6 +5,16 @@ class AppTheme {
   static const Color deepBlue = Color(0xFF2F4B8F);
   static const Color deepBlueDark = Color(0xFF1E3566);
   static const Color primaryBlue = deepBlue;
+
+  /// Resident Engineer brand — matches the home header.
+  static const Color residentBlue = Color(0xFF2563EB);
+  static const Color residentBlueDeep = Color(0xFF1E3A8A);
+  static const Color residentBlueLight = Color(0xFF3B82F6);
+  static const List<Color> residentHeaderGradient = [
+    residentBlueDeep,
+    residentBlue,
+    residentBlueLight,
+  ];
   static const Color accentYellow = Color(0xFFFACC15);
   static const Color softGreen = Color(0xFF27AE60);
   static const Color lightGray = Color(0xFFF5F6FA);

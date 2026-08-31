@@ -5,6 +5,7 @@ import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
+import '../../utils/dialog_utils.dart';
 import 'widgets/site_manager_card.dart';
 import '../../widgets/common/status_chip.dart';
 
@@ -29,26 +30,12 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
     String materialRequestId,
     Map<String, dynamic> request,
   ) async {
-    final confirm = await showDialog<bool>(
+    final confirm = await showConfirmDialog(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Complete Delivery'),
-          content: const Text(
-            'Confirm that the delivered materials match the approved release.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Materials Complete'),
-            ),
-          ],
-        );
-      },
+      title: 'Complete Delivery',
+      message: 'Confirm that the delivered materials match the approved release.',
+      confirmText: 'Materials Complete',
+      cancelText: 'Cancel',
     );
 
     if (!mounted || confirm != true) return;
@@ -61,12 +48,12 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
           .collection('material_requests')
           .doc(materialRequestId);
 
-      await reqRef.update({
+      await reqRef.set({
         'deliveryStatus': 'completed',
         'deliveredAt': nowIso,
         'deliveredBy': user?.id ?? user?.email,
         'deliveredByName': user?.displayName ?? '',
-      });
+      }, SetOptions(merge: true));
 
       final deliveryId = (request['deliveryId'] ?? '').toString();
       if (deliveryId.isNotEmpty) {
@@ -74,11 +61,28 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
             .deliveriesCollection(projectId)
             .doc(deliveryId);
 
-        await deliveryRef.update({
+        // Use set+merge so this works whether the delivery doc exists or not.
+        await deliveryRef.set({
           'status': 'completed',
           'completedAt': nowIso,
           'completedBy': user?.id ?? user?.email,
           'completedByName': user?.displayName ?? '',
+          'projectId': projectId,
+          'materialRequestId': materialRequestId,
+        }, SetOptions(merge: true));
+      } else {
+        // No deliveryId — create a new delivery record automatically.
+        await FirebaseService.instance
+            .deliveriesCollection(projectId)
+            .add({
+          'status': 'completed',
+          'completedAt': nowIso,
+          'completedBy': user?.id ?? user?.email,
+          'completedByName': user?.displayName ?? '',
+          'projectId': projectId,
+          'materialRequestId': materialRequestId,
+          'materialName': request['materialName'] ?? request['subject'] ?? '',
+          'createdAt': nowIso,
         });
       }
 
@@ -259,7 +263,7 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
                   children: [
                     Icon(
                       Icons.local_shipping,
-                      color: AppTheme.deepBlue,
+                      color: AppTheme.residentBlue,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -312,7 +316,7 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
                                           request,
                                         ),
                                 style: FilledButton.styleFrom(
-                                  backgroundColor: AppTheme.deepBlue,
+                                  backgroundColor: AppTheme.residentBlue,
                                   foregroundColor: AppTheme.white,
                                   padding:
                                       const EdgeInsets.symmetric(vertical: 12),

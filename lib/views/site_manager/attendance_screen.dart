@@ -12,34 +12,29 @@ import '../../services/auth_service.dart';
 import '../../services/geo_tag_service.dart';
 import '../../services/hive_service.dart';
 import '../../services/sync_service.dart';
-import '../../services/firebase_service.dart';
 import '../../services/weekly_attendance_service.dart';
-import '../../widgets/common/site_weather_conditions_card.dart';
+import '../../utils/dialog_utils.dart';
 import 'widgets/site_manager_bottom_nav.dart';
-import 'widgets/site_manager_card.dart';
-import 'widgets/weekly_attendance_checklist.dart';
-import 'widgets/worker_mon_fri_schedule_card.dart';
 
+// ── Input model ──────────────────────────────────────────────────────────────
 class ManualWorkerInput {
   const ManualWorkerInput({
     required this.workerName,
     required this.position,
     this.rate = 0,
   });
-
   final String workerName;
   final String position;
   final double rate;
 }
 
-/// Site manager attendance — manual checklist only (no fingerprint).
+// ── Screen ───────────────────────────────────────────────────────────────────
 class AttendanceScreen extends ConsumerStatefulWidget {
   const AttendanceScreen({
     super.key,
     this.showBottomNav = false,
     this.showBack = true,
   });
-
   final bool showBottomNav;
   final bool showBack;
 
@@ -47,213 +42,515 @@ class AttendanceScreen extends ConsumerStatefulWidget {
   ConsumerState<AttendanceScreen> createState() => _AttendanceScreenState();
 }
 
-class _AttendanceScreenState extends ConsumerState<AttendanceScreen>
-    with TickerProviderStateMixin {
-  static const Color _headerBlue = Color(0xFF1E3A8A);
+class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
+  static const Color _blue = AppTheme.residentBlue;
 
-  final _searchController = TextEditingController();
-  String _positionFilter = 'All';
-  String _statusFilter = 'All';
   DateTime _selectedDate = DateTime.now();
-  DateTime _weekAnchor = DateTime.now();
-
-  final Set<String> _touchedWorkers = <String>{};
-  late final TabController _viewTabs;
-  final _weeklyService = WeeklyAttendanceService();
-  final _registry = AttendanceWorkerRegistryService.instance;
   String? _projectId;
-  String? _projectLocation;
   bool _syncing = false;
+  bool _submitting = false;
+
+  final _registry = AttendanceWorkerRegistryService.instance;
+  String? _historyWorkerId;   // which worker's history is expanded
+  String? _expandedWorkerId; // expanded worker card for weekly day details
 
   @override
   void initState() {
     super.initState();
-    _viewTabs = TabController(length: 3, vsync: this);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _syncChecklistForSelectedDate();
-      _loadProjectLocation();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncDate());
   }
 
-  Future<void> _loadProjectLocation() async {
-    final user = ref.read(currentUserProvider);
-    final pid = user?.assignedProjects.isNotEmpty == true
-        ? user!.assignedProjects.first
-        : _projectId;
-    if (pid == null) return;
-    try {
-      final snap = await FirebaseService.instance.projectsCollection.doc(pid).get();
-      final raw = snap.data();
-      final loc = raw is Map ? (raw['location'] ?? '').toString().trim() : '';
-      if (mounted) setState(() => _projectLocation = loc.isEmpty ? null : loc);
-    } catch (_) {}
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  DateTime _norm(DateTime d) => DateTime(d.year, d.month, d.day);
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  String _workerKeyFromRecord(AttendanceRecord r) {
+    return (r.workerId.isNotEmpty ? r.workerId : r.workerName)
+        .trim()
+        .toLowerCase();
   }
 
-  Future<void> _syncChecklistForSelectedDate() async {
+  String _workerKeyFromName(String workerName) {
+    return workerName.trim().toLowerCase();
+  }
+
+  String _fmtDate(DateTime d) {
+    const m = ['Jan','Feb','Mar','Apr','May','Jun',
+                'Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${m[d.month-1]} ${d.day}, ${d.year}';
+  }
+
+  String _fmtTime(DateTime? t) {
+    if (t == null) return '--:--';
+    return TimeOfDay.fromDateTime(t).format(context);
+  }
+
+  static double _slotHours(DateTime? s, DateTime? e) {
+    if (s == null || e == null) return 0;
+    final diff = e.difference(s).inMinutes;
+    return diff > 0 ? diff / 60.0 : 0;
+  }
+
+  static double _calcHours(AttendanceRecord r) {
+    double h = 0;
+    h += _slotHours(r.amTimeIn, r.amTimeOut);
+    h += _slotHours(r.pmTimeIn, r.pmTimeOut);
+    return double.parse(h.toStringAsFixed(1));
+  }
+
+  static String _calcStatus(AttendanceRecord r) {
+    final hours = _calcHours(r);
+    if (hours == 0 && !r.isPresent && r.timeIn == null) return 'Absent';
+    final checkTime = r.amTimeIn ?? r.timeIn;
+    if (checkTime != null) {
+      final t = TimeOfDay.fromDateTime(checkTime);
+      if (t.hour > 8 || (t.hour == 8 && t.minute > 15)) return 'Late';
+    }
+    if (hours > 0 && hours < 6) return 'Half day';
+    if (r.isPresent || r.timeIn != null) return 'Present';
+    return 'Absent';
+  }
+
+  // ── Data ────────────────────────────────────────────────────────────────
+  Future<void> _syncDate() async {
     if (_syncing) return;
     _syncing = true;
-    await _getOrCreateAttendanceForDate(_selectedDate);
+    await _getOrCreate(_selectedDate);
     _syncing = false;
     if (mounted) setState(() {});
   }
 
-  @override
-  void dispose() {
-    _searchController.dispose();
-    _viewTabs.dispose();
-    super.dispose();
-  }
+  AttendanceRecord _fromRegistered(RegisteredWorker w) => AttendanceRecord(
+        workerId: w.workerId,
+        workerName: w.workerName,
+        position: w.position,
+        rate: w.rate,
+        workerType: w.position.toLowerCase(),
+        isPresent: false,
+      );
 
-  DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
+  Future<AttendanceModel?> _getOrCreate(DateTime date) async {
+    final target = _norm(date);
+    var user = ref.read(currentUserProvider);
+    if (user == null || user.assignedProjects.isEmpty) {
+      await AuthService.instance.refreshUserData();
+      ref.invalidate(currentUserProvider);
+      user = ref.read(currentUserProvider);
+    }
+    if (user == null || user.assignedProjects.isEmpty) return null;
 
-  bool _isSameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
+    final projectId = user.assignedProjects.first;
+    _projectId = projectId;
+    final hive = HiveService.instance;
+    final roster = _registry.loadRoster(projectId);
 
-  DateTime _startOfWeek(DateTime d) {
-    final date = _normalizeDate(d);
-    final delta = date.weekday - DateTime.monday;
-    return date.subtract(Duration(days: delta < 0 ? 6 : delta));
-  }
+    final existing = hive.getAttendanceByRecorder(user.id)
+        .where((a) => _sameDay(a.attendanceDate, target))
+        .firstOrNull;
 
-  String _formatDateLabel(DateTime d) {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${months[d.month - 1]} ${d.day}, ${d.year}';
-  }
-
-  String _formatTime(BuildContext context, DateTime? t) {
-    if (t == null) return '--';
-    return TimeOfDay.fromDateTime(t).format(context);
-  }
-
-  AttendanceRecord _recordFromRegistered(RegisteredWorker w) {
-    return AttendanceRecord(
-      workerId: w.workerId,
-      workerName: w.workerName,
-      position: w.position,
-      rate: w.rate,
-      workerType: w.position.toLowerCase(),
-      isPresent: false,
-    );
-  }
-
-  bool _syncRosterIntoAttendance(AttendanceModel attendance, List<RegisteredWorker> roster) {
-    var changed = false;
-    for (final w in roster) {
-      final key = w.workerId.toLowerCase();
-      final idx = attendance.records.indexWhere((r) {
-        final id = (r.workerId.trim().isNotEmpty ? r.workerId : r.workerName).trim().toLowerCase();
-        return id == key || r.workerName.trim().toLowerCase() == w.workerName.trim().toLowerCase();
-      });
-      if (idx < 0) {
-        attendance.records.add(_recordFromRegistered(w));
-        changed = true;
-      } else {
-        final r = attendance.records[idx];
-        if (r.rate != w.rate || r.position != w.position || r.workerName != w.workerName) {
-          r.rate = w.rate;
-          r.position = w.position;
-          r.workerName = w.workerName;
+    if (existing != null) {
+      // Sync any new roster workers into existing record
+      bool changed = false;
+      for (final w in roster) {
+        final key = w.workerId.toLowerCase();
+        final has = existing.records.any((r) =>
+            (r.workerId.isNotEmpty ? r.workerId : r.workerName)
+                .toLowerCase() == key);
+        if (!has) {
+          existing.records.add(_fromRegistered(w));
           changed = true;
         }
       }
+      if (changed) {
+        existing.updatedAt = DateTime.now();
+        await hive.saveAttendance(existing);
+      }
+      return existing;
     }
-    return changed;
+
+    final model = AttendanceModel(
+      id: const Uuid().v4(),
+      projectId: projectId,
+      recorderId: user.id,
+      attendanceDate: target,
+      records: roster.map(_fromRegistered).toList(),
+      status: 'draft',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+      syncStatus: 'pending',
+    );
+    await hive.saveAttendance(model);
+    return model;
   }
 
-  Future<AttendanceModel?> _getOrCreateAttendanceForDate(DateTime date) async {
-    final target = _normalizeDate(date);
+  // ── Actions ──────────────────────────────────────────────────────────────
+  Future<void> _pickDate() async {
+    final p = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(DateTime.now().year - 1),
+      lastDate: DateTime.now(),
+    );
+    if (p == null || !mounted) return;
+    setState(() => _selectedDate = _norm(p));
+    await _syncDate();
+  }
+
+  Future<void> _pickAmPm(
+      AttendanceModel att, AttendanceRecord rec, String slot) async {
+    final defaults = {
+      'amIn': const TimeOfDay(hour: 8, minute: 0),
+      'amOut': const TimeOfDay(hour: 12, minute: 0),
+      'pmIn': const TimeOfDay(hour: 13, minute: 0),
+      'pmOut': const TimeOfDay(hour: 17, minute: 0),
+    };
+    final cur = switch (slot) {
+      'amIn'  => rec.amTimeIn,
+      'amOut' => rec.amTimeOut,
+      'pmIn'  => rec.pmTimeIn,
+      _       => rec.pmTimeOut,
+    };
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: cur != null
+          ? TimeOfDay.fromDateTime(cur)
+          : defaults[slot]!,
+    );
+    if (picked == null || !mounted) return;
+    final d = _norm(_selectedDate);
+    final dt = DateTime(d.year, d.month, d.day, picked.hour, picked.minute);
+      setState(() {
+      switch (slot) {
+        case 'amIn':
+          rec.amTimeIn = dt; rec.timeIn = dt; rec.isPresent = true;
+        case 'amOut':
+          rec.amTimeOut = dt;
+        case 'pmIn':
+          rec.pmTimeIn = dt;
+        case 'pmOut':
+          rec.pmTimeOut = dt; rec.timeOut = dt; rec.isPresent = true;
+      }
+      rec.hoursWorked = _calcHours(rec);
+    });
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+  }
+
+  Future<void> _markPresent(AttendanceModel att, AttendanceRecord rec) async {
+    final now = DateTime.now();
+    final d = _norm(_selectedDate);
+    rec.isPresent = true;
+    rec.timeIn ??= _sameDay(_selectedDate, now)
+        ? now
+        : DateTime(d.year, d.month, d.day, 8, 0);
+    rec.remarks = 'manual_present';
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _markLate(AttendanceModel att, AttendanceRecord rec) async {
+    final d = _norm(_selectedDate);
+    rec.isPresent = true;
+    rec.timeIn = DateTime(d.year, d.month, d.day, 8, 30);
+    rec.remarks = 'late_marked';
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _markAbsent(AttendanceModel att, AttendanceRecord rec) async {
+    rec.isPresent = false;
+    rec.timeIn = null; rec.timeOut = null;
+    rec.amTimeIn = null; rec.amTimeOut = null;
+    rec.pmTimeIn = null; rec.pmTimeOut = null;
+    rec.hoursWorked = 0;
+    rec.remarks = 'absent_marked';
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _removeWorker(AttendanceModel att, AttendanceRecord rec) async {
+    final ok = await showConfirmDialog(
+      context: context,
+      title: 'Remove worker?',
+      message: 'Remove ${rec.workerName} from the roster?',
+      confirmText: 'Remove', cancelText: 'Cancel', isDangerous: true,
+    );
+    if (ok != true) return;
+    if (_projectId != null) await _registry.removeWorker(_projectId!, rec.workerId);
+    att.records.remove(rec);
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+    if (mounted) setState(() {});
+  }
+
+  Future<AttendanceModel?> _getOrCreateForDate(DateTime date) async {
+    final target = _norm(date);
     var user = ref.read(currentUserProvider);
     if (user == null || user.assignedProjects.isEmpty) {
-      final refreshed = await AuthService.instance.refreshUserData();
-      if (refreshed) {
+      await AuthService.instance.refreshUserData();
         ref.invalidate(currentUserProvider);
         user = ref.read(currentUserProvider);
       }
-    }
+    if (user == null || user.assignedProjects.isEmpty) return null;
 
-    final projects = user?.assignedProjects;
-    final userId = user?.id;
-    if (user == null || projects == null || projects.isEmpty || userId == null) {
-      return null;
-    }
-
+    final projectId = user.assignedProjects.first;
     final hive = HiveService.instance;
-    final existing = hive.getAttendanceByRecorder(userId);
-
-    AttendanceRecord cloneForNewDay(AttendanceRecord r) {
-      return AttendanceRecord(
-        workerId: r.workerId,
-        workerName: r.workerName,
-        position: r.position,
-        isPresent: false,
-        timeIn: null,
-        timeOut: null,
-        hoursWorked: r.hoursWorked,
-        overtimeHours: r.overtimeHours,
-        workerType: r.workerType,
-        rate: r.rate,
-      );
-    }
-
-    final projectId = projects.first;
-    _projectId = projectId;
     final roster = _registry.loadRoster(projectId);
 
-    AttendanceModel? existingDoc;
-    for (final a in existing) {
-      if (_isSameDay(a.attendanceDate, target)) {
-        existingDoc = a;
-        break;
+    var existing = hive.getAttendanceByRecorder(user.id)
+        .where((a) => _sameDay(a.attendanceDate, target))
+        .firstOrNull;
+
+    if (existing != null) {
+      bool changed = false;
+      for (final w in roster) {
+        final key = _workerKeyFromName(w.workerName);
+        final has = existing.records.any((r) => _workerKeyFromRecord(r) == key);
+        if (!has) {
+          existing.records.add(_fromRegistered(w));
+          changed = true;
+        }
       }
-    }
-
-    AttendanceModel dayAttendance;
-    if (existingDoc != null) {
-      dayAttendance = existingDoc;
-    } else {
-      final isWeekStart = target.weekday == DateTime.monday;
-      final startOfWeek = _startOfWeek(target);
-      final previousInWeek = existing
-          .where(
-            (a) =>
-                a.projectId == projectId &&
-                !a.attendanceDate.isAfter(target.subtract(const Duration(days: 1))) &&
-                !a.attendanceDate.isBefore(startOfWeek),
-          )
-          .toList()
-        ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
-
-      final List<AttendanceRecord> records;
-      if (!isWeekStart && previousInWeek.isNotEmpty) {
-        records = previousInWeek.first.records.map(cloneForNewDay).toList();
-      } else {
-        records = roster.map(_recordFromRegistered).toList();
+      if (changed) {
+        existing.updatedAt = DateTime.now();
+        await hive.saveAttendance(existing);
       }
-
-      dayAttendance = AttendanceModel(
-        id: const Uuid().v4(),
-        projectId: projectId,
-        recorderId: userId,
-        attendanceDate: target,
-        records: records,
-        status: 'draft',
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-        syncStatus: 'pending',
-      );
-      await hive.saveAttendance(dayAttendance);
+      return existing;
     }
 
-    if (_syncRosterIntoAttendance(dayAttendance, roster)) {
-      dayAttendance.updatedAt = DateTime.now();
-      await hive.saveAttendance(dayAttendance);
-    }
-
-    return dayAttendance;
+    final model = AttendanceModel(
+          id: const Uuid().v4(),
+      projectId: projectId,
+      recorderId: user.id,
+      attendanceDate: target,
+      records: roster.map(_fromRegistered).toList(),
+          status: 'draft',
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+          syncStatus: 'pending',
+        );
+    await hive.saveAttendance(model);
+    return model;
   }
 
-  Future<void> _showRegisterWorkerSheet() async {
-    final result = await showModalBottomSheet<ManualWorkerInput>(
+  Future<void> _pickDayTime(
+      AttendanceModel att,
+      AttendanceRecord rec,
+      String slot,
+      DateTime date,
+      ) async {
+    final defaults = {
+      'amIn': const TimeOfDay(hour: 8, minute: 0),
+      'amOut': const TimeOfDay(hour: 12, minute: 0),
+      'pmIn': const TimeOfDay(hour: 13, minute: 0),
+      'pmOut': const TimeOfDay(hour: 17, minute: 0),
+    };
+    final cur = switch (slot) {
+      'amIn'  => rec.amTimeIn,
+      'amOut' => rec.amTimeOut,
+      'pmIn'  => rec.pmTimeIn,
+      _       => rec.pmTimeOut,
+    };
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: cur != null
+          ? TimeOfDay.fromDateTime(cur)
+          : defaults[slot]!,
+    );
+    if (picked == null || !mounted) return;
+    final d = DateTime(date.year, date.month, date.day);
+    final dt = DateTime(d.year, d.month, d.day, picked.hour, picked.minute);
+    setState(() {
+      switch (slot) {
+        case 'amIn':
+          rec.amTimeIn = dt;
+          rec.timeIn ??= dt;
+          rec.isPresent = true;
+        case 'amOut':
+          rec.amTimeOut = dt;
+        case 'pmIn':
+          rec.pmTimeIn = dt;
+        case 'pmOut':
+          rec.pmTimeOut = dt;
+          rec.timeOut = dt;
+          rec.isPresent = true;
+      }
+      rec.hoursWorked = _calcHours(rec);
+    });
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+  }
+
+  Future<void> _markDayStatus(
+    AttendanceRecord rec,
+    AttendanceModel att,
+    DateTime day,
+    String status,
+  ) async {
+    switch (status) {
+      case 'present':
+        rec.isPresent = true;
+        rec.remarks = 'manual_present';
+        rec.timeIn ??= DateTime(day.year, day.month, day.day, 8, 0);
+        rec.timeOut ??= DateTime(day.year, day.month, day.day, 17, 0);
+        break;
+      case 'late':
+        rec.isPresent = true;
+        rec.remarks = 'late_marked';
+        rec.timeIn = DateTime(day.year, day.month, day.day, 8, 30);
+        rec.timeOut = DateTime(day.year, day.month, day.day, 17, 0);
+        break;
+      case 'halfDayAm':
+        rec.isPresent = true;
+        rec.remarks = 'half_day_am';
+        rec.amTimeIn = DateTime(day.year, day.month, day.day, 8, 0);
+        rec.amTimeOut = DateTime(day.year, day.month, day.day, 12, 0);
+        rec.pmTimeIn = null;
+        rec.pmTimeOut = null;
+        rec.timeIn = rec.amTimeIn;
+        rec.timeOut = rec.amTimeOut;
+        break;
+      case 'halfDayPm':
+        rec.isPresent = true;
+        rec.remarks = 'half_day_pm';
+        rec.amTimeIn = null;
+        rec.amTimeOut = null;
+        rec.pmTimeIn = DateTime(day.year, day.month, day.day, 13, 0);
+        rec.pmTimeOut = DateTime(day.year, day.month, day.day, 17, 0);
+        rec.timeIn = rec.pmTimeIn;
+        rec.timeOut = rec.pmTimeOut;
+        break;
+      case 'absent':
+        default:
+        rec.isPresent = false;
+        rec.timeIn = null;
+        rec.timeOut = null;
+        rec.amTimeIn = null;
+        rec.amTimeOut = null;
+        rec.pmTimeIn = null;
+        rec.pmTimeOut = null;
+        rec.hoursWorked = 0;
+        rec.remarks = 'absent_marked';
+        break;
+    }
+    rec.hoursWorked = _calcHours(rec);
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _showDayActionSheet(
+    WeeklyWorkerRow row,
+    WeeklyDayCell cell,
+  ) async {
+    final date = cell.date;
+    final user = ref.read(currentUserProvider);
+    if (user == null || _projectId == null) return;
+    final att = await _getOrCreateForDate(date);
+    if (att == null) return;
+    final rec = att.records.firstWhere(
+      (r) => _workerKeyFromRecord(r) == _workerKeyFromName(row.workerName),
+      orElse: () => AttendanceRecord(
+        workerId: row.workerId,
+        workerName: row.workerName,
+        position: row.position,
+        rate: row.templateRecord?.rate ?? 0.0,
+        workerType: row.position.toLowerCase(),
+      ),
+    );
+    if (!att.records.contains(rec)) att.records.add(rec);
+    await HiveService.instance.saveAttendance(att);
+
+    if (!mounted) return;
+    final action = await showModalBottomSheet<String?>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) {
+        return SafeArea(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+                child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                      '${row.workerName} • ${WeeklyAttendanceService.formatDayHeader(date).replaceAll('\n', ' ')}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 8),
+                        Text(
+                      'Set attendance status for this day and adjust times.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.check_circle_outline),
+                title: const Text('Present'),
+                onTap: () => Navigator.of(context).pop('present'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.schedule),
+                title: const Text('Late'),
+                onTap: () => Navigator.of(context).pop('late'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.sunny),
+                title: const Text('Half day AM'),
+                onTap: () => Navigator.of(context).pop('halfDayAm'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.sunny),
+                title: const Text('Half day PM'),
+                onTap: () => Navigator.of(context).pop('halfDayPm'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.cancel_outlined),
+                title: const Text('Absent'),
+                onTap: () => Navigator.of(context).pop('absent'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.access_time),
+                title: const Text('Edit time slots'),
+                onTap: () => Navigator.of(context).pop('editTime'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (action == null || !mounted) return;
+    if (action == 'editTime') {
+      await _pickDayTime(att, rec, 'amIn', date);
+      await _pickDayTime(att, rec, 'amOut', date);
+      await _pickDayTime(att, rec, 'pmIn', date);
+      await _pickDayTime(att, rec, 'pmOut', date);
+      return;
+    }
+
+    await _markDayStatus(rec, att, date, action);
+  }
+
+  // ── Worker detail sheet (opens on worker name tap) ──────────────────────
+  Future<void> _showWorkerDetailSheet(
+    AttendanceRecord record,
+    AttendanceModel? today,
+    WeeklyWorkerRow? weeklyRow,
+    List<({DateTime date, AttendanceRecord rec})> history,
+  ) async {
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -261,1138 +558,1195 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      builder: (_) => _WorkerDetailSheet(
+        record: record,
+        weeklyRow: weeklyRow,
+        history: history,
+        calcHours: _calcHours,
+        calcStatus: _calcStatus,
+        fmtTime: _fmtTime,
+        onDayTap: weeklyRow == null
+            ? null
+            : (cell) {
+                Navigator.of(context).pop(); // close sheet first
+                _showDayActionSheet(weeklyRow, cell);
+              },
+      ),
+    );
+  }
+
+  Future<void> _registerWorker() async {
+    final result = await showModalBottomSheet<ManualWorkerInput>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (_) => const _RegisterWorkerSheet(),
     );
     if (!mounted || result == null) return;
-    await _registerWorker(result);
-  }
 
-  Future<void> _registerWorker(ManualWorkerInput input) async {
-    final attendance = await _getOrCreateAttendanceForDate(_selectedDate);
-    if (attendance == null || _projectId == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No project assigned. Contact admin.')),
-      );
+    final att = await _getOrCreate(_selectedDate);
+    if (att == null || _projectId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No project assigned.')));
+      }
       return;
     }
-
-    final name = input.workerName.trim();
+    final name = result.workerName.trim();
     if (name.isEmpty) return;
 
     final roster = _registry.loadRoster(_projectId!);
     if (roster.any((w) => w.workerName.toLowerCase() == name.toLowerCase())) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$name is already registered.')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$name is already registered.')));
+      }
       return;
     }
 
     await _registry.registerWorker(
       projectId: _projectId!,
       workerName: name,
-      position: input.position,
-      rate: input.rate,
+      position: result.position,
+      rate: result.rate,
     );
 
-    final updatedRoster = _registry.loadRoster(_projectId!);
-    _syncRosterIntoAttendance(attendance, updatedRoster);
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
+    final newRoster = _registry.loadRoster(_projectId!);
+    for (final w in newRoster) {
+      final key = w.workerId.toLowerCase();
+      final has = att.records.any((r) =>
+          (r.workerId.isNotEmpty ? r.workerId : r.workerName).toLowerCase() == key);
+      if (!has) att.records.add(_fromRegistered(w));
+    }
+    att.updatedAt = DateTime.now();
+    await HiveService.instance.saveAttendance(att);
 
-    if (mounted) setState(() {});
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$name registered — added to checklist.'),
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$name added to checklist.'),
         backgroundColor: AppTheme.softGreen,
-      ),
-    );
-  }
-
-  Future<void> _removeWorker(AttendanceModel attendance, AttendanceRecord record) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Remove registered worker?'),
-        content: Text(
-          'Remove ${record.workerName} from the site roster? '
-          'They will no longer appear on future checklists.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: FilledButton.styleFrom(backgroundColor: AppTheme.errorRed),
-            child: const Text('Remove'),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-
-    if (_projectId != null) {
-      await _registry.removeWorker(_projectId!, record.workerId);
-    }
-    attendance.records.remove(record);
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-    if (mounted) setState(() {});
-  }
-
-  bool _canEditDate(DateTime date) {
-    return !_normalizeDate(date).isAfter(_normalizeDate(DateTime.now()));
-  }
-
-  Future<void> _pickTimeIn(AttendanceRecord record) async {
-    final initial = record.timeIn != null
-        ? TimeOfDay.fromDateTime(record.timeIn!)
-        : const TimeOfDay(hour: 8, minute: 0);
-    final picked = await showTimePicker(context: context, initialTime: initial);
-    if (picked == null) return;
-    final d = _normalizeDate(_selectedDate);
-    record.timeIn = DateTime(d.year, d.month, d.day, picked.hour, picked.minute);
-  }
-
-  Future<void> _markPresent(AttendanceModel attendance, AttendanceRecord record) async {
-    final now = DateTime.now();
-    record.isPresent = true;
-    record.timeIn ??= _isSameDay(_selectedDate, now)
-        ? now
-        : DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day, 8, 0);
-    record.remarks = 'manual_present';
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-    _touchedWorkers.add(record.workerId);
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _markAbsent(AttendanceModel attendance, AttendanceRecord record) async {
-    record.isPresent = false;
-    record.timeIn = null;
-    record.timeOut = null;
-    record.remarks = 'absent_marked';
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-    _touchedWorkers.add(record.workerId);
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _markLate(AttendanceModel attendance, AttendanceRecord record) async {
-    final d = _normalizeDate(_selectedDate);
-    record.isPresent = true;
-    record.timeIn = DateTime(d.year, d.month, d.day, 8, 30);
-    record.remarks = 'late_marked';
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-    _touchedWorkers.add(record.workerId);
-    if (mounted) setState(() {});
-  }
-
-  String _weeklyStatusLabel(WeeklyDayStatus status) {
-    switch (status) {
-      case WeeklyDayStatus.present:
-        return 'Present';
-      case WeeklyDayStatus.late:
-        return 'Late';
-      case WeeklyDayStatus.absent:
-        return 'Absent';
-      case WeeklyDayStatus.dayOff:
-        return 'Day Off';
-      case WeeklyDayStatus.pending:
-        return 'Pending';
+      ));
     }
   }
 
-  Future<void> _handleWeeklyCellTap(WeeklyWorkerRow worker, WeeklyDayCell cell) async {
-    if (cell.date.isAfter(_normalizeDate(DateTime.now()))) return;
-    final picked = await showWeeklyStatusPickerSheet(
-      context,
-      workerName: worker.workerName,
-      day: cell.date,
-      current: cell.status,
-    );
-    if (!mounted || picked == null) return;
-    await _applyWeeklyDayStatus(worker, cell.date, picked);
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _applyWeeklyDayStatus(
-    WeeklyWorkerRow worker,
-    DateTime day,
-    WeeklyDayStatus status,
-  ) async {
-    final attendance = await _getOrCreateAttendanceForDate(day);
-    if (attendance == null) return;
-
-    final workerKey = worker.workerId.trim().toLowerCase();
-    var index = attendance.records.indexWhere((r) {
-      final key = (r.workerId.trim().isNotEmpty ? r.workerId : r.workerName).trim().toLowerCase();
-      return key == workerKey;
-    });
-
-    AttendanceRecord record;
-    if (index >= 0) {
-      record = attendance.records[index];
-    } else {
-      record = AttendanceRecord(
-        workerId: worker.workerId,
-        workerName: worker.workerName,
-        position: worker.position,
-        rate: worker.templateRecord?.rate ?? 0,
-      );
-      attendance.records.add(record);
-    }
-
-    final dayNorm = _normalizeDate(day);
-    final isToday = _isSameDay(dayNorm, _normalizeDate(DateTime.now()));
-    final now = DateTime.now();
-
-    switch (status) {
-      case WeeklyDayStatus.present:
-        record.isPresent = true;
-        record.timeIn = isToday ? now : DateTime(dayNorm.year, dayNorm.month, dayNorm.day, 8, 0);
-        record.remarks = 'manual_present';
-      case WeeklyDayStatus.late:
-        record.isPresent = true;
-        record.timeIn = isToday ? now : DateTime(dayNorm.year, dayNorm.month, dayNorm.day, 8, 30);
-        record.remarks = 'late_marked';
-      case WeeklyDayStatus.absent:
-        record.isPresent = false;
-        record.timeIn = null;
-        record.remarks = 'absent_marked';
-      case WeeklyDayStatus.dayOff:
-        record.isPresent = false;
-        record.timeIn = null;
-        record.remarks = 'day_off';
-      case WeeklyDayStatus.pending:
-        return;
-    }
-
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-    _touchedWorkers.add(record.workerId);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${worker.workerName}: ${_weeklyStatusLabel(status)}'),
-        backgroundColor: AppTheme.softGreen,
-      ),
-    );
-  }
-
-  Future<void> _pickAttendanceDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _selectedDate,
-      firstDate: DateTime(DateTime.now().year - 1),
-      lastDate: DateTime.now(),
-    );
-    if (picked != null && mounted) {
-      setState(() {
-        _selectedDate = _normalizeDate(picked);
-        _touchedWorkers.clear();
-      });
-      await _syncChecklistForSelectedDate();
-    }
-  }
-
-  Future<void> _submitAttendance(AttendanceModel attendance) async {
-    final geoTag = await GeoTagService.instance.captureGeoTag();
-    attendance.status = 'submitted';
-    attendance.syncStatus = 'pending';
-    attendance.updatedAt = DateTime.now();
-    await HiveService.instance.saveAttendance(attendance);
-
-    await AuditLogService.instance.logAction(
-      action: 'attendance_submitted',
-      projectId: attendance.projectId,
-      details: {
-        'attendanceId': attendance.id,
-        'attendanceDate': attendance.attendanceDate.toIso8601String(),
-        'totalWorkers': attendance.totalWorkers,
-        'presentWorkers': attendance.presentWorkers,
-        'geoTag': geoTag,
-      },
-    );
-
-    if (!mounted) return;
-    setState(() => _touchedWorkers.clear());
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Attendance submitted to Admin.'), backgroundColor: AppTheme.softGreen),
-    );
-
+  Future<void> _submitToAdmin(AttendanceModel att) async {
+    setState(() => _submitting = true);
     try {
-      final result = await SyncService.instance.syncPendingData();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.message),
-          backgroundColor: result.success ? AppTheme.softGreen : AppTheme.warningOrange,
-        ),
+      final geoTag = await GeoTagService.instance.captureGeoTag();
+      att.status = 'submitted';
+      att.syncStatus = 'pending';
+      att.updatedAt = DateTime.now();
+      await HiveService.instance.saveAttendance(att);
+
+      await AuditLogService.instance.logAction(
+        action: 'attendance_submitted',
+        projectId: att.projectId,
+        details: {
+          'attendanceId': att.id,
+          'attendanceDate': att.attendanceDate.toIso8601String(),
+          'totalWorkers': att.totalWorkers,
+          'presentWorkers': att.presentWorkers,
+          'geoTag': geoTag,
+        },
       );
-    } catch (_) {}
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Attendance submitted to Admin.'),
+        backgroundColor: AppTheme.softGreen,
+      ));
+
+      final sync = await SyncService.instance.syncPendingData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(sync.message),
+          backgroundColor:
+              sync.success ? AppTheme.softGreen : AppTheme.warningOrange,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Submit failed: $e'),
+            backgroundColor: AppTheme.errorRed));
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final user = ref.watch(currentUserProvider);
     final hive = HiveService.instance;
-    final allAttendance = user == null
+    final projectId = user?.assignedProjects.isNotEmpty == true
+        ? user!.assignedProjects.first : _projectId;
+    if (projectId != null) _projectId = projectId;
+
+    final roster = projectId != null
+        ? _registry.loadRoster(projectId) : <RegisteredWorker>[];
+
+    final allAtt = (user == null
         ? hive.getAllAttendance()
-        : hive.getAttendanceByRecorder(user.id);
-    final attendanceList = [...allAttendance]
+        : hive.getAttendanceByRecorder(user.id))
       ..sort((a, b) => b.attendanceDate.compareTo(a.attendanceDate));
 
-    final selectedDate = _normalizeDate(_selectedDate);
-    AttendanceModel? activeAttendance;
-    for (final a in attendanceList) {
-      if (_isSameDay(a.attendanceDate, selectedDate)) {
-        activeAttendance = a;
-        break;
-      }
+    AttendanceModel? today;
+    for (final a in allAtt) {
+      if (_sameDay(a.attendanceDate, _norm(_selectedDate))) { today = a; break; }
     }
 
-    final projectId = user?.assignedProjects.isNotEmpty == true
-        ? user!.assignedProjects.first
-        : _projectId;
-    if (projectId != null) _projectId = projectId;
-    final roster = projectId != null ? _registry.loadRoster(projectId) : <RegisteredWorker>[];
-
-    final records = activeAttendance?.records.isNotEmpty == true
-        ? activeAttendance!.records
-        : roster.map(_recordFromRegistered).toList();
-    final canEdit = _canEditDate(selectedDate);
+    final records = today?.records.isNotEmpty == true
+        ? today!.records
+        : roster.map(_fromRegistered).toList();
 
     final presentCount = records.where((r) => r.isPresent || r.timeIn != null).length;
     final absentCount = records.length - presentCount;
-    final rate = records.isEmpty ? 0.0 : (presentCount / records.length) * 100;
 
-    final positions = <String>{
-      'All',
-      ...records.map((r) => r.position.trim()).where((p) => p.isNotEmpty),
-    }.toList()
-      ..sort();
-    if (!positions.contains(_positionFilter)) _positionFilter = 'All';
-
-    final query = _searchController.text.trim().toLowerCase();
-    final filtered = records.where((r) {
-      if (_positionFilter != 'All' && r.position.trim() != _positionFilter) return false;
-      final present = r.isPresent || r.timeIn != null;
-      if (_statusFilter == 'Present' && !present) return false;
-      if (_statusFilter == 'Absent' && present) return false;
-      if (query.isNotEmpty && !r.workerName.toLowerCase().contains(query)) return false;
-      return true;
-    }).toList();
-
-    final weeklyRows = _weeklyService.buildWeeklyRows(
-      allAttendance: attendanceList,
-      weekAnchor: _weekAnchor,
-      perWorkerRegisteredAt: projectId != null ? _registry.registeredAtMap(projectId) : {},
+    final weeklyRows = WeeklyAttendanceService().buildWeeklyRows(
+      allAttendance: allAtt,
+      weekAnchor: _selectedDate,
       roster: roster,
     );
 
+    final weeklyRowByKey = {
+      for (final row in weeklyRows)
+        _workerKeyFromName(row.workerName): row,
+    };
+
+    // History: group all past records per worker
+    final Map<String, List<({DateTime date, AttendanceRecord rec})>> workerHistory = {};
+    for (final a in allAtt) {
+      for (final r in a.records) {
+        final key = r.workerId.isNotEmpty ? r.workerId : r.workerName;
+        workerHistory.putIfAbsent(key, () => []).add((date: a.attendanceDate, rec: r));
+      }
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F9),
-      body: Column(
-        children: [
-          _buildHeader(context),
-          Material(
-            color: Colors.white,
-            child: TabBar(
-              controller: _viewTabs,
-              labelColor: _headerBlue,
-              unselectedLabelColor: AppTheme.mediumGray,
-              indicatorColor: _headerBlue,
-              indicatorWeight: 3,
-              labelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
-              tabs: const [
-                Tab(text: 'Daily Checklist'),
-                Tab(text: 'Worker Schedules'),
-                Tab(text: 'Weekly Overview'),
-              ],
-            ),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _viewTabs,
-              children: [
-                _buildDailyTab(
-                  context,
-                  activeAttendance: activeAttendance,
-                  filtered: filtered,
-                  records: records,
-                  canEdit: canEdit,
-                  presentCount: presentCount,
-                  absentCount: absentCount,
-                  rate: rate,
-                  positions: positions,
-                  rosterCount: roster.length,
-                ),
-                _buildWorkerSchedulesTab(context, weeklyRows: weeklyRows),
-                _buildWeeklyTab(context, weeklyRows: weeklyRows, attendanceList: attendanceList),
-              ],
+      appBar: AppBar(
+        backgroundColor: _blue,
+        foregroundColor: Colors.white,
+        centerTitle: true,
+        title: const Text('Site attendance',
+            style: TextStyle(fontWeight: FontWeight.w900)),
+        leading: widget.showBack
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+                onPressed: () => context.canPop()
+                    ? context.pop()
+                    : context.go(RouteNames.siteManagerHome))
+            : null,
+        actions: [
+          TextButton.icon(
+            onPressed: _pickDate,
+            icon: const Icon(Icons.calendar_today, size: 16, color: Colors.white),
+            label: Text(
+              '${_selectedDate.month}/${_selectedDate.day}/${_selectedDate.year}',
+              style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
           ),
         ],
       ),
-      bottomNavigationBar:
-          widget.showBottomNav ? const SiteManagerBottomNav(currentIndex: 2) : null,
-    );
-  }
+      body: ListView(
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, 110 + MediaQuery.of(context).padding.bottom),
+                                    children: [
+          // ── Register worker card ────────────────────────────────────────
+          _RegisterCard(onTap: _registerWorker),
+          const SizedBox(height: 20),
 
-  Widget _buildHeader(BuildContext context) {
-    final top = MediaQuery.of(context).padding.top;
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.fromLTRB(8, top + 8, 8, 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF1E3A8A), Color(0xFF2563EB)],
-        ),
-        borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(24),
-          bottomRight: Radius.circular(24),
-        ),
-      ),
-      child: Row(
-        children: [
-          if (widget.showBack)
-            IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
-              onPressed: () => context.canPop() ? context.pop() : context.go(RouteNames.siteManagerHome),
-            ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Attendance Checklist',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-                Text(
-                  'Manual worker log • Site manager verified',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.88),
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ],
-            ),
+          // ── Summary chips ───────────────────────────────────────────────
+          _SummaryRow(
+            total: records.length,
+            present: presentCount,
+            absent: absentCount,
           ),
-          IconButton(
-            onPressed: () => context.push(RouteNames.settings),
-            icon: const Icon(Icons.settings_outlined, color: Colors.white),
-          ),
+          const SizedBox(height: 16),
+
+          // ── Section header ──────────────────────────────────────────────
+          _SectionHeader(title: "Today's checklist",
+              subtitle: _fmtDate(_selectedDate)),
+          const SizedBox(height: 8),
+
+          if (records.isEmpty)
+            _EmptyChecklist(onAdd: _registerWorker)
+          else
+            ...records.map((r) {
+              final recordKey = _workerKeyFromRecord(r);
+              final weeklyRow = weeklyRowByKey[recordKey];
+              final isExpanded = _expandedWorkerId == recordKey;
+              final hist = (workerHistory[
+                    r.workerId.isNotEmpty ? r.workerId : r.workerName
+                  ] ?? [])
+                ..sort((a, b) => b.date.compareTo(a.date));
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _WorkerCard(
+                  record: r,
+                  attendance: today,
+                  fmtTime: _fmtTime,
+                  calcHours: _calcHours,
+                  calcStatus: _calcStatus,
+                  weeklyRow: weeklyRow,
+                  isExpanded: isExpanded,
+                  onToggleExpanded: weeklyRow == null
+                      ? null
+                      : () => setState(() =>
+                          _expandedWorkerId = isExpanded ? null : recordKey),
+                  onWorkerTap: () => _showWorkerDetailSheet(
+                      r, today, weeklyRow, hist),
+                  onDayTap: weeklyRow == null
+                      ? null
+                      : (cell) => _showDayActionSheet(weeklyRow, cell),
+                  onAmIn: today == null ? null : () => _pickAmPm(today!, r, 'amIn'),
+                  onAmOut: today == null ? null : () => _pickAmPm(today!, r, 'amOut'),
+                  onPmIn: today == null ? null : () => _pickAmPm(today!, r, 'pmIn'),
+                  onPmOut: today == null ? null : () => _pickAmPm(today!, r, 'pmOut'),
+                  onPresent: today == null ? null : () => _markPresent(today!, r),
+                  onLate: today == null ? null : () => _markLate(today!, r),
+                  onAbsent: today == null ? null : () => _markAbsent(today!, r),
+                  onRemove: today == null ? null : () => _removeWorker(today!, r),
+                ),
+              );
+            }),
+
+          const SizedBox(height: 24),
+
+          // ── Attendance history ──────────────────────────────────────────
+          _SectionHeader(title: 'Attendance history'),
+          const SizedBox(height: 8),
+
+          if (roster.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('No workers registered yet.',
+                  style: TextStyle(color: AppTheme.mediumGray)),
+            )
+          else
+            ...roster.map((w) {
+              final key = w.workerId;
+              final hist = (workerHistory[key] ?? [])
+                ..sort((a, b) => b.date.compareTo(a.date));
+              final isOpen = _historyWorkerId == key;
+              return _HistorySection(
+                worker: w,
+                history: hist,
+                isOpen: isOpen,
+                onToggle: () => setState(() =>
+                    _historyWorkerId = isOpen ? null : key),
+                fmtDate: (d) =>
+                    '${d.month.toString().padLeft(2,'0')}/'
+                    '${d.day.toString().padLeft(2,'0')}/'
+                    '${d.year}',
+                calcHours: _calcHours,
+                calcStatus: _calcStatus,
+              );
+            }),
         ],
       ),
-    );
-  }
 
-  Widget _buildDailyTab(
-    BuildContext context, {
-    required AttendanceModel? activeAttendance,
-    required List<AttendanceRecord> filtered,
-    required List<AttendanceRecord> records,
-    required bool canEdit,
-    required int presentCount,
-    required int absentCount,
-    required double rate,
-    required List<String> positions,
-    required int rosterCount,
-  }) {
-    final weekLabel = WeeklyAttendanceService.formatWeekRange(_selectedDate);
-    final isMonday = _selectedDate.weekday == DateTime.monday;
-
-    return Stack(
-      children: [
-        ListView(
-          padding: EdgeInsets.fromLTRB(16, 16, 16, 100 + MediaQuery.of(context).padding.bottom),
-          children: [
-            SiteWeatherConditionsCard(
-              projectLocation: _projectLocation,
-              margin: EdgeInsets.zero,
-              compact: true,
-            ),
-            const SizedBox(height: 12),
-            _DateSelectorCard(
-              label: _formatDateLabel(_selectedDate),
-              weekLabel: weekLabel,
-              rosterCount: rosterCount,
-              onTap: _pickAttendanceDate,
-            ),
-            if (isMonday) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFEFF6FF),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFBFDBFE)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.refresh, size: 18, color: Color(0xFF2563EB)),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'New week — checklist reset. Registered workers remain on the roster.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: const Color(0xFF1E40AF),
-                              fontWeight: FontWeight.w600,
-                              height: 1.3,
-                            ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            _SummaryStatsRow(
-              total: records.length,
-              present: presentCount,
-              absent: absentCount,
-              rate: rate,
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
+      // ── Submit to Admin button ──────────────────────────────────────────
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: EdgeInsets.fromLTRB(
+                16, 10, 16, 10 + MediaQuery.of(context).padding.bottom),
+                          color: Colors.white,
+            child: SizedBox(
               width: double.infinity,
-              height: 48,
+              height: 52,
               child: FilledButton.icon(
-                onPressed: _showRegisterWorkerSheet,
+                onPressed: (today == null || _submitting)
+                    ? null
+                    : () => _submitToAdmin(today!),
                 style: FilledButton.styleFrom(
-                  backgroundColor: _headerBlue,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  backgroundColor: _blue,
+                  disabledBackgroundColor: const Color(0xFFCBD5E1),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
-                icon: const Icon(Icons.person_add_alt_1),
-                label: const Text('Register Worker', style: TextStyle(fontWeight: FontWeight.w900)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _searchController,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: 'Search registered workers…',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _FilterChip(
-                    label: 'All roles',
-                    selected: _positionFilter == 'All',
-                    onTap: () => setState(() => _positionFilter = 'All'),
-                  ),
-                  ...positions.where((p) => p != 'All').map(
-                        (p) => _FilterChip(
-                          label: p,
-                          selected: _positionFilter == p,
-                          onTap: () => setState(() => _positionFilter = p),
-                        ),
-                      ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: ['All', 'Present', 'Absent'].map((s) {
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: _FilterChip(
-                    label: s,
-                    selected: _statusFilter == s,
-                    onTap: () => setState(() => _statusFilter = s),
-                  ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 14),
-            if (records.isEmpty)
-              SiteManagerCard(
-                margin: EdgeInsets.zero,
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    Icon(Icons.playlist_add_check_circle_outlined,
-                        size: 48, color: _headerBlue.withValues(alpha: 0.5)),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No registered workers yet.',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Register workers once — they appear on every daily checklist.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _showRegisterWorkerSheet,
-                      icon: const Icon(Icons.person_add),
-                      label: const Text('Register Worker'),
-                    ),
-                  ],
-                ),
-              )
-            else if (filtered.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('No workers match your filters.', textAlign: TextAlign.center),
-              )
-            else
-              ...filtered.map(
-                (r) => Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: _WorkerChecklistCard(
-                    record: r,
-                    canEdit: canEdit && activeAttendance != null,
-                    timeLabel: _formatTime(context, r.timeIn),
-                    rateLabel: r.rate > 0 ? '₱${r.rate.toStringAsFixed(0)}/day' : 'Rate not set',
-                    onPresent: activeAttendance == null
-                        ? null
-                        : () => _markPresent(activeAttendance, r),
-                    onLate: activeAttendance == null ? null : () => _markLate(activeAttendance, r),
-                    onAbsent: activeAttendance == null
-                        ? null
-                        : () => _markAbsent(activeAttendance, r),
-                    onEditTime: activeAttendance == null
-                        ? null
-                        : () async {
-                            await _pickTimeIn(r);
-                            await HiveService.instance.saveAttendance(activeAttendance);
-                            if (mounted) setState(() {});
-                          },
-                    onRemove: activeAttendance == null
-                        ? null
-                        : () => _removeWorker(activeAttendance, r),
+                icon: _submitting
+                    ? const SizedBox(
+                        width: 18, height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.send_rounded),
+                label: Text(
+                  _submitting ? 'Submitting…' : 'Submit to Admin',
+                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
                   ),
                 ),
               ),
-          ],
-        ),
-        if (activeAttendance != null)
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 16 + MediaQuery.of(context).padding.bottom,
-            child: FilledButton.icon(
-              onPressed: _touchedWorkers.isEmpty ? null : () => _submitAttendance(activeAttendance),
-              style: FilledButton.styleFrom(
-                backgroundColor: _headerBlue,
-                minimumSize: const Size.fromHeight(52),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-              icon: const Icon(Icons.send_rounded),
-              label: const Text('Submit to Admin', style: TextStyle(fontWeight: FontWeight.w900)),
             ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildWorkerSchedulesTab(
-    BuildContext context, {
-    required List<WeeklyWorkerRow> weeklyRows,
-  }) {
-    final weekLabel = WeeklyAttendanceService.formatWeekRange(_weekAnchor);
-    final canEdit = !_weekAnchor.isAfter(DateTime.now().add(const Duration(days: 1)));
-
-    return ListView(
-      padding: EdgeInsets.fromLTRB(16, 14, 16, 24 + MediaQuery.of(context).padding.bottom),
-      children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: () => setState(() => _weekAnchor = _weekAnchor.subtract(const Duration(days: 7))),
-              icon: const Icon(Icons.chevron_left),
-            ),
-            Expanded(
-              child: Column(
-                children: [
-                  Text(
-                    'Mon – Fri schedules',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
-                  ),
-                  Text(
-                    weekLabel,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: AppTheme.mediumGray),
-                  ),
-                ],
-              ),
-            ),
-            IconButton(
-              onPressed: () {
-                final next = _weekAnchor.add(const Duration(days: 7));
-                if (!WeeklyAttendanceService.startOfWeek(next)
-                    .isAfter(WeeklyAttendanceService.startOfWeek(DateTime.now()))) {
-                  setState(() => _weekAnchor = next);
-                }
-              },
-              icon: const Icon(Icons.chevron_right),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Each worker has their own Mon–Fri checklist. Tap a day to mark Present, Late, or Absent.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray, height: 1.35),
-        ),
-        const SizedBox(height: 12),
-        if (weeklyRows.isEmpty)
-          SiteManagerCard(
-            margin: EdgeInsets.zero,
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              children: [
-                const Icon(Icons.groups_outlined, size: 48, color: Color(0xFF94A3B8)),
-                const SizedBox(height: 12),
-                Text(
-                  'No workers registered',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                FilledButton.icon(
-                  onPressed: _showRegisterWorkerSheet,
-                  icon: const Icon(Icons.person_add),
-                  label: const Text('Register Worker'),
-                ),
-              ],
-            ),
-          )
-        else
-          ...weeklyRows.map(
-            (row) => WorkerMonFriScheduleCard(
-              row: row,
-              canEdit: canEdit,
-              onCellTap: (w, cell) => _handleWeeklyCellTap(w, cell),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildWeeklyTab(
-    BuildContext context, {
-    required List<WeeklyWorkerRow> weeklyRows,
-    required List<AttendanceModel> attendanceList,
-  }) {
-    final avgRate = weeklyRows.isEmpty
-        ? 0.0
-        : weeklyRows.map((r) => r.ratePercent).reduce((a, b) => a + b) / weeklyRows.length;
-
-    return ListView(
-      padding: EdgeInsets.fromLTRB(0, 14, 0, 24 + MediaQuery.of(context).padding.bottom),
-      children: [
-        WeeklyAttendanceChecklist(
-          weekAnchor: _weekAnchor,
-          rows: weeklyRows,
-          onPreviousWeek: () => setState(() => _weekAnchor = _weekAnchor.subtract(const Duration(days: 7))),
-          onNextWeek: () {
-            final next = _weekAnchor.add(const Duration(days: 7));
-            if (!WeeklyAttendanceService.startOfWeek(next)
-                .isAfter(WeeklyAttendanceService.startOfWeek(DateTime.now()))) {
-              setState(() => _weekAnchor = next);
-            }
-          },
-          onCellTap: _handleWeeklyCellTap,
-          onAddWorker: _showRegisterWorkerSheet,
-        ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: SiteManagerCard(
-            margin: EdgeInsets.zero,
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Week summary',
-                          style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
-                      Text(
-                        '${weeklyRows.length} workers • Tap a day to update',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  '${avgRate.toStringAsFixed(1)}%',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF7C3AED),
-                      ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (attendanceList.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(24),
-            child: Text(
-              'Add workers on the Daily Checklist tab first.',
-              textAlign: TextAlign.center,
-            ),
-          ),
-      ],
+          if (widget.showBottomNav)
+            const SiteManagerBottomNav(currentIndex: 2),
+        ],
+      ),
     );
   }
 }
 
-class _DateSelectorCard extends StatelessWidget {
-  const _DateSelectorCard({
-    required this.label,
-    required this.onTap,
-    this.weekLabel,
-    this.rosterCount = 0,
-  });
-  final String label;
+// ═══════════════════════════════════════════════════════════════════════════
+// Sub-widgets
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _RegisterCard extends StatelessWidget {
+  const _RegisterCard({required this.onTap});
   final VoidCallback onTap;
-  final String? weekLabel;
-  final int rosterCount;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(16),
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          padding: const EdgeInsets.all(16),
           child: Row(
-            children: [
+        children: [
               Container(
                 padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E3A8A).withValues(alpha: 0.1),
+              decoration: BoxDecoration(
+                  color: AppTheme.residentBlue.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.calendar_today, color: Color(0xFF1E3A8A), size: 20),
+                child: const Icon(Icons.person_add_alt,
+                    color: AppTheme.residentBlue, size: 22),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 14),
               Expanded(
-                child: Column(
+              child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Attendance date',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: AppTheme.mediumGray)),
-                    Text(label,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
-                    if (weekLabel != null) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        'Week: $weekLabel • $rosterCount registered',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: const Color(0xFF2563EB),
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                    ],
+                children: [
+                    Text('Register worker',
+                        style: Theme.of(context).textTheme.titleSmall
+                            ?.copyWith(fontWeight: FontWeight.w900)),
+                    Text('Tap to add a new worker to the roster',
+                        style: Theme.of(context).textTheme.bodySmall
+                            ?.copyWith(color: AppTheme.mediumGray)),
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right),
-            ],
-          ),
-        ),
+              const Icon(Icons.chevron_right, color: AppTheme.mediumGray),
+                ],
+              ),
+            ),
       ),
     );
   }
 }
 
-class _SummaryStatsRow extends StatelessWidget {
-  const _SummaryStatsRow({
-    required this.total,
-    required this.present,
-    required this.absent,
-    required this.rate,
-  });
-
-  final int total;
-  final int present;
-  final int absent;
-  final double rate;
+class _SummaryRow extends StatelessWidget {
+  const _SummaryRow({required this.total, required this.present,
+      required this.absent});
+  final int total; final int present; final int absent;
 
   @override
   Widget build(BuildContext context) {
-    Widget stat(String label, String value, Color color) {
-      return Expanded(
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: Column(
-            children: [
-              Text(value, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: color)),
-              Text(label,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: AppTheme.mediumGray)),
-            ],
-          ),
-        ),
-      );
-    }
-
+    Widget chip(String label, String val, Color color) => Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        children: [
+            Text(val, style: TextStyle(fontWeight: FontWeight.w900,
+                fontSize: 20, color: color)),
+            Text(label, style: const TextStyle(fontSize: 11,
+                fontWeight: FontWeight.w700, color: AppTheme.mediumGray)),
+                        ],
+                      ),
+                    ),
+    );
     return Row(
-      children: [
-        stat('Total', '$total', const Color(0xFF1E3A8A)),
+                        children: [
+        chip('Total', '$total', AppTheme.residentBlue),
         const SizedBox(width: 8),
-        stat('Present', '$present', const Color(0xFF16A34A)),
+        chip('Present', '$present', const Color(0xFF16A34A)),
         const SizedBox(width: 8),
-        stat('Absent', '$absent', const Color(0xFFEF4444)),
-        const SizedBox(width: 8),
-        stat('Rate', '${rate.toStringAsFixed(0)}%', const Color(0xFF7C3AED)),
+        chip('Absent', '$absent', const Color(0xFFEF4444)),
       ],
     );
   }
 }
 
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({required this.label, required this.selected, required this.onTap});
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, this.subtitle});
+  final String title; final String? subtitle;
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: FilterChip(
-        label: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-        selected: selected,
-        onSelected: (_) => onTap(),
-        selectedColor: const Color(0xFF1E3A8A).withValues(alpha: 0.12),
-        checkmarkColor: const Color(0xFF1E3A8A),
+  Widget build(BuildContext context) => Row(
+            children: [
+      Expanded(child: Text(title,
+          style: Theme.of(context).textTheme.titleMedium
+              ?.copyWith(fontWeight: FontWeight.w900))),
+      if (subtitle != null)
+        Text(subtitle!, style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: AppTheme.mediumGray)),
+    ],
+  );
+}
+
+class _EmptyChecklist extends StatelessWidget {
+  const _EmptyChecklist({required this.onAdd});
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          Icon(Icons.groups_outlined, size: 48,
+              color: AppTheme.mediumGray.withValues(alpha: 0.5)),
+          const SizedBox(height: 12),
+          Text('No workers yet', style: Theme.of(context)
+              .textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          Text('Register workers to start the checklist.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: AppTheme.mediumGray)),
+          const SizedBox(height: 14),
+          FilledButton.icon(onPressed: onAdd,
+              icon: const Icon(Icons.person_add),
+              label: const Text('Register Worker')),
+        ],
+      ),
       ),
     );
   }
-}
 
-class _WorkerChecklistCard extends StatelessWidget {
-  const _WorkerChecklistCard({
+
+// ── Worker checklist card ─────────────────────────────────────────────────────
+class _WorkerCard extends StatelessWidget {
+  const _WorkerCard({
     required this.record,
-    required this.canEdit,
-    required this.timeLabel,
-    required this.rateLabel,
-    this.onPresent,
-    this.onLate,
-    this.onAbsent,
-    this.onEditTime,
-    this.onRemove,
+    required this.attendance,
+    required this.fmtTime,
+    required this.calcHours,
+    required this.calcStatus,
+    this.weeklyRow,
+    this.isExpanded = false,
+    this.onToggleExpanded,
+    this.onWorkerTap,
+    this.onDayTap,
+    this.onAmIn, this.onAmOut, this.onPmIn, this.onPmOut,
+    this.onPresent, this.onLate, this.onAbsent, this.onRemove,
   });
 
   final AttendanceRecord record;
-  final bool canEdit;
-  final String timeLabel;
-  final String rateLabel;
-  final VoidCallback? onPresent;
-  final VoidCallback? onLate;
-  final VoidCallback? onAbsent;
-  final VoidCallback? onEditTime;
-  final VoidCallback? onRemove;
+  final AttendanceModel? attendance;
+  final WeeklyWorkerRow? weeklyRow;
+  final bool isExpanded;
+  final VoidCallback? onToggleExpanded;
+  final VoidCallback? onWorkerTap;
+  final void Function(WeeklyDayCell cell)? onDayTap;
+  final String Function(DateTime?) fmtTime;
+  final double Function(AttendanceRecord) calcHours;
+  final String Function(AttendanceRecord) calcStatus;
+  final VoidCallback? onAmIn, onAmOut, onPmIn, onPmOut;
+  final VoidCallback? onPresent, onLate, onAbsent, onRemove;
 
-  bool get _isPresent => record.isPresent || record.timeIn != null;
-  bool get _isLate => (record.remarks ?? '').contains('late');
+  static String _initials(String name) {
+    final p = name.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    if (p.isEmpty) return '?';
+    if (p.length == 1) return p[0][0].toUpperCase();
+    return '${p[0][0]}${p[1][0]}'.toUpperCase();
+  }
+
+  Color _statusColor(String s) => switch (s) {
+    'Present'  => const Color(0xFF16A34A),
+    'Late'     => const Color(0xFFF97316),
+    'Half day' => const Color(0xFFF59E0B),
+    'Absent'   => const Color(0xFFEF4444),
+    _          => const Color(0xFF94A3B8),
+  };
+
+  IconData _statusIcon(String s) => switch (s) {
+    'Present'  => Icons.check_circle_outline,
+    'Late'     => Icons.schedule,
+    'Half day' => Icons.timelapse,
+    'Absent'   => Icons.cancel_outlined,
+    _          => Icons.radio_button_unchecked,
+  };
 
   @override
   Widget build(BuildContext context) {
-    final initials = _initials(record.workerName);
-    Color statusColor;
-    String statusLabel;
-    if (!_isPresent) {
-      statusColor = const Color(0xFF94A3B8);
-      statusLabel = 'Not marked';
-    } else if (_isLate) {
-      statusColor = const Color(0xFFF97316);
-      statusLabel = 'Late';
-    } else {
-      statusColor = const Color(0xFF16A34A);
-      statusLabel = 'Present';
-    }
+    final status = calcStatus(record);
+    final color = _statusColor(status);
+    final hours = calcHours(record);
+    final canEdit = attendance != null;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 10, offset: const Offset(0, 4)),
-        ],
-      ),
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+            // Header row
+            Row(children: [
               CircleAvatar(
-                radius: 22,
-                backgroundColor: const Color(0xFF1E3A8A).withValues(alpha: 0.1),
-                child: Text(initials, style: const TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF1E3A8A))),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(record.workerName,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900)),
-                    Text(
-                      record.position.trim().isEmpty ? 'Worker' : record.position.trim(),
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      rateLabel,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: const Color(0xFF7C3AED),
-                            fontWeight: FontWeight.w800,
+                radius: 20,
+                backgroundColor: AppTheme.residentBlue.withValues(alpha: 0.1),
+                child: Text(_initials(record.workerName),
+                    style: const TextStyle(fontWeight: FontWeight.w900,
+                        color: AppTheme.residentBlue, fontSize: 13)),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+                child: InkWell(
+                  onTap: onWorkerTap ?? onToggleExpanded,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                        Row(children: [
+                              Expanded(
+                            child: Text(record.workerName,
+                                  style: Theme.of(context)
+                                    .textTheme.titleSmall
+                                    ?.copyWith(fontWeight: FontWeight.w900)),
                           ),
-                    ),
-                  ],
+                          if (onWorkerTap != null)
+                            const Icon(Icons.open_in_new,
+                                size: 14, color: AppTheme.mediumGray),
+                        ]),
+                        const SizedBox(height: 2),
+                        Text(
+                          record.position.trim().isEmpty ? 'Worker' : record.position,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: AppTheme.mediumGray),
+                        ),
+                        if (record.rate > 0)
+                          Text('₱${record.rate.toStringAsFixed(0)}/day',
+                              style: const TextStyle(fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFF7C3AED))),
+                            ],
+                          ),
+                        ),
                 ),
               ),
+              // Status badge
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                 decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.12),
+                  color: color.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: Text(statusLabel,
-                    style: TextStyle(color: statusColor, fontWeight: FontWeight.w800, fontSize: 11)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(_statusIcon(status), size: 12, color: color),
+                  const SizedBox(width: 4),
+                  Text(status, style: TextStyle(
+                      color: color, fontWeight: FontWeight.w800, fontSize: 11)),
+                ]),
               ),
               if (onRemove != null)
                 IconButton(
                   visualDensity: VisualDensity.compact,
-                  icon: Icon(Icons.delete_outline, color: Colors.red.shade300, size: 20),
-                  onPressed: canEdit ? onRemove : null,
+                  icon: Icon(Icons.delete_outline,
+                      color: Colors.red.shade300, size: 20),
+                  onPressed: onRemove,
                 ),
+            ]),
+            const SizedBox(height: 12),
+
+            if (weeklyRow != null) ...[
+              InkWell(
+                onTap: onToggleExpanded,
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Row(
+                  children: [
+                      Expanded(
+                        child: Text(
+                          'Weekly details',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                      Icon(
+                        isExpanded ? Icons.expand_less : Icons.expand_more,
+                        color: AppTheme.mediumGray,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (isExpanded) ...[
+                const SizedBox(height: 12),
+                _WeeklyDayRow(
+                  row: weeklyRow!,
+                  onDayTap: onDayTap,
+                ),
+                const SizedBox(height: 12),
+              ],
             ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Icon(Icons.access_time, size: 16, color: AppTheme.mediumGray),
+
+            // AM / PM time chips
+            Row(children: [
+              Expanded(child: _TimeChip(label: 'AM In',
+                  time: record.amTimeIn, fmtTime: fmtTime,
+                  color: AppTheme.residentBlue, onTap: onAmIn)),
               const SizedBox(width: 6),
-              Text('Time in: $timeLabel',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
-              if (onEditTime != null && canEdit) ...[
-                const Spacer(),
-                TextButton(onPressed: onEditTime, child: const Text('Set time')),
+              Expanded(child: _TimeChip(label: 'AM Out',
+                  time: record.amTimeOut, fmtTime: fmtTime,
+                  color: const Color(0xFF7C3AED), onTap: onAmOut)),
+              const SizedBox(width: 6),
+              Expanded(child: _TimeChip(label: 'PM In',
+                  time: record.pmTimeIn, fmtTime: fmtTime,
+                  color: const Color(0xFF059669), onTap: onPmIn)),
+              const SizedBox(width: 6),
+              Expanded(child: _TimeChip(label: 'PM Out',
+                  time: record.pmTimeOut, fmtTime: fmtTime,
+                  color: const Color(0xFFD97706), onTap: onPmOut)),
+            ]),
+            const SizedBox(height: 8),
+
+            // Hours + pay estimate
+            Row(children: [
+              const Icon(Icons.access_time, size: 14, color: AppTheme.mediumGray),
+              const SizedBox(width: 5),
+              Text('$hours hrs today',
+                  style: const TextStyle(fontSize: 11,
+                      fontWeight: FontWeight.w700, color: AppTheme.mediumGray)),
+              if (hours > 0 && record.rate > 0) ...[
+                          const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF16A34A).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '≈ ₱${(record.rate * (hours / 8)).round()}',
+                    style: const TextStyle(fontSize: 11,
+                        fontWeight: FontWeight.w800, color: Color(0xFF16A34A)),
+                  ),
+                ),
               ],
-            ],
-          ),
-          if (canEdit) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: _StatusButton(
-                    label: 'Present',
-                    icon: Icons.check_circle_outline,
+            ]),
+
+            // Quick-mark buttons
+            if (canEdit) ...[
+              const SizedBox(height: 10),
+              Row(children: [
+                _QuickBtn(label: 'Present', icon: Icons.check_circle_outline,
                     color: const Color(0xFF16A34A),
-                    selected: _isPresent && !_isLate,
-                    onTap: onPresent,
-                  ),
-                ),
+                    selected: (record.isPresent || record.timeIn != null) &&
+                        !(record.remarks ?? '').contains('late'),
+                    onTap: onPresent),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: _StatusButton(
-                    label: 'Late',
-                    icon: Icons.schedule,
+                _QuickBtn(label: 'Late', icon: Icons.schedule,
                     color: const Color(0xFFF97316),
-                    selected: _isLate,
-                    onTap: onLate,
-                  ),
-                ),
+                    selected: (record.remarks ?? '').contains('late'),
+                    onTap: onLate),
                 const SizedBox(width: 8),
-                Expanded(
-                  child: _StatusButton(
-                    label: 'Absent',
-                    icon: Icons.cancel_outlined,
+                _QuickBtn(label: 'Absent', icon: Icons.cancel_outlined,
                     color: const Color(0xFFEF4444),
-                    selected: !_isPresent && (record.remarks ?? '').contains('absent'),
-                    onTap: onAbsent,
-                  ),
+                    selected: !(record.isPresent || record.timeIn != null) &&
+                        (record.remarks ?? '').contains('absent'),
+                    onTap: onAbsent),
+              ]),
+            ],
+                  ],
                 ),
-              ],
-            ),
-          ],
-        ],
+              ),
+            );
+  }
+}
+
+class _WeeklyDayRow extends StatelessWidget {
+  const _WeeklyDayRow({
+    required this.row,
+    required this.onDayTap,
+  });
+
+  final WeeklyWorkerRow row;
+  final void Function(WeeklyDayCell cell)? onDayTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final days = row.days;
+    return Container(
+      width: double.infinity,
+              decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+              child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+                    children: [
+                      Expanded(
+                  child: Text('Mon–Sat attendance',
+                      style: Theme.of(context).textTheme.bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w800)),
+                ),
+                            Text(
+                  '${row.presentCount}/${row.workDays}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                        color: AppTheme.mediumGray,
+                                      ),
+                            ),
+                          ],
+                        ),
+                      ),
+          const Divider(height: 1, thickness: 0.5),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+              children: days.map((cell) {
+                final status = cell.status;
+                final style = _dayStatusStyle(status);
+                return Material(
+                  color: style.bg,
+                  borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    onTap: onDayTap != null ? () => onDayTap!(cell) : null,
+                    borderRadius: BorderRadius.circular(12),
+                    child: SizedBox(
+                      width: 96,
+                      height: 76,
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                              Text(
+                              WeeklyAttendanceService.formatDayHeader(cell.date).split('\n').first,
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.mediumGray,
+                                  ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              style.label,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                            fontWeight: FontWeight.w900,
+                                    color: style.fg,
+                                  ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              cell.timeLabel ?? style.label,
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: style.fg.withValues(alpha: 0.8),
+                                  ),
+                            ),
+                          ],
+                                          ),
+                                ),
+                              ),
+                        ),
+                );
+              }).toList(),
+                      ),
+                  ),
+                ],
       ),
     );
   }
 
-  static String _initials(String name) {
-    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return '?';
-    if (parts.length == 1) return parts.first[0].toUpperCase();
-    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  _DayStyle _dayStatusStyle(WeeklyDayStatus status) {
+    switch (status) {
+      case WeeklyDayStatus.present:
+        return const _DayStyle(
+          bg: Color(0xFFDCFCE7),
+          fg: Color(0xFF166534),
+          label: 'Present',
+        );
+      case WeeklyDayStatus.late:
+        return const _DayStyle(
+          bg: Color(0xFFFEF3C7),
+          fg: Color(0xFFB45309),
+          label: 'Late',
+        );
+      case WeeklyDayStatus.absent:
+        return const _DayStyle(
+          bg: Color(0xFFFEE2E2),
+          fg: Color(0xFFB91C1C),
+          label: 'Absent',
+        );
+      case WeeklyDayStatus.dayOff:
+        return const _DayStyle(
+          bg: Color(0xFFF1F5F9),
+          fg: Color(0xFF334155),
+          label: 'Day Off',
+        );
+      case WeeklyDayStatus.pending:
+        return const _DayStyle(
+          bg: Color(0xFFF8FAFC),
+          fg: Color(0xFF64748B),
+          label: 'Pending',
+        );
+    }
   }
 }
 
-class _StatusButton extends StatelessWidget {
-  const _StatusButton({
+class _DayStyle {
+  const _DayStyle({
+    required this.bg,
+    required this.fg,
     required this.label,
-    required this.icon,
-    required this.color,
-    required this.selected,
-    this.onTap,
   });
-
+  final Color bg;
+  final Color fg;
   final String label;
-  final IconData icon;
+}
+
+// ── Time chip ─────────────────────────────────────────────────────────────────
+class _TimeChip extends StatelessWidget {
+  const _TimeChip({
+    required this.label, required this.time,
+    required this.fmtTime, required this.color, this.onTap,
+  });
+  final String label;
+  final DateTime? time;
+  final String Function(DateTime?) fmtTime;
   final Color color;
-  final bool selected;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
+    final has = time != null;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: has ? color.withValues(alpha: 0.07) : const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: has ? color.withValues(alpha: 0.45) : const Color(0xFFE2E8F0)),
+        ),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text(label,
+              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
+                  color: has ? color : AppTheme.mediumGray)),
+          const SizedBox(height: 3),
+          Text(fmtTime(time),
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
+                  color: has ? color : AppTheme.mediumGray)),
+        ]),
+      ),
+    );
+  }
+}
+
+// ── Quick mark button ─────────────────────────────────────────────────────────
+class _QuickBtn extends StatelessWidget {
+  const _QuickBtn({required this.label, required this.icon,
+      required this.color, required this.selected, this.onTap});
+  final String label; final IconData icon;
+  final Color color; final bool selected; final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Material(
       color: selected ? color.withValues(alpha: 0.14) : const Color(0xFFF8FAFC),
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(vertical: 9),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: selected ? color : const Color(0xFFE2E8F0)),
+            border: Border.all(
+                color: selected ? color : const Color(0xFFE2E8F0)),
           ),
+          child: Column(children: [
+            Icon(icon, size: 17,
+                color: selected ? color : AppTheme.mediumGray),
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: selected ? color : AppTheme.mediumGray)),
+          ]),
+        ),
+      ),
+    ),
+  );
+}
+
+// ── History section ───────────────────────────────────────────────────────────
+class _HistorySection extends StatelessWidget {
+  const _HistorySection({
+    required this.worker, required this.history,
+    required this.isOpen, required this.onToggle,
+    required this.fmtDate, required this.calcHours, required this.calcStatus,
+  });
+  final RegisteredWorker worker;
+  final List<({DateTime date, AttendanceRecord rec})> history;
+  final bool isOpen;
+  final VoidCallback onToggle;
+  final String Function(DateTime) fmtDate;
+  final double Function(AttendanceRecord) calcHours;
+  final String Function(AttendanceRecord) calcStatus;
+
+  Color _statusColor(String s) => switch (s) {
+    'Present'  => const Color(0xFF16A34A),
+    'Late'     => const Color(0xFFF97316),
+    'Half day' => const Color(0xFFF59E0B),
+    'Absent'   => const Color(0xFFEF4444),
+    _          => const Color(0xFF94A3B8),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Column(
+        children: [
+          // Toggle header
+          InkWell(
+            onTap: onToggle,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(children: [
+                CircleAvatar(
+                  radius: 16,
+                    backgroundColor:
+                      AppTheme.residentBlue.withValues(alpha: 0.1),
+                  child: Text(
+                    worker.workerName.isNotEmpty
+                        ? worker.workerName[0].toUpperCase() : '?',
+                    style: const TextStyle(fontWeight: FontWeight.w900,
+                        color: AppTheme.residentBlue, fontSize: 12),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(worker.workerName,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w800)),
+                    Text('${history.length} records · '
+                        '₱${worker.rate.toStringAsFixed(0)}/day',
+                        style: const TextStyle(
+                            fontSize: 11, color: AppTheme.mediumGray)),
+                  ],
+                )),
+                Icon(isOpen ? Icons.expand_less : Icons.expand_more,
+                    color: AppTheme.mediumGray),
+              ]),
+            ),
+          ),
+          // History rows
+          if (isOpen) ...[
+            const Divider(height: 1, thickness: 0.5,
+                indent: 14, endIndent: 14),
+            if (history.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No past records yet.',
+                    style: TextStyle(color: AppTheme.mediumGray)),
+              )
+            else
+              ...history.take(15).map((h) {
+                final hrs = calcHours(h.rec);
+                final pay = hrs > 0 && worker.rate > 0
+                    ? (worker.rate * (hrs / 8)).round() : 0;
+                final st = calcStatus(h.rec);
+                final sc = _statusColor(st);
+                return ListTile(
+                  dense: true,
+                  title: Text(fmtDate(h.date),
+                      style: const TextStyle(fontWeight: FontWeight.w700,
+                          fontSize: 13)),
+                  subtitle: Text('$hrs hrs${pay > 0 ? " · ₱$pay" : ""}',
+                      style: const TextStyle(fontSize: 11)),
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: sc.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(st, style: TextStyle(
+                        color: sc, fontSize: 11, fontWeight: FontWeight.w800)),
+                  ),
+                );
+              }),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ── Register worker bottom sheet ──────────────────────────────────────────────
+class _RegisterWorkerSheet extends StatefulWidget {
+  const _RegisterWorkerSheet();
+  @override
+  State<_RegisterWorkerSheet> createState() => _RegisterWorkerSheetState();
+}
+
+class _RegisterWorkerSheetState extends State<_RegisterWorkerSheet> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameCtrl = TextEditingController();
+  final _rateCtrl = TextEditingController(text: '450');
+  String _position = 'Laborer';
+
+  static const _positions = [
+    'Laborer', 'Mason', 'Carpenter', 'Electrician', 'Plumber',
+    'Steelman', 'Foreman', 'Heavy equipment operator', 'Site Engineer', 'Other',
+  ];
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose(); _rateCtrl.dispose(); super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    final rate = double.tryParse(_rateCtrl.text.trim()) ?? 0;
+    Navigator.pop(context, ManualWorkerInput(
+      workerName: _nameCtrl.text.trim(),
+      position: _position,
+      rate: rate,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+        child: Form(
+          key: _formKey,
           child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, size: 18, color: selected ? color : AppTheme.mediumGray),
-              const SizedBox(height: 2),
-              Text(label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    color: selected ? color : AppTheme.mediumGray,
-                  )),
+              // Title
+              Row(children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.residentBlue.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.person_add_alt,
+                      color: AppTheme.residentBlue, size: 20),
+                ),
+                const SizedBox(width: 12),
+                Text('Register worker',
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w900)),
+              ]),
+              const SizedBox(height: 16),
+              // Full name
+              TextFormField(
+                controller: _nameCtrl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'Full name',
+                  hintText: 'Juan dela Cruz',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: const Color(0xFFF8FAFC),
+                ),
+                validator: (v) => (v ?? '').trim().isEmpty
+                    ? 'Name is required' : null,
+              ),
+              const SizedBox(height: 12),
+              // Position
+              DropdownButtonFormField<String>(
+                initialValue: _position,
+                decoration: InputDecoration(
+                  labelText: 'Position',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: const Color(0xFFF8FAFC),
+                ),
+                items: _positions.map((p) =>
+                    DropdownMenuItem(value: p, child: Text(p))).toList(),
+                onChanged: (v) =>
+                    setState(() => _position = v ?? 'Laborer'),
+              ),
+              const SizedBox(height: 12),
+              // Daily rate
+              TextFormField(
+                controller: _rateCtrl,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: 'Daily rate',
+                  prefixText: '₱ ',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: const Color(0xFFF8FAFC),
+                ),
+                validator: (v) {
+                  final r = double.tryParse((v ?? '').trim());
+                  if (r == null || r <= 0) {
+                    return 'Enter a valid rate';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: FilledButton(
+                  onPressed: _submit,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.residentBlue,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                  ),
+                  child: const Text('Add worker',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w900, fontSize: 15)),
+                ),
+              ),
             ],
           ),
         ),
@@ -1401,149 +1755,390 @@ class _StatusButton extends StatelessWidget {
   }
 }
 
-class _RegisterWorkerSheet extends StatefulWidget {
-  const _RegisterWorkerSheet();
+// ── Worker detail sheet ───────────────────────────────────────────────────────
+class _WorkerDetailSheet extends StatelessWidget {
+  const _WorkerDetailSheet({
+    required this.record,
+    required this.weeklyRow,
+    required this.history,
+    required this.calcHours,
+    required this.calcStatus,
+    required this.fmtTime,
+    this.onDayTap,
+  });
 
-  @override
-  State<_RegisterWorkerSheet> createState() => _RegisterWorkerSheetState();
-}
+  final AttendanceRecord record;
+  final WeeklyWorkerRow? weeklyRow;
+  final List<({DateTime date, AttendanceRecord rec})> history;
+  final double Function(AttendanceRecord) calcHours;
+  final String Function(AttendanceRecord) calcStatus;
+  final String Function(DateTime?) fmtTime;
+  final void Function(WeeklyDayCell cell)? onDayTap;
 
-class _RegisterWorkerSheetState extends State<_RegisterWorkerSheet> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _rateController = TextEditingController(text: '450');
-  String _position = 'Laborer';
-
-  static const _positions = [
-    'Carpenter',
-    'Mason',
-    'Electrician',
-    'Plumber',
-    'Steel Fixer',
-    'Foreman',
-    'Laborer',
-    'Site Engineer',
-    'Other',
-  ];
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _rateController.dispose();
-    super.dispose();
+  static String _initials(String name) {
+    final p = name.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    if (p.isEmpty) return '?';
+    if (p.length == 1) return p[0][0].toUpperCase();
+    return '${p[0][0]}${p[1][0]}'.toUpperCase();
   }
 
-  void _submit() {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
-    final rate = double.tryParse(_rateController.text.trim()) ?? 0;
-    Navigator.pop(
-      context,
-      ManualWorkerInput(
-        workerName: _nameController.text.trim(),
-        position: _position,
-        rate: rate,
-      ),
-    );
+  Color _statusColor(String s) => switch (s) {
+        'Present' => const Color(0xFF16A34A),
+        'Late' => const Color(0xFFF97316),
+        'Half day' => const Color(0xFFF59E0B),
+        'Absent' => const Color(0xFFEF4444),
+        _ => const Color(0xFF94A3B8),
+      };
+
+  _DayStyle _dayStyle(WeeklyDayStatus s) {
+    switch (s) {
+      case WeeklyDayStatus.present:
+        return const _DayStyle(bg: Color(0xFFDCFCE7), fg: Color(0xFF166534), label: 'P');
+      case WeeklyDayStatus.late:
+        return const _DayStyle(bg: Color(0xFFFEF3C7), fg: Color(0xFFB45309), label: 'L');
+      case WeeklyDayStatus.absent:
+        return const _DayStyle(bg: Color(0xFFFEE2E2), fg: Color(0xFFB91C1C), label: 'A');
+      case WeeklyDayStatus.dayOff:
+        return const _DayStyle(bg: Color(0xFFF1F5F9), fg: Color(0xFF94A3B8), label: '-');
+      case WeeklyDayStatus.pending:
+        return const _DayStyle(bg: Color(0xFFF8FAFC), fg: Color(0xFF94A3B8), label: '?');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 8, 20, 20 + bottom),
-      child: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+    final rate = record.rate;
+
+    // Weekly salary calculation
+    double weeklyHours = 0;
+    double weeklySalary = 0;
+    if (weeklyRow != null) {
+      for (final day in weeklyRow!.days) {
+        if (day.record != null &&
+            (day.status == WeeklyDayStatus.present ||
+                day.status == WeeklyDayStatus.late)) {
+          final h = calcHours(day.record!);
+          weeklyHours += h;
+          if (rate > 0) weeklySalary += rate * (h / 8);
+        } else if (day.status == WeeklyDayStatus.present ||
+            day.status == WeeklyDayStatus.late) {
+          // No record but marked present — count as full day
+          weeklyHours += 8;
+          if (rate > 0) weeklySalary += rate;
+        }
+      }
+    }
+
+    // All-time totals from history
+    double totalHoursAllTime = 0;
+    double totalSalaryAllTime = 0;
+    int presentDays = 0;
+    int absentDays = 0;
+    for (final h in history) {
+      final hrs = calcHours(h.rec);
+      final st = calcStatus(h.rec);
+      if (st != 'Absent') {
+        totalHoursAllTime += hrs;
+        if (rate > 0) totalSalaryAllTime += rate * (hrs / 8);
+        presentDays++;
+      } else {
+        absentDays++;
+      }
+    }
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      maxChildSize: 0.95,
+      minChildSize: 0.5,
+      builder: (context, scrollController) => ListView(
+        controller: scrollController,
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
+        children: [
+          // ── Worker header ───────────────────────────────────────────────
+          Row(children: [
+            CircleAvatar(
+              radius: 26,
+              backgroundColor: AppTheme.residentBlue.withValues(alpha: 0.10),
+              child: Text(_initials(record.workerName),
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      color: AppTheme.residentBlue,
+                      fontSize: 18)),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(record.workerName,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w900)),
+                  Text(
+                    record.position.isEmpty ? 'Worker' : record.position,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: AppTheme.mediumGray),
+                  ),
+                  if (rate > 0)
+                    Text('₱${rate.toStringAsFixed(0)} / day',
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF7C3AED))),
+                ],
+              ),
+            ),
+          ]),
+          const SizedBox(height: 20),
+
+          // ── All-time summary ────────────────────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppTheme.residentBlue.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color: AppTheme.residentBlue.withValues(alpha: 0.12)),
+            ),
+            child: Row(children: [
+              _StatCell(label: 'Days worked', value: '$presentDays',
+                  color: const Color(0xFF16A34A)),
+              _StatCell(label: 'Days absent', value: '$absentDays',
+                  color: const Color(0xFFEF4444)),
+              _StatCell(
+                  label: 'Total hours',
+                  value: totalHoursAllTime.toStringAsFixed(1),
+                  color: AppTheme.residentBlue),
+              if (rate > 0)
+                _StatCell(
+                    label: 'Earned (est.)',
+                    value: '₱${totalSalaryAllTime.round()}',
+                    color: const Color(0xFF7C3AED)),
+            ]),
+          ),
+          const SizedBox(height: 20),
+
+          // ── Weekly Mon–Sat grid ─────────────────────────────────────────
+          if (weeklyRow != null) ...[
+            Row(children: [
+              Expanded(
+                child: Text('This week',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w900)),
+              ),
+              Text(
+                '${weeklyRow!.presentCount} / ${weeklyRow!.workDays} days  ·  '
+                '${weeklyHours.toStringAsFixed(1)} hrs'
+                '${rate > 0 ? "  ·  ₱${weeklySalary.round()}" : ""}',
+                style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.mediumGray),
+              ),
+            ]),
+            const SizedBox(height: 10),
+            // Day cells
             Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E3A8A).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.badge_outlined, color: Color(0xFF1E3A8A)),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Register Worker',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              children: weeklyRow!.days.map((cell) {
+                final style = _dayStyle(cell.status);
+                const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                final dayLabel = days[cell.date.weekday - 1];
+                final dateLabel =
+                    '${cell.date.month}/${cell.date.day}';
+                final hrs = cell.record != null
+                    ? calcHours(cell.record!)
+                    : (cell.status == WeeklyDayStatus.present ||
+                            cell.status == WeeklyDayStatus.late
+                        ? 8.0
+                        : 0.0);
+                final pay = rate > 0 && hrs > 0
+                    ? '₱${(rate * hrs / 8).round()}'
+                    : '';
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: onDayTap != null ? () => onDayTap!(cell) : null,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 5),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 10, horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: style.bg,
+                      borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: style.fg.withValues(alpha: 0.3)),
                       ),
-                      Text(
-                        'Saved to site roster • auto-added to checklist',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                      child: Column(
+                        children: [
+                          Text(dayLabel,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: style.fg)),
+                          Text(dateLabel,
+                              style: TextStyle(
+                                  fontSize: 9,
+                                  color: style.fg.withValues(alpha: 0.7))),
+                          const SizedBox(height: 6),
+                          Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: style.fg.withValues(alpha: 0.15),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Center(
+                              child: Text(style.label,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
+                                      color: style.fg)),
+                            ),
+                          ),
+                          if (hrs > 0) ...[
+                            const SizedBox(height: 4),
+                            Text('${hrs.toStringAsFixed(0)}h',
+                                style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    color: style.fg)),
+                          ],
+                          if (pay.isNotEmpty) ...[
+                            const SizedBox(height: 1),
+                            Text(pay,
+                                style: const TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF7C3AED))),
+                          ],
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ],
+                );
+              }).toList(),
             ),
-            const SizedBox(height: 18),
-            TextFormField(
-              controller: _nameController,
-              textCapitalization: TextCapitalization.words,
-              decoration: InputDecoration(
-                labelText: 'Full name *',
-                prefixIcon: const Icon(Icons.person_outline),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-              validator: (v) => (v == null || v.trim().isEmpty) ? 'Worker name is required' : null,
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _position,
-              decoration: InputDecoration(
-                labelText: 'Position / trade *',
-                prefixIcon: const Icon(Icons.engineering_outlined),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-              items: _positions.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
-              onChanged: (v) => setState(() => _position = v ?? _position),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _rateController,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(
-                labelText: 'Daily rate (₱) *',
-                prefixIcon: const Icon(Icons.payments_outlined),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-              validator: (v) {
-                final rate = double.tryParse((v ?? '').trim());
-                if (rate == null || rate <= 0) return 'Enter a valid daily rate';
-                return null;
-              },
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Workers stay registered across weeks. Each Monday starts a fresh attendance checklist.',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppTheme.mediumGray,
-                    height: 1.35,
-                  ),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _submit,
-              icon: const Icon(Icons.how_to_reg),
-              label: const Text('Register & add to checklist'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF1E3A8A),
-                minimumSize: const Size.fromHeight(50),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              ),
-            ),
+            const SizedBox(height: 6),
+            Text('Tap a day to update attendance',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: AppTheme.mediumGray)),
+            const SizedBox(height: 20),
           ],
+
+          // ── History ─────────────────────────────────────────────────────
+          Row(children: [
+            Expanded(
+              child: Text('Attendance history',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleSmall
+                      ?.copyWith(fontWeight: FontWeight.w900)),
+            ),
+            Text('${history.length} records',
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w600)),
+          ]),
+              const SizedBox(height: 8),
+          if (history.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text('No records yet.',
+                  style: TextStyle(color: AppTheme.mediumGray)),
+            )
+          else
+            ...history.take(30).map((h) {
+              final hrs = calcHours(h.rec);
+              final st = calcStatus(h.rec);
+              final sc = _statusColor(st);
+              final pay = hrs > 0 && rate > 0
+                  ? (rate * hrs / 8).round()
+                  : 0;
+              final d = h.date;
+              final dateStr =
+                  '${d.month.toString().padLeft(2, '0')}/'
+                  '${d.day.toString().padLeft(2, '0')}/'
+                  '${d.year}';
+              return Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(10),
+                  border:
+                      Border.all(color: const Color(0xFFE5E7EB)),
+                ),
+                child: Row(children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(dateStr,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13)),
+                        Text(
+                          '$hrs hrs'
+                          '${pay > 0 ? " · ₱$pay estimated" : ""}',
+                          style: const TextStyle(
+                              fontSize: 11,
+                              color: AppTheme.mediumGray),
+                        ),
+            ],
+          ),
         ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: sc.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(st,
+                        style: TextStyle(
+                            color: sc,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800)),
+                  ),
+                ]),
+              );
+            }),
+        ],
       ),
     );
   }
+}
+
+class _StatCell extends StatelessWidget {
+  const _StatCell(
+      {required this.label, required this.value, required this.color});
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Column(children: [
+          Text(value,
+              style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
+                  color: color)),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.mediumGray)),
+        ]),
+      );
 }

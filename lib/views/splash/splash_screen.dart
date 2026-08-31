@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/auth_service.dart';
+import '../../services/session_timeout_service.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
@@ -54,73 +55,59 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     if (!mounted) return;
 
-    String? nextRoute;
+    var nextRoute = RouteNames.login;
 
     try {
-      // Check authentication state
       final authService = ref.read(authServiceProvider);
       var isAuthenticated = authService.isAuthenticated;
       final hasFirebaseUser = authService.currentFirebaseUser != null;
 
-      // If FirebaseAuth has a user but our local user model is missing,
-      // try to rehydrate it from Firestore.
-      if (!isAuthenticated && hasFirebaseUser) {
-        final ok = await authService
-            .refreshUserData()
-            .timeout(const Duration(seconds: 12), onTimeout: () => false);
-        if (!ok) {
-          await authService.signOut();
-          nextRoute = RouteNames.login;
-          return;
-        }
-
-        // Recompute auth state after rehydration.
-        isAuthenticated = authService.isAuthenticated;
-      }
-
-      if (isAuthenticated) {
-        // Validate privileged email for Admin
-        final user = authService.currentUser;
-        final userRole = user?.role;
-        final email = user?.email.toLowerCase();
-
-        if (userRole == AppConstants.roleAdmin &&
-            email != AppConstants.adminEmail.toLowerCase()) {
-          await authService.signOut();
-          nextRoute = RouteNames.login;
-          return;
-        }
-
-        // User is logged in, navigate to appropriate home
-        String homeRoute;
-
-        switch (userRole) {
-          case AppConstants.roleSiteManager:
-            homeRoute = RouteNames.siteManagerHome;
-            break;
-          case AppConstants.roleAdmin:
-            homeRoute = RouteNames.adminHome;
-            break;
-          case AppConstants.rolePayroll:
-            homeRoute = RouteNames.payrollHome;
-            break;
-          case AppConstants.roleMaterials:
-            homeRoute = RouteNames.materialsHome;
-            break;
-          case AppConstants.roleCeo:
-            homeRoute = RouteNames.ceoHome;
-            break;
-          default:
-            homeRoute = RouteNames.login;
-        }
-
-        nextRoute = homeRoute;
+      if (hasFirebaseUser && SessionTimeoutService.instance.isExpired) {
+        await authService.signOut();
       } else {
-        // User is not logged in, go to login
-        nextRoute = RouteNames.login;
+        if (!isAuthenticated && hasFirebaseUser) {
+          final ok = await authService
+              .refreshUserData()
+              .timeout(const Duration(seconds: 12), onTimeout: () => false);
+          if (!ok) {
+            await authService.signOut();
+          } else {
+            isAuthenticated = authService.isAuthenticated;
+          }
+        }
+
+        if (isAuthenticated) {
+          final user = authService.currentUser;
+          final userRole = user?.role;
+          final email = user?.email.toLowerCase();
+
+          if (email != AppConstants.adminEmail.toLowerCase() &&
+              !authService.isOtpVerified) {
+            nextRoute = RouteNames.siteManagerOtp;
+          } else {
+            switch (userRole) {
+              case AppConstants.roleSiteManager:
+                nextRoute = RouteNames.siteManagerHome;
+                break;
+              case AppConstants.roleAdmin:
+                nextRoute = RouteNames.adminHome;
+                break;
+              case AppConstants.rolePayroll:
+                nextRoute = RouteNames.payrollHome;
+                break;
+              case AppConstants.roleMaterials:
+                nextRoute = RouteNames.materialsHome;
+                break;
+              case AppConstants.roleCeo:
+                nextRoute = RouteNames.ceoHome;
+                break;
+              default:
+                nextRoute = RouteNames.login;
+            }
+          }
+        }
       }
-    } catch (e) {
-      // Error occurred, go to login
+    } catch (_) {
       nextRoute = RouteNames.login;
     }
 

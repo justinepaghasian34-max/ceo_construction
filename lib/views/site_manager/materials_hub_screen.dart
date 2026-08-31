@@ -21,7 +21,7 @@ class MaterialsHubScreen extends StatelessWidget {
       backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         elevation: 0,
-        backgroundColor: const Color(0xFF1E3A8A),
+        backgroundColor: AppTheme.residentBlue,
         foregroundColor: Colors.white,
         automaticallyImplyLeading: false,
         leading: showBack
@@ -48,7 +48,7 @@ class MaterialsHubScreen extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xFF1E3A8A), Color(0xFF2563EB)],
+                colors: AppTheme.residentHeaderGradient,
               ),
               borderRadius: BorderRadius.circular(18),
             ),
@@ -85,7 +85,7 @@ class MaterialsHubScreen extends StatelessWidget {
           const SizedBox(height: 10),
           _MaterialHubTile(
             icon: Icons.local_shipping_outlined,
-            iconColor: const Color(0xFF2563EB),
+            iconColor: AppTheme.residentBlue,
             iconBg: const Color(0xFFEFF6FF),
             title: 'Material Delivery',
             subtitle: 'Log supplier deliveries received on site',

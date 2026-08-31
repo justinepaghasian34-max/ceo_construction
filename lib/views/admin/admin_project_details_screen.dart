@@ -16,7 +16,9 @@ class AdminProjectDetailsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseService.instance.projectsCollection.doc(projectId).snapshots(),
+      stream: FirebaseService.instance.projectsCollection
+          .doc(projectId)
+          .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return Scaffold(
@@ -121,17 +123,27 @@ class _ProjectDetailsBody extends StatelessWidget {
     final progress = (data['progressPercentage'] ?? 0).toDouble().clamp(0, 100);
     final projectCode = (data['projectCode'] ?? projectId).toString();
     final location = (data['location'] ?? '').toString();
-    final siteManager = (data['siteManagerName'] ?? data['siteManagerId'] ?? 'Unassigned').toString();
+    final siteManager =
+        (data['siteManagerName'] ?? data['siteManagerId'] ?? 'Unassigned')
+            .toString();
+    final projectEngineerEmail =
+        (data['projectEngineerEmail'] ?? '').toString().trim();
     final projectType = (data['projectType'] ?? '').toString();
     final sourceOfFund = (data['sourceOfFund'] ?? '').toString();
     final description = (data['description'] ?? '').toString();
     final contractDocs = (data['contractDocuments'] ?? '').toString();
     final planUrl = (data['planUrl'] ?? '').toString();
-    final planAnalysis = (data['planAnalysis'] as Map?)?.cast<String, dynamic>();
+    final blueprintCount = (data['blueprintUrls'] is Iterable)
+        ? (data['blueprintUrls'] as Iterable).length
+        : (planUrl.isEmpty ? 0 : 1);
+    final actualCount = (data['referencePhotoUrls'] is Iterable)
+        ? (data['referencePhotoUrls'] as Iterable).length
+        : 0;
+    final planAnalysis =
+        (data['planAnalysis'] as Map?)?.cast<String, dynamic>();
     final statusColor = _statusColor(status);
-    final formattedStatus = status.isEmpty
-        ? '—'
-        : status[0].toUpperCase() + status.substring(1);
+    final formattedStatus =
+        status.isEmpty ? '—' : status[0].toUpperCase() + status.substring(1);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -152,7 +164,8 @@ class _ProjectDetailsBody extends StatelessWidget {
                       color: AppTheme.deepBlue.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(14),
                     ),
-                    child: const Icon(Icons.apartment, color: AppTheme.deepBlue, size: 28),
+                    child: const Icon(Icons.apartment,
+                        color: AppTheme.deepBlue, size: 28),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -161,7 +174,10 @@ class _ProjectDetailsBody extends StatelessWidget {
                       children: [
                         Text(
                           name,
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          style: Theme.of(context)
+                              .textTheme
+                              .headlineSmall
+                              ?.copyWith(
                                 fontWeight: FontWeight.w800,
                                 color: const Color(0xFF0F172A),
                               ),
@@ -169,16 +185,18 @@ class _ProjectDetailsBody extends StatelessWidget {
                         const SizedBox(height: 6),
                         Text(
                           'Project ID · $projectCode',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: AppTheme.mediumGray,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: AppTheme.mediumGray,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                       ],
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
                       color: statusColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(999),
@@ -203,18 +221,20 @@ class _ProjectDetailsBody extends StatelessWidget {
                       children: [
                         Text(
                           'Overall progress',
-                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                color: AppTheme.mediumGray,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.labelMedium?.copyWith(
+                                    color: AppTheme.mediumGray,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                         const SizedBox(height: 6),
                         Text(
                           '${progress.toStringAsFixed(0)}%',
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w800,
-                                color: AppTheme.deepBlue,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    fontWeight: FontWeight.w800,
+                                    color: AppTheme.deepBlue,
+                                  ),
                         ),
                       ],
                     ),
@@ -225,7 +245,8 @@ class _ProjectDetailsBody extends StatelessWidget {
                     child: CircularProgressIndicator(
                       value: progress / 100,
                       strokeWidth: 7,
-                      backgroundColor: AppTheme.deepBlue.withValues(alpha: 0.08),
+                      backgroundColor:
+                          AppTheme.deepBlue.withValues(alpha: 0.08),
                       color: const Color(0xFF2DD4BF),
                     ),
                   ),
@@ -252,19 +273,41 @@ class _ProjectDetailsBody extends StatelessWidget {
               title: 'Overview',
               icon: Icons.info_outline,
               tiles: [
-                _DetailTile(Icons.pin_drop_outlined, 'Location', location.isEmpty ? '—' : location),
-                _DetailTile(Icons.person_outline, 'Site manager', siteManager),
-                _DetailTile(Icons.category_outlined, 'Project type', projectType.isEmpty ? '—' : projectType),
-                _DetailTile(Icons.account_balance_outlined, 'Source of fund', sourceOfFund.isEmpty ? '—' : sourceOfFund),
+                _DetailTile(Icons.pin_drop_outlined, 'Location',
+                    location.isEmpty ? '—' : location),
+                _DetailTile(
+                    Icons.person_outline, 'Resident Engineer', siteManager),
+                _DetailTile(
+                  Icons.alternate_email,
+                  'Project Engineer Gmail',
+                  projectEngineerEmail.isEmpty ? '—' : projectEngineerEmail,
+                ),
+                _DetailTile(
+                  Icons.architecture_outlined,
+                  'Blueprints',
+                  '$blueprintCount / 1',
+                ),
+                _DetailTile(
+                  Icons.photo_library_outlined,
+                  'Actual project photos',
+                  '$actualCount / 1',
+                ),
+                _DetailTile(Icons.category_outlined, 'Project type',
+                    projectType.isEmpty ? '—' : projectType),
+                _DetailTile(Icons.account_balance_outlined, 'Source of fund',
+                    sourceOfFund.isEmpty ? '—' : sourceOfFund),
               ],
             );
             final timeline = _InfoSection(
               title: 'Timeline & Budget',
               icon: Icons.calendar_month_outlined,
               tiles: [
-                _DetailTile(Icons.play_circle_outline, 'Start date', _fmtDate(data['startDate'] as String?)),
-                _DetailTile(Icons.flag_outlined, 'End date', _fmtDate(data['endDate'] as String?)),
-                _DetailTile(Icons.payments_outlined, 'Approved budget', _fmtBudget(data['approvedBudget'])),
+                _DetailTile(Icons.play_circle_outline, 'Start date',
+                    _fmtDate(data['startDate'] as String?)),
+                _DetailTile(Icons.flag_outlined, 'End date',
+                    _fmtDate(data['endDate'] as String?)),
+                _DetailTile(Icons.payments_outlined, 'Approved budget',
+                    _fmtBudget(data['approvedBudget'])),
               ],
             );
 
@@ -470,7 +513,9 @@ class _PlanSection extends StatelessWidget {
     final summary = (planAnalysis?['summary'] ?? '').toString();
     final docType = (planAnalysis?['docType'] ?? '').toString();
     final mlPct = planAnalysis?['progressPercent'];
-    final labels = (planAnalysis?['labels'] as List?)?.map((e) => e.toString()).toList() ?? const <String>[];
+    final labels =
+        (planAnalysis?['labels'] as List?)?.map((e) => e.toString()).toList() ??
+            const <String>[];
 
     return GlassCard(
       borderRadius: 18,
@@ -480,7 +525,8 @@ class _PlanSection extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.architecture, size: 18, color: AppTheme.deepBlue),
+              const Icon(Icons.architecture,
+                  size: 18, color: AppTheme.deepBlue),
               const SizedBox(width: 8),
               Text(
                 'Project plan & ML analysis',
@@ -499,13 +545,16 @@ class _PlanSection extends StatelessWidget {
               decoration: BoxDecoration(
                 color: AppTheme.deepBlue.withValues(alpha: 0.05),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.deepBlue.withValues(alpha: 0.12)),
+                border: Border.all(
+                    color: AppTheme.deepBlue.withValues(alpha: 0.12)),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(
-                    docType == 'blueprint' ? Icons.draw_outlined : Icons.photo_camera_outlined,
+                    docType == 'blueprint'
+                        ? Icons.draw_outlined
+                        : Icons.photo_camera_outlined,
                     size: 18,
                     color: AppTheme.deepBlue,
                   ),
@@ -516,15 +565,19 @@ class _PlanSection extends StatelessWidget {
                       children: [
                         Text(
                           summary,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                         if (mlPct is num) ...[
                           const SizedBox(height: 4),
                           Text(
                             'ML estimated progress: ${mlPct.toStringAsFixed(0)}%',
-                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelSmall
+                                ?.copyWith(
                                   color: AppTheme.deepBlue,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -544,7 +597,8 @@ class _PlanSection extends StatelessWidget {
               runSpacing: 6,
               children: labels.take(8).map((l) {
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: AppTheme.mediumGray.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(999),

@@ -12,9 +12,11 @@ class WeatherService {
 
   final Dio _dio = Dio();
 
-  static const String _apiKey = '36d74affc54853e817cac837ebaf6d8a';
+  static const String _apiKey = String.fromEnvironment('OPENWEATHER_API_KEY');
   static const String _baseUrl = 'https://api.openweathermap.org/data/2.5';
   static const String _geoBaseUrl = 'https://api.openweathermap.org/geo/1.0';
+
+  bool get hasOpenWeatherMapTiles => _apiKey.isNotEmpty;
 
   static const String _visualCrossingApiKey =
       String.fromEnvironment('VISUAL_CROSSING_API_KEY');
@@ -227,21 +229,51 @@ class WeatherService {
     );
   }
 
-  /// Resolves a city/location string to coordinates via [Open-Meteo Geocoding](https://open-meteo.com/en/docs/geocoding-api).
+  /// Resolves a city/location string to coordinates via Open-Meteo, then Nominatim.
   Future<({double lat, double lon, String label})?> resolveOpenMeteoCoordinates(
     String location,
   ) async {
-    final query = location.split(',').first.trim();
-    if (query.isEmpty) return null;
+    final raw = location.trim();
+    if (raw.isEmpty) return null;
 
-    final uri = Uri.parse(_openMeteoGeocodeUrl).replace(
-      queryParameters: <String, String>{
-        'name': query,
-        'count': '1',
-        'language': 'en',
-        'format': 'json',
-      },
-    );
+    final candidates = <String>{
+      raw,
+      raw.split(',').first.trim(),
+      if (!raw.toLowerCase().contains('philippine') &&
+          !raw.toLowerCase().endsWith(', ph') &&
+          !raw.toLowerCase().endsWith(',ph'))
+        '$raw, Philippines',
+    }.where((s) => s.isNotEmpty).toList();
+
+    for (final query in candidates) {
+      final hit = await _geocodeOpenMeteoOnce(query, countryCode: 'PH');
+      if (hit != null) return hit;
+    }
+    for (final query in candidates) {
+      final hit = await _geocodeOpenMeteoOnce(query);
+      if (hit != null) return hit;
+    }
+    for (final query in candidates) {
+      final hit = await _geocodeNominatim(query);
+      if (hit != null) return hit;
+    }
+    return null;
+  }
+
+  Future<({double lat, double lon, String label})?> _geocodeOpenMeteoOnce(
+    String query, {
+    String? countryCode,
+  }) async {
+    final params = <String, String>{
+      'name': query,
+      'count': '1',
+      'language': 'en',
+      'format': 'json',
+    };
+    if (countryCode != null && countryCode.isNotEmpty) {
+      params['countryCode'] = countryCode;
+    }
+    final uri = Uri.parse(_openMeteoGeocodeUrl).replace(queryParameters: params);
 
     final response = await http.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) return null;
@@ -263,6 +295,59 @@ class WeatherService {
     if (country.isNotEmpty) labelParts.add(country);
 
     return (lat: lat, lon: lon, label: labelParts.join(', '));
+  }
+
+  Future<({double lat, double lon, String label})?> _geocodeNominatim(
+    String query,
+  ) async {
+    final uri = Uri.parse('https://nominatim.openstreetmap.org/search').replace(
+      queryParameters: <String, String>{
+        'q': query,
+        'format': 'json',
+        'limit': '1',
+        'countrycodes': 'ph',
+      },
+    );
+    try {
+      final response = await http.get(
+        uri,
+        headers: const {
+          'User-Agent': 'CEO-Construction-Monitoring/1.0 (admin map pins)',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! List || decoded.isEmpty) return null;
+      final first = decoded.first;
+      if (first is! Map) return null;
+      final lat = double.tryParse((first['lat'] ?? '').toString());
+      final lon = double.tryParse((first['lon'] ?? '').toString());
+      if (lat == null || lon == null) return null;
+      final label = (first['display_name'] ?? query).toString().trim();
+      return (lat: lat, lon: lon, label: label.isEmpty ? query : label);
+    } catch (e) {
+      debugPrint('_geocodeNominatim failed: $e');
+      return null;
+    }
+  }
+
+  /// Firestore pin fields from the Admin "Project Location" text.
+  Future<Map<String, dynamic>> pinFieldsFromLocation(String? location) async {
+    final query = (location ?? '').trim();
+    if (query.isEmpty) return const {};
+    try {
+      final geo = await resolveOpenMeteoCoordinates(query);
+      if (geo == null) return const {};
+      return {
+        'latitude': geo.lat,
+        'longitude': geo.lon,
+        'geoAddress': geo.label,
+      };
+    } catch (e) {
+      debugPrint('pinFieldsFromLocation failed: $e');
+      return const {};
+    }
   }
 
   /// Live site metrics from [Open-Meteo Forecast API](https://api.open-meteo.com/v1/forecast) (no API key).

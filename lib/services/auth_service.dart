@@ -1,12 +1,18 @@
+import 'dart:async';
 import 'dart:developer' as developer;
+
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../models/user_model.dart';
+
 import '../core/constants/app_constants.dart';
-import 'firebase_service.dart';
+import '../models/user_model.dart';
+import '../utils/password_validator.dart';
 import 'archive_service.dart';
-import 'hive_service.dart';
 import 'audit_log_service.dart';
+import 'firebase_service.dart';
+import 'hive_service.dart';
+import 'session_timeout_service.dart';
 
 class AuthService {
   static AuthService? _instance;
@@ -25,30 +31,44 @@ class AuthService {
   // Get current user model
   UserModel? get currentUser => _hiveService.getCurrentUser();
 
+  bool get isOtpVerified {
+    final uid = currentFirebaseUser?.uid;
+    if (uid == null) return false;
+    final stored = _hiveService.settingsBox.get('otp_verified_$uid');
+    return stored is Map && stored['verified'] == true;
+  }
+
+  bool get isEmailVerified => currentFirebaseUser?.emailVerified == true;
+
   // Sign in with email and password
   Future<AuthResult> signInWithEmailAndPassword(
     String email,
     String password,
   ) async {
+    final emailLower = email.trim().toLowerCase();
     try {
-      // Sign in with Firebase
+      final blocked = await _assertLoginAllowed(emailLower);
+      if (blocked != null) return blocked;
+
+      // Sign in with Firebase. Passwords are hashed with scrypt by Firebase Auth;
+      // this client never stores or hashes the password.
       final credential = await _firebaseService.signInWithEmailAndPassword(
-        email,
+        emailLower,
         password,
       );
       final firebaseUser = credential.user;
 
       if (firebaseUser == null) {
-        await AuditLogService.instance.logAction(
-          action: 'login_failed',
-          details: {'email': email.toLowerCase(), 'reason': 'no_firebase_user'},
-        );
-        return AuthResult(success: false, message: 'Authentication failed');
+        await _recordAuthFailure(emailLower);
+        return AuthResult(success: false, message: _genericLoginError);
       }
 
-      // Refresh
       await firebaseUser.reload();
-      final emailLower = (firebaseUser.email ?? email).toLowerCase();
+      final refreshed = _firebaseService.auth.currentUser;
+      if (refreshed == null) {
+        await _recordAuthFailure(emailLower);
+        return AuthResult(success: false, message: _genericLoginError);
+      }
 
       // Get or create user data in Firestore
       final docRef = _firebaseService.usersCollection.doc(firebaseUser.uid);
@@ -98,7 +118,11 @@ class AuthService {
         if (updatedRole != null) {
           final now = DateTime.now().toIso8601String();
           userData = {...userData, 'role': updatedRole, 'updatedAt': now};
-          await docRef.update({'role': updatedRole, 'updatedAt': now});
+          try {
+            await docRef.update({'role': updatedRole, 'updatedAt': now});
+          } catch (_) {
+            // Role is server-controlled; continue with local view if rules block.
+          }
         }
       }
 
@@ -114,28 +138,42 @@ class AuthService {
         ...userData,
       });
 
-      // Check if user is active
       if (!userModel.isActive) {
         await signOut();
         return AuthResult(success: false, message: 'Account is deactivated');
       }
 
-      // Save user locally
       await _hiveService.saveUser(userModel);
 
-      // Persist OTP verification state for Site Manager OTP gate.
+      final otpVerified = userData['otpVerified'] == true;
       try {
-        final otpVerified = userData['otpVerified'] == true;
         await _hiveService.settingsBox.put(
           'otp_verified_${firebaseUser.uid}',
           <String, dynamic>{'verified': otpVerified},
         );
-      } catch (_) {
-        // ignore
-      }
+      } catch (_) {}
 
-      // Log successful login to audit trail (best-effort only)
+      await SessionTimeoutService.instance.beginSession(firebaseUser.uid);
+      await _recordAuthSuccess(emailLower);
+      try {
+        await firebaseUser.getIdToken(true);
+      } catch (_) {}
       await AuditLogService.instance.logLogin();
+
+      final isAdminAccount =
+          emailLower == AppConstants.adminEmail.toLowerCase();
+      final needsEmailCode = !isAdminAccount && otpVerified != true;
+      if (needsEmailCode) {
+        unawaited(sendVerificationCode());
+        return AuthResult(
+          success: true,
+          requiresEmailVerification: true,
+          requiresOtp: true,
+          user: userModel,
+          message:
+              'Enter the 6-digit verification code sent to your email.',
+        );
+      }
 
       return AuthResult(
         success: true,
@@ -143,22 +181,15 @@ class AuthService {
         user: userModel,
       );
     } on FirebaseAuthException catch (e) {
+      await _recordAuthFailure(emailLower);
       await AuditLogService.instance.logAction(
         action: 'login_failed',
-        details: {'email': email.toLowerCase(), 'errorCode': e.code},
+        details: {'errorCode': e.code},
       );
-
       return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
-    } catch (e) {
-      await AuditLogService.instance.logAction(
-        action: 'login_failed',
-        details: {'email': email.toLowerCase(), 'error': e.toString()},
-      );
-
-      return AuthResult(
-        success: false,
-        message: 'An unexpected error occurred: $e',
-      );
+    } catch (_) {
+      await _recordAuthFailure(emailLower);
+      return AuthResult(success: false, message: _genericLoginError);
     }
   }
 
@@ -171,8 +202,8 @@ class AuthService {
     required String role,
   }) async {
     try {
-      // Only allow specific roles to self-register
       const allowedRoles = <String>{
+        AppConstants.roleAdmin,
         AppConstants.roleSiteManager,
         AppConstants.rolePayroll,
         AppConstants.roleMaterials,
@@ -186,8 +217,25 @@ class AuthService {
         );
       }
 
+      final passwordError = validatePassword(password);
+      if (passwordError != null) {
+        return AuthResult(success: false, message: passwordError);
+      }
+
+      final emailLower = email.trim().toLowerCase();
+      if (emailLower == AppConstants.adminEmail.toLowerCase()) {
+        return AuthResult(
+          success: false,
+          message: 'This account cannot be self-registered.',
+        );
+      }
+
       final credential = await _firebaseService.auth
-          .createUserWithEmailAndPassword(email: email, password: password);
+          .createUserWithEmailAndPassword(
+            email: emailLower,
+            password: password,
+          )
+          .timeout(const Duration(seconds: 20));
 
       final firebaseUser = credential.user;
       if (firebaseUser == null) {
@@ -195,12 +243,10 @@ class AuthService {
       }
 
       final now = DateTime.now().toIso8601String();
-      final emailLower = (firebaseUser.email ?? email).toLowerCase();
-
       final userData = <String, dynamic>{
         'email': emailLower,
-        'firstName': firstName,
-        'lastName': lastName,
+        'firstName': firstName.trim(),
+        'lastName': lastName.trim(),
         'role': role,
         'profileImageUrl': null,
         'phoneNumber': null,
@@ -213,37 +259,99 @@ class AuthService {
         'permissions': null,
       };
 
-      await _firebaseService.usersCollection
-          .doc(firebaseUser.uid)
-          .set(userData);
-
       final userModel = UserModel.fromJson({
         'id': firebaseUser.uid,
         ...userData,
       });
-
-      await _hiveService.saveUser(userModel);
-
       try {
-        await _hiveService.settingsBox.put(
-          'otp_verified_${firebaseUser.uid}',
-          <String, dynamic>{'verified': false},
-        );
-      } catch (_) {
-        // ignore
-      }
+        await _hiveService
+            .saveUser(userModel)
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {}
+      try {
+        await SessionTimeoutService.instance
+            .beginSession(firebaseUser.uid)
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {}
+
+      // Do not block Register on Firestore. OTP uses the signed-in Auth email.
+      unawaited(
+        _firebaseService.usersCollection
+            .doc(firebaseUser.uid)
+            .set(userData)
+            .timeout(const Duration(seconds: 12))
+            .catchError((Object e, StackTrace _) {
+              developer.log(
+                'user profile write failed: $e',
+                name: 'AuthService',
+              );
+            }),
+      );
 
       return AuthResult(
         success: true,
-        message: 'Registration successful. Please verify your OTP to continue.',
+        requiresEmailVerification: true,
+        requiresOtp: true,
         user: userModel,
+        message:
+            'Account created. Enter the 6-digit code sent to your email.',
       );
     } on FirebaseAuthException catch (e) {
       return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
-    } catch (e) {
+    } on TimeoutException {
+      final existing = _firebaseService.auth.currentUser;
+      if (existing != null) {
+        return AuthResult(
+          success: true,
+          requiresEmailVerification: true,
+          requiresOtp: true,
+          message: 'Account created. Continue to enter your verification code.',
+        );
+      }
       return AuthResult(
         success: false,
-        message: 'An unexpected error occurred during registration: $e',
+        message:
+            'Registration timed out. If this email is already registered, sign in instead.',
+      );
+    } catch (_) {
+      return AuthResult(
+        success: false,
+        message: 'Registration failed. Please try again.',
+      );
+    }
+  }
+
+  Future<AuthResult> sendVerificationCode() async {
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'sendEmailOtp',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
+      );
+      await callable.call(<String, dynamic>{});
+      return AuthResult(
+        success: true,
+        requiresOtp: true,
+        requiresEmailVerification: true,
+        message: 'We sent a 6-digit verification code to your email.',
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'resource-exhausted') {
+        return AuthResult(
+          success: false,
+          requiresOtp: true,
+          message: e.message ?? 'Please wait before requesting another code.',
+        );
+      }
+      return AuthResult(
+        success: false,
+        requiresOtp: true,
+        message: e.message ?? 'Could not send the verification code.',
+      );
+    } catch (_) {
+      return AuthResult(
+        success: false,
+        requiresOtp: true,
+        message: 'Could not send the verification code. Try again.',
       );
     }
   }
@@ -253,48 +361,16 @@ class AuthService {
     required String email,
     required String password,
   }) async {
-    try {
-      // Sign in temporarily to get the user
-      final credential = await _firebaseService.auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
-
-      final firebaseUser = credential.user;
-      if (firebaseUser == null) {
-        return AuthResult(
-          success: false,
-          message: 'Unable to find user for this email.',
-        );
-      }
-
-      await firebaseUser.reload();
-      final refreshedUser = _firebaseService.auth.currentUser;
-
-      if (refreshedUser?.emailVerified == true) {
-        await _firebaseService.signOut();
-        return AuthResult(
-          success: true,
-          message: 'This email is already verified. You can sign in normally.',
-        );
-      }
-
-      await refreshedUser?.sendEmailVerification();
-      await _firebaseService.signOut();
-
-      return AuthResult(
-        success: true,
-        message:
-            'Verification email sent. Please check your inbox and spam folder, then sign in after verifying.',
-      );
-    } on FirebaseAuthException catch (e) {
-      return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
-    } catch (e) {
-      return AuthResult(
-        success: false,
-        message: 'Failed to resend verification email: $e',
-      );
+    final result = await signInWithEmailAndPassword(email, password);
+    if (!result.success) return result;
+    if (result.requiresOtp || result.requiresEmailVerification) {
+      return result;
     }
+    return AuthResult(
+      success: true,
+      message: 'This email is already verified. You can sign in normally.',
+      user: result.user,
+    );
   }
 
   // Sign out
@@ -311,17 +387,13 @@ class AuthService {
 
       // Clear Firebase auth first
       await _firebaseService.signOut();
-
-      // Clear local user data
       await _hiveService.clearUser();
+      await SessionTimeoutService.instance.clearSession();
 
-      // Clear OTP verification state
       if (uid != null) {
         try {
           await _hiveService.settingsBox.delete('otp_verified_$uid');
-        } catch (_) {
-          // ignore
-        }
+        } catch (_) {}
       }
 
       // Force invalidate providers to ensure UI updates
@@ -390,34 +462,54 @@ class AuthService {
         userData['assignedProjects'] ?? const <String>[],
       );
 
-      final projectsSnap = await _firebaseService.projectsCollection
-          .where('siteManagerId', isEqualTo: userId)
-          .get();
+      final email = (userData['email'] ?? '').toString().trim();
+      final emailLower = email.toLowerCase();
 
-      final updatedAssignedSet = <String>{
-        ...existingAssigned,
-        for (final doc in projectsSnap.docs)
-          if (!ArchiveService.isArchived(
-            (doc.data() as Map?)?.cast<String, dynamic>(),
-          ))
-            doc.id,
-      };
+      final matchedIds = <String>{...existingAssigned};
+
+      try {
+        final byId = await _firebaseService.projectsCollection
+            .where('siteManagerId', isEqualTo: userId)
+            .get();
+        for (final doc in byId.docs) {
+          final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+          if (!ArchiveService.isArchived(data)) matchedIds.add(doc.id);
+        }
+      } catch (_) {}
+
+      Future<void> addByEmail(String value) async {
+        if (value.isEmpty) return;
+        try {
+          final byEmail = await _firebaseService.projectsCollection
+              .where('projectEngineerEmail', isEqualTo: value)
+              .get();
+          for (final doc in byEmail.docs) {
+            final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+            if (!ArchiveService.isArchived(data)) matchedIds.add(doc.id);
+          }
+        } catch (_) {}
+      }
+
+      await addByEmail(email);
+      if (emailLower != email) await addByEmail(emailLower);
 
       final existingSet = existingAssigned.toSet();
-
-      // If nothing changed, avoid an unnecessary write
-      if (updatedAssignedSet.length == existingSet.length &&
-          updatedAssignedSet.containsAll(existingSet)) {
+      if (matchedIds.length == existingSet.length &&
+          matchedIds.containsAll(existingSet)) {
         return {...userData, 'assignedProjects': existingAssigned};
       }
 
-      final updatedAssigned = updatedAssignedSet.toList();
+      final updatedAssigned = matchedIds.toList();
       final now = DateTime.now().toIso8601String();
 
-      await _firebaseService.usersCollection.doc(userId).update({
-        'assignedProjects': updatedAssigned,
-        'updatedAt': now,
-      });
+      try {
+        await _firebaseService.usersCollection.doc(userId).update({
+          'assignedProjects': updatedAssigned,
+          'updatedAt': now,
+        });
+      } catch (_) {
+        // Resident Engineer cannot write assignedProjects; keep it local.
+      }
 
       return {
         ...userData,
@@ -480,21 +572,32 @@ class AuthService {
 
       if (firebaseUser == null || user == null) return false;
 
-      // Update in Firestore
+      const allowed = {
+        'firstName',
+        'lastName',
+        'phoneNumber',
+        'department',
+        'profileImageUrl',
+      };
+      final safe = <String, dynamic>{
+        for (final entry in updates.entries)
+          if (allowed.contains(entry.key)) entry.key: entry.value,
+        'updatedAt': DateTime.now().toIso8601String(),
+      };
+      if (safe.length <= 1) return false;
+
       await _firebaseService.usersCollection
           .doc(firebaseUser.uid)
-          .update(updates);
+          .update(safe);
 
-      // Update locally
       final updatedUser = UserModel.fromJson({
         ...user.toJson(),
-        ...updates,
-        'updatedAt': DateTime.now().toIso8601String(),
+        ...safe,
       });
 
       await _hiveService.saveUser(updatedUser);
       return true;
-    } catch (e) {
+    } catch (_) {
       return false;
     }
   }
@@ -516,9 +619,12 @@ class AuthService {
         password: currentPassword,
       );
 
-      await firebaseUser.reauthenticateWithCredential(credential);
+      final passwordError = validatePassword(newPassword);
+      if (passwordError != null) {
+        return AuthResult(success: false, message: passwordError);
+      }
 
-      // Update password
+      await firebaseUser.reauthenticateWithCredential(credential);
       await firebaseUser.updatePassword(newPassword);
 
       await AuditLogService.instance.logAction(
@@ -537,57 +643,96 @@ class AuthService {
       );
 
       return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
-    } catch (e) {
-      await AuditLogService.instance.logAction(
-        action: 'password_change_failed',
-        details: {'error': e.toString()},
-      );
-
+    } catch (_) {
       return AuthResult(
         success: false,
-        message: 'Failed to update password: $e',
+        message: 'Failed to update password. Please try again.',
       );
     }
   }
 
-  // Reset password
+  // Reset password — server issues a time-limited link (1 hour) and rate-limits requests.
   Future<AuthResult> resetPassword(String email) async {
+    final emailLower = email.trim().toLowerCase();
     try {
-      await _firebaseService.auth.sendPasswordResetEmail(email: email);
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('requestPasswordReset');
+      await callable.call(<String, dynamic>{'email': emailLower});
 
       await AuditLogService.instance.logAction(
         action: 'password_reset_requested',
-        details: {'email': email.toLowerCase()},
-      );
-
-      return AuthResult(success: true, message: 'Password reset email sent');
-    } on FirebaseAuthException catch (e) {
-      await AuditLogService.instance.logAction(
-        action: 'password_reset_failed',
-        details: {'email': email.toLowerCase(), 'errorCode': e.code},
-      );
-
-      return AuthResult(success: false, message: _getAuthErrorMessage(e.code));
-    } catch (e) {
-      await AuditLogService.instance.logAction(
-        action: 'password_reset_failed',
-        details: {'email': email.toLowerCase(), 'error': e.toString()},
       );
 
       return AuthResult(
-        success: false,
-        message: 'Failed to send reset email: $e',
+        success: true,
+        message:
+            'If that email is registered, a reset link was sent. It expires in 1 hour.',
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'resource-exhausted') {
+        return AuthResult(
+          success: false,
+          message: 'Too many reset requests. Try again later.',
+        );
+      }
+      return AuthResult(
+        success: true,
+        message:
+            'If that email is registered, a reset link was sent. It expires in 1 hour.',
+      );
+    } catch (_) {
+      return AuthResult(
+        success: true,
+        message:
+            'If that email is registered, a reset link was sent. It expires in 1 hour.',
       );
     }
   }
 
-  // Get auth error message
+  static const _genericLoginError = 'Invalid email or password';
+
+  Future<AuthResult?> _assertLoginAllowed(String email) async {
+    try {
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('checkLoginAllowed');
+      await callable.call(<String, dynamic>{'email': email});
+      return null;
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'resource-exhausted') {
+        return AuthResult(
+          success: false,
+          message: 'Too many failed sign-in attempts. Try again later.',
+        );
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _recordAuthFailure(String email) async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('recordAuthFailure')
+          .call(<String, dynamic>{'email': email});
+    } catch (_) {}
+  }
+
+  Future<void> _recordAuthSuccess(String email) async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('recordAuthSuccess')
+          .call(<String, dynamic>{'email': email});
+    } catch (_) {}
+  }
+
   String _getAuthErrorMessage(String errorCode) {
     switch (errorCode) {
       case 'user-not-found':
-        return 'No user found with this email address';
       case 'wrong-password':
-        return 'Incorrect password';
+      case 'invalid-credential':
+      case 'INVALID_LOGIN_CREDENTIALS':
+        return _genericLoginError;
       case 'invalid-email':
         return 'Invalid email address';
       case 'user-disabled':
@@ -595,13 +740,13 @@ class AuthService {
       case 'too-many-requests':
         return 'Too many failed attempts. Please try again later';
       case 'weak-password':
-        return 'Password is too weak';
+        return 'Password is too weak. Use 8+ characters with upper, lower, number, and symbol.';
       case 'email-already-in-use':
-        return 'Email is already registered';
+        return 'This email is already registered. Sign in instead.';
       case 'requires-recent-login':
         return 'Please sign in again to continue';
       default:
-        return 'Authentication error: $errorCode';
+        return 'Authentication failed. Please try again.';
     }
   }
 }
@@ -611,8 +756,16 @@ class AuthResult {
   final bool success;
   final String message;
   final UserModel? user;
+  final bool requiresEmailVerification;
+  final bool requiresOtp;
 
-  AuthResult({required this.success, required this.message, this.user});
+  AuthResult({
+    required this.success,
+    required this.message,
+    this.user,
+    this.requiresEmailVerification = false,
+    this.requiresOtp = false,
+  });
 }
 
 // Riverpod providers

@@ -6,21 +6,27 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/constants/govtrack_ai_prompt.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
+import '../../services/govtrack_context_builder.dart';
 import '../../services/govtrack_progress_ml_service.dart';
 import '../../services/site_weather_context_service.dart';
+import '../../services/weather_service.dart';
 import '../../widgets/common/construction_progress_panel.dart';
-import '../../widgets/common/site_weather_conditions_card.dart';
+import 'widgets/buildiq_gemini_style.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 
-/// Site Manager GovTrack: AI Assistant (text chat) + AI Progress Analysis (ML images).
+/// Resident Engineer BuildIQ: assistant chat + site-photo progress analysis.
 class SiteManagerGovtrackScreen extends StatefulWidget {
   const SiteManagerGovtrackScreen({
     super.key,
@@ -37,33 +43,44 @@ class SiteManagerGovtrackScreen extends StatefulWidget {
 
 class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     with SingleTickerProviderStateMixin {
-  static const Color _purple = Color(0xFF7C3AED);
-  static const Color _headerBlue = Color(0xFF1E3A8A);
+  static const Color _purple = AppTheme.residentBlue;
+  static const Color _headerBlue = AppTheme.residentBlue;
 
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   late final TabController _tabs;
 
   // Chat
   final _chatController = TextEditingController();
   final _chatScroll = ScrollController();
-  final List<_ChatMsg> _messages = [
-    const _ChatMsg(
-      isUser: false,
-      text:
-          "Hi! I'm GovTrack AI 👋 I help with (1) construction & safety guidance, (2) live materials tracking, and (3) project progress & timelines — using your project data, weather, and uploaded SOPs only. Missing metrics? I'll tell you.",
-    ),
-  ];
+  final List<_ChatMsg> _messages = [];
   bool _chatSending = false;
+  bool _composerHasText = false;
+  String? _threadId;
+  List<BuildIqHistoryItem> _history = [];
+  bool _historyLoading = false;
+  final Map<String, List<_ChatMsg>> _historyCache = {};
   String? _progressError;
   String? _projectId;
   String? _projectName;
   String? _projectLocation;
+  String? _planUrl;
+  double? _pinLat;
+  double? _pinLon;
+  String? _pinLabel;
+  List<String> _blueprintUrls = const [];
+  List<String> _referencePhotoUrls = const [];
+  Map<String, dynamic>? _planAnalysis;
+  double? _approvedBudget;
   SiteWeatherBundle? _weatherBundle;
+  Map<String, dynamic>? _projectContext; // rich data payload for AI
 
-  // Progress analysis
+  // Progress analysis — actual site photos only (no blueprint upload for RE)
   final _imagePicker = ImagePicker();
   final List<Uint8List> _photoBytes = [];
   final List<String> _photoNames = [];
+
   bool _analyzing = false;
+  String _analyzeStageLabel = '';
   int _progressStep = 0;
   GovtrackMlAnalysisResult? _mlResult;
   Map<String, dynamic>? _lastAnalysisMap;
@@ -74,15 +91,28 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
   void initState() {
     super.initState();
     _tabs = TabController(length: 2, vsync: this, initialIndex: widget.initialTab.clamp(0, 1));
+    _tabs.addListener(() {
+      if (!_tabs.indexIsChanging && mounted) setState(() {});
+    });
+    _chatController.addListener(_onComposerChanged);
     _loadProject();
+    _refreshHistory();
   }
 
   @override
   void dispose() {
     _tabs.dispose();
+    _chatController.removeListener(_onComposerChanged);
     _chatController.dispose();
     _chatScroll.dispose();
     super.dispose();
+  }
+
+  void _onComposerChanged() {
+    final has = _chatController.text.trim().isNotEmpty;
+    if (has != _composerHasText) {
+      setState(() => _composerHasText = has);
+    }
   }
 
   Future<void> _refreshWeather({bool force = false}) async {
@@ -109,31 +139,72 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
 
   String _localWeatherReply(SiteWeatherBundle bundle) {
     final live = bundle.liveReport;
+    final siteName = bundle.locationLabel.isNotEmpty
+        ? bundle.locationLabel
+        : (_projectName ?? 'Project Site');
+
     if (live != null && live.isOffline) {
       return GovtrackAiPrompt.weatherOfflineReply;
     }
+
+    final buf = StringBuffer();
+
     if (live != null && !live.hasError) {
-      final lines = <String>[
-        'Right now at ${bundle.locationLabel}: ${live.temperature}, humidity ${live.humidity}.',
-        'Visibility: ${live.environmentLighting}.',
-        live.rainForecast,
-        if (!live.isDaylight)
-          'Reminder: check site lighting and wear high-visibility PPE.',
-        if (live.rainIsComing)
-          'Cover cement, drywall, and open electrical work before rain arrives.',
-      ];
-      return lines.where((s) => s.trim().isNotEmpty).join('\n');
+      buf.writeln('Weather forecast for $siteName:');
+      buf.writeln();
+      buf.writeln('Current conditions: ${live.temperature}, humidity ${live.humidity}.');
+      buf.writeln('Visibility: ${live.environmentLighting}.');
+      if (live.rainForecast.isNotEmpty) buf.writeln(live.rainForecast);
+      if (!live.isDaylight) {
+        buf.writeln('Reminder: check site lighting and wear high-visibility PPE.');
+      }
+      if (live.rainIsComing) {
+        buf.writeln('Cover cement, drywall, and open electrical work before rain arrives.');
+      }
+    } else {
+      final now = bundle.now;
+      buf.writeln('Weather at $siteName (current conditions):');
+      buf.writeln('  Temperature: ${now.temperatureC.toStringAsFixed(0)}°C');
+      if (now.description.isNotEmpty) buf.writeln('  Condition: ${now.description}');
+      if (now.feelsLikeC != null) {
+        buf.writeln('  Feels like: ${now.feelsLikeC!.toStringAsFixed(0)}°C');
+      }
+      if (now.humidity != null) buf.writeln('  Humidity: ${now.humidity}%');
+      if (now.windSpeedMs != null) {
+        buf.writeln('  Wind: ${(now.windSpeedMs! * 3.6).round()} km/h');
+      }
+      if (bundle.siteAdvice.isNotEmpty) buf.writeln(bundle.siteAdvice);
     }
-    final now = bundle.now;
-    final lines = <String>[
-      'Right now at ${bundle.locationLabel}: ${now.temperatureC.toStringAsFixed(0)}°C, ${now.description}.',
-      if (now.feelsLikeC != null) 'Feels like ${now.feelsLikeC!.toStringAsFixed(0)}°C.',
-      if (now.humidity != null) 'Humidity ${now.humidity}%.',
-      if (bundle.forecastDays.isNotEmpty)
-        'Today’s high ${bundle.forecastDays.first.maxTempC.toStringAsFixed(0)}°C / low ${bundle.forecastDays.first.minTempC.toStringAsFixed(0)}°C.',
-      bundle.siteAdvice,
-    ];
-    return lines.where((s) => s.trim().isNotEmpty).join('\n');
+
+    if (bundle.forecastDays.isNotEmpty) {
+      buf.writeln();
+      buf.writeln('7-Day Forecast:');
+      for (final d in bundle.forecastDays.take(7)) {
+        final dateLabel =
+            '${d.date.month}/${d.date.day}';
+        final pop =
+            d.pop != null ? '${(d.pop! * 100).round()}% rain' : '';
+        final extras = [pop].where((s) => s.isNotEmpty).join(' · ');
+        buf.writeln(
+          '  $dateLabel  ${d.condition}  '
+          '${d.maxTempC.toStringAsFixed(0)}° / ${d.minTempC.toStringAsFixed(0)}°'
+          '${extras.isNotEmpty ? "  $extras" : ""}',
+        );
+      }
+    }
+
+    buf.writeln();
+    buf.writeln('Sources:');
+    buf.writeln('- Weather Forecast Feed – $siteName – ${_isoNow()}');
+    return buf.toString().trim();
+  }
+
+  static String _isoNow() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')} '
+        '${now.hour.toString().padLeft(2, '0')}:'
+        '${now.minute.toString().padLeft(2, '0')}';
   }
 
   Future<void> _loadProject() async {
@@ -141,20 +212,103 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     if (user == null || user.assignedProjects.isEmpty) return;
     final id = user.assignedProjects.first;
     String name = id;
+    String? location;
+    String? planUrl;
+    double? pinLat;
+    double? pinLon;
+    String? pinLabel;
+    var blueprintUrls = <String>[];
+    var referencePhotoUrls = <String>[];
+    Map<String, dynamic>? planAnalysis;
+    double? budget;
     try {
-      final snap = await FirebaseService.instance.projectsCollection.doc(id).get();
+      final snap =
+          await FirebaseService.instance.projectsCollection.doc(id).get();
       final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? {};
       final n = (data['name'] ?? data['projectName'] ?? '').toString().trim();
       if (n.isNotEmpty) name = n;
       final loc = (data['location'] ?? '').toString().trim();
-      _projectLocation = loc.isEmpty ? null : loc;
+      location = loc.isEmpty ? null : loc;
+      planUrl = (data['planUrl'] ?? '').toString().trim();
+      if (planUrl.isEmpty) planUrl = null;
+      pinLat = (data['latitude'] as num?)?.toDouble();
+      pinLon = (data['longitude'] as num?)?.toDouble();
+      pinLabel = (data['geoAddress'] ?? location ?? '').toString().trim();
+      if (pinLabel.isEmpty) pinLabel = null;
+      final pinValid = pinLat != null &&
+          pinLon != null &&
+          pinLat.abs() <= 90 &&
+          pinLon.abs() <= 180;
+      if (!pinValid && (location ?? '').isNotEmpty) {
+        final geo = await WeatherService.instance
+            .resolveOpenMeteoCoordinates(location!);
+        if (geo != null) {
+          pinLat = geo.lat;
+          pinLon = geo.lon;
+          pinLabel = geo.label;
+        }
+      }
+      void addUrls(List<String> into, dynamic raw) {
+        if (raw is Iterable) {
+          for (final item in raw) {
+            final v = item.toString().trim();
+            if (v.isNotEmpty && !into.contains(v)) into.add(v);
+          }
+        } else {
+          final v = (raw ?? '').toString().trim();
+          if (v.isNotEmpty && !into.contains(v)) into.add(v);
+        }
+      }
+      if (planUrl != null) blueprintUrls.add(planUrl);
+      addUrls(blueprintUrls, data['blueprintUrls']);
+      addUrls(referencePhotoUrls, data['referencePhotoUrls']);
+      planAnalysis = (data['planAnalysis'] as Map?)?.cast<String, dynamic>();
+      final rawBudget = data['approvedBudget'] ?? planAnalysis?['approvedBudget'];
+      if (rawBudget is num) {
+        budget = rawBudget.toDouble();
+      } else {
+        budget = double.tryParse(rawBudget?.toString() ?? '');
+      }
     } catch (_) {}
-    await _refreshWeather();
+
+    // Load weather and rich project context in parallel.
+    await Future.wait([
+      _refreshWeather(),
+      _refreshProjectContext(projectId: id, projectName: name, location: location),
+    ]);
+
     if (!mounted) return;
     setState(() {
       _projectId = id;
       _projectName = name;
+      _projectLocation = location;
+      _planUrl = planUrl;
+      _pinLat = pinLat;
+      _pinLon = pinLon;
+      _pinLabel = pinLabel;
+      _blueprintUrls = blueprintUrls;
+      _referencePhotoUrls = referencePhotoUrls;
+      _planAnalysis = planAnalysis;
+      _approvedBudget = budget;
     });
+  }
+
+  Future<void> _refreshProjectContext({
+    required String projectId,
+    required String? projectName,
+    required String? location,
+  }) async {
+    try {
+      final ctx = await GovtrackContextBuilder.instance.build(
+        projectId: projectId,
+        projectName: projectName,
+        projectLocation: location,
+        weatherBundle: _weatherBundle,
+      );
+      if (mounted) setState(() => _projectContext = ctx);
+    } catch (_) {
+      // Context load failed — AI will still work with whatever is available.
+    }
   }
 
   Future<bool> _ensureAuth() async {
@@ -211,6 +365,8 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     if (text.isEmpty || _chatSending) return;
     if (!await _ensureAuth()) return;
 
+    _threadId ??= const Uuid().v4();
+
     setState(() {
       _chatSending = true;
       _messages.add(_ChatMsg(isUser: true, text: text));
@@ -221,18 +377,93 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
 
     try {
       await _refreshWeather(force: true);
+      // Refresh project context if not yet loaded.
+      if (_projectContext == null && _projectId != null) {
+        await _refreshProjectContext(
+          projectId: _projectId!,
+          projectName: _projectName,
+          location: _projectLocation,
+        );
+      }
+
       final user = FirebaseAuth.instance.currentUser;
       final idToken = await user?.getIdToken(true);
-      final callable = FirebaseFunctions.instance.httpsCallable('govtrackChatGemini');
+
+      // Build the site name for the prompt.
+      final siteName = (_weatherBundle?.locationLabel.isNotEmpty == true
+              ? _weatherBundle!.locationLabel
+              : null) ??
+          _projectLocation ??
+          _projectName ??
+          'Project Site';
+
+      // Build weather blocks.
+      final live = _weatherBundle?.liveReport;
+      final weatherBlock = _weatherBundle != null
+          ? GovtrackAiPrompt.liveSiteContextBlock(
+              siteName: siteName,
+              temperature: live?.temperature ??
+                  '${_weatherBundle!.now.temperatureC.toStringAsFixed(0)}°C',
+              humidity: live?.humidity ??
+                  (_weatherBundle!.now.humidity != null
+                      ? '${_weatherBundle!.now.humidity}%'
+                      : 'Unavailable'),
+              environmentLighting:
+                  live?.environmentLighting ?? 'Daytime Operations',
+              rainForecast: live?.rainForecast ?? 'No rain data.',
+            )
+          : '';
+
+      final forecastBlock = (_weatherBundle != null &&
+              _weatherBundle!.forecastDays.isNotEmpty)
+          ? GovtrackAiPrompt.forecastContextBlock(
+              siteName: siteName,
+              forecastDays: _weatherBundle!.forecastDays
+                  .take(7)
+                  .map((d) => {
+                        'date':
+                            '${d.date.year}-${d.date.month.toString().padLeft(2, '0')}-${d.date.day.toString().padLeft(2, '0')}',
+                        'condition': d.condition,
+                        'minTempC': d.minTempC,
+                        'maxTempC': d.maxTempC,
+                        'pop': d.pop,
+                        'humidity': d.humidity,
+                        'windSpeedMs': d.windSpeedMs,
+                      })
+                  .toList(),
+              issuedAt: _weatherBundle!.fetchedAt,
+            )
+          : '';
+
+      // Build the full system instruction with all data.
+      final systemInstruction = _projectName != null
+          ? GovtrackAiPrompt.buildFullSystemInstruction(
+              projectName: _projectName!,
+              projectSiteName: siteName,
+              projectContext: _projectContext ?? {'projectId': _projectId},
+              weatherBlock: weatherBlock,
+              forecastBlock: forecastBlock,
+            )
+          : null;
+
+      final callable =
+          FirebaseFunctions.instance.httpsCallable('govtrackChatGemini');
       final res = await callable
           .call(<String, dynamic>{
-        'message': text,
-        'history': _chatHistoryPayload(),
-        'idToken': idToken,
-        'projectId': _projectId,
-        'projectName': _projectName,
-        if (_weatherBundle != null) 'weatherContext': _weatherBundle!.toAiJson(),
-      })
+            'message': text,
+            'history': _chatHistoryPayload(),
+            'idToken': idToken,
+            'projectId': _projectId,
+            'projectName': _projectName,
+            // Full structured context for the Cloud Function.
+            if (_projectContext != null) 'projectData': _projectContext,
+            if (_weatherBundle != null)
+              'weatherContext': _weatherBundle!.toAiJson(),
+            if (forecastBlock.isNotEmpty)
+              'weatherForecastBlock': forecastBlock,
+            if (systemInstruction != null)
+              'systemInstruction': systemInstruction,
+          })
           .timeout(const Duration(seconds: 120));
 
       final data = (res.data as Map?)?.cast<String, dynamic>() ?? {};
@@ -241,7 +472,11 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
           _weatherBundle != null &&
           (rawReply.toLowerCase().contains('cannot find') ||
               rawReply.toLowerCase().contains('tracking metric') ||
-              rawReply.toLowerCase().contains('not in the current project'))) {
+              rawReply.toLowerCase().contains('not in the current project') ||
+              rawReply.toLowerCase().contains('unavailable') ||
+              rawReply.toLowerCase().contains('weather unavailable') ||
+              rawReply.toLowerCase().contains('check connection') ||
+              rawReply.toLowerCase().contains('do not have verified'))) {
         rawReply = _localWeatherReply(_weatherBundle!);
       }
       final parsed = _GovtrackParsedReply.fromRaw(rawReply);
@@ -257,6 +492,7 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       try {
         await FirebaseService.instance.aiAnalysisCollection.add({
           'kind': 'govtrack_chat',
+          'threadId': _threadId,
           'message': text,
           'reply': rawReply,
           if (_projectId != null) 'projectId': _projectId,
@@ -264,6 +500,7 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
           'submittedByUid': user?.uid,
           'createdAt': FieldValue.serverTimestamp(),
         });
+        _refreshHistory();
       } catch (logErr) {
         developer.log('govtrack chat log skipped', error: logErr);
       }
@@ -302,45 +539,170 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     _sendChat();
   }
 
+  void _startNewChat() {
+    Navigator.of(context).maybePop();
+    setState(() {
+      _messages.clear();
+      _threadId = null;
+      _chatController.clear();
+      _composerHasText = false;
+    });
+  }
+
+  Future<void> _refreshHistory() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    if (mounted) setState(() => _historyLoading = true);
+
+    QuerySnapshot snap;
+    try {
+      snap = await FirebaseService.instance.aiAnalysisCollection
+          .where('submittedByUid', isEqualTo: uid)
+          .where('kind', isEqualTo: 'govtrack_chat')
+          .orderBy('createdAt', descending: true)
+          .limit(120)
+          .get();
+    } catch (_) {
+      try {
+        snap = await FirebaseService.instance.aiAnalysisCollection
+            .where('submittedByUid', isEqualTo: uid)
+            .limit(120)
+            .get();
+      } catch (e) {
+        developer.log('chat history load failed', error: e);
+        if (mounted) setState(() => _historyLoading = false);
+        return;
+      }
+    }
+
+    final grouped = <String, List<QueryDocumentSnapshot>>{};
+    for (final doc in snap.docs) {
+      final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+      if ((data['kind'] ?? '') != 'govtrack_chat') continue;
+      final threadId = (data['threadId'] ?? doc.id).toString();
+      grouped.putIfAbsent(threadId, () => []).add(doc);
+    }
+
+    final items = <BuildIqHistoryItem>[];
+    _historyCache.clear();
+    grouped.forEach((id, docs) {
+      docs.sort((a, b) {
+        final aTime = ((a.data() as Map?)?['createdAt'] as Timestamp?)
+                ?.toDate() ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final bTime = ((b.data() as Map?)?['createdAt'] as Timestamp?)
+                ?.toDate() ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return aTime.compareTo(bTime);
+      });
+      final messages = <_ChatMsg>[];
+      for (final doc in docs) {
+        final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+        final q = (data['message'] ?? '').toString().trim();
+        final a = (data['reply'] ?? '').toString().trim();
+        if (q.isNotEmpty) messages.add(_ChatMsg(isUser: true, text: q));
+        if (a.isNotEmpty) messages.add(_ChatMsg(isUser: false, text: a));
+      }
+      if (messages.isEmpty) return;
+      _historyCache[id] = messages;
+      final lastData =
+          (docs.last.data() as Map?)?.cast<String, dynamic>() ?? {};
+      final updated = (lastData['createdAt'] as Timestamp?)?.toDate() ??
+          DateTime.now();
+      final title = messages.firstWhere((m) => m.isUser,
+          orElse: () => messages.first);
+      items.add(BuildIqHistoryItem(
+        id: id,
+        title: title.text,
+        updatedAt: updated,
+        preview: messages.length > 1 ? messages.last.displayText : '',
+      ));
+    });
+    items.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+    if (!mounted) return;
+    setState(() {
+      _history = items;
+      _historyLoading = false;
+    });
+  }
+
+  void _openHistoryThread(BuildIqHistoryItem item) {
+    Navigator.of(context).maybePop();
+    final cached = _historyCache[item.id] ?? const <_ChatMsg>[];
+    setState(() {
+      _threadId = item.id;
+      _messages
+        ..clear()
+        ..addAll(cached);
+    });
+    _tabs.animateTo(0);
+    _scrollChatToEnd();
+  }
+
+  // ── Image pickers (site photos only) ─────────────────────────────────────
+
+  Future<void> _addPhotos(List<XFile> files) async {
+    if (files.isEmpty) return;
+    final room = 10 - _photoBytes.length;
+    if (room <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Maximum 10 site photos.')),
+      );
+      return;
+    }
+    for (final f in files.take(room)) {
+      _photoBytes.add(await f.readAsBytes());
+      _photoNames.add(f.name);
+    }
+    if (!mounted) return;
+    setState(() {
+      _progressStep = 0;
+      _mlResult = null;
+    });
+  }
+
   Future<void> _pickPhotos() async {
     try {
       final files = await _imagePicker.pickMultiImage(imageQuality: 85);
+      if (!mounted || files.isEmpty) return;
+      await _addPhotos(files);
+    } catch (e) {
       if (!mounted) return;
-      if (files.isEmpty) return;
-      final room = 10 - _photoBytes.length;
-      if (room <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Maximum 10 images.')),
-        );
-        return;
-      }
-      for (final f in files.take(room)) {
-        final bytes = await f.readAsBytes();
-        _photoBytes.add(bytes);
-        _photoNames.add(f.name);
-      }
-      setState(() {
-        _progressStep = 0;
-        _mlResult = null;
-      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to pick photos: $e')));
+    }
+  }
+
+  Future<void> _capturePhoto() async {
+    try {
+      final file = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+      );
+      if (!mounted || file == null) return;
+      await _addPhotos([file]);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to pick images: $e')),
+        SnackBar(content: Text('Camera unavailable: $e')),
       );
     }
   }
 
+  // ── Analysis ─────────────────────────────────────────────────────────────
+
   Future<void> _runMlAnalysis() async {
     if (_projectId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No project assigned.')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('No project assigned.')));
       return;
     }
     if (_photoBytes.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Upload 1 to 10 site photos first.')),
+        const SnackBar(
+          content: Text('Upload actual site photos to analyse progress.'),
+        ),
       );
       return;
     }
@@ -350,14 +712,28 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       _analyzing = true;
       _progressStep = 1;
       _progressError = null;
+      _analyzeStageLabel = 'Preparing…';
     });
 
     try {
-      final result = await _mlService.analyzeSitePhotos(
+      final result = await _mlService.analyzeProgressAgainstSavedPlan(
         projectId: _projectId!,
         projectName: _projectName,
-        imageBytesList: _photoBytes,
-        imageNames: _photoNames,
+        sitePhotoBytes: _photoBytes,
+        sitePhotoNames: _photoNames,
+        planUrl: _planUrl,
+        extraBlueprintUrls: _blueprintUrls,
+        referencePhotoUrls: _referencePhotoUrls,
+        planAnalysis: _planAnalysis,
+        approvedBudget: _approvedBudget,
+        onProgress: (stage, done, total) {
+          if (!mounted) return;
+          setState(() {
+            _analyzeStageLabel = stage == 'blueprint'
+                ? 'Comparing photos to project blueprint…'
+                : 'Analysing site photo $done / $total…';
+          });
+        },
       );
 
       final analysisMap = result.toAnalysisMap();
@@ -366,13 +742,15 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       String? syncWarning;
       if (pct != null && _projectId != null) {
         try {
-          await FirebaseService.instance.projectsCollection.doc(_projectId!).update({
+          await FirebaseService.instance.projectsCollection
+              .doc(_projectId!)
+              .update({
             'progressPercentage': pct,
             'updatedAt': FieldValue.serverTimestamp(),
           });
         } catch (e) {
           syncWarning =
-              'Analysis saved locally; project % not synced (${_friendlyError(e)}). Deploy updated Firestore rules.';
+              'Analysis done; project % not synced (${_friendlyError(e)}).';
           developer.log('progress sync failed', error: e);
         }
       }
@@ -384,14 +762,24 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
         _analyzing = false;
         _progressStep = 2;
         _progressError = syncWarning;
+        _analyzeStageLabel = '';
       });
+
+      // Refresh project context so AI knows the updated progress %.
+      if (_projectId != null) {
+        _refreshProjectContext(
+          projectId: _projectId!,
+          projectName: _projectName,
+          location: _projectLocation,
+        ).ignore();
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             pct == null
-                ? 'Analysis complete (no % detected).'
-                : 'ML analysis: ${pct.toStringAsFixed(0)}% overall',
+                ? 'Analysis complete.'
+                : 'Funded-scope progress: ${pct.toStringAsFixed(0)}%',
           ),
           backgroundColor: AppTheme.softGreen,
         ),
@@ -402,6 +790,7 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
         _analyzing = false;
         _progressStep = 0;
         _progressError = _friendlyError(e);
+        _analyzeStageLabel = '';
       });
     }
   }
@@ -411,29 +800,63 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     final pct = (_mlResult!.overallProgressPercent ?? 0).clamp(0, 100);
     final user = AuthService.instance.currentUser;
     try {
+      final coverUrl = _mlResult!.imageUrls.isNotEmpty
+          ? _mlResult!.imageUrls.first
+          : null;
       await FirebaseService.instance.aiAnalysisCollection.add({
         'kind': 'govtrack_progress_report',
         'projectId': _projectId,
         'projectName': _projectName,
         'progressPercent': pct,
         'imageUrls': _mlResult!.imageUrls,
-        'imageUrl': _mlResult!.imageUrls.isNotEmpty ? _mlResult!.imageUrls.first : null,
+        'imageUrl': coverUrl,
+        if (_mlResult!.perImageResults.isNotEmpty)
+          'perImageResults': _mlResult!.perImageResults,
         'analysis': _lastAnalysisMap,
         'aiStatus': 'done',
+        if (_mlResult!.blueprintUrls.isNotEmpty)
+          'blueprintUrls': _mlResult!.blueprintUrls,
+        if (_mlResult!.firstWorkArea != null)
+          'firstWorkArea': _mlResult!.firstWorkArea,
+        if (_mlResult!.budgetedProgressPercent != null)
+          'budgetedProgressPercent': _mlResult!.budgetedProgressPercent,
         'submittedByUid': FirebaseAuth.instance.currentUser?.uid,
         'submittedById': user?.id,
         'submittedByName': user?.fullName,
         'submittedByEmail': user?.email,
+        'assignedSiteManagerName': user?.fullName,
+        'assignedSiteManagerEmail': user?.email,
         'createdAt': FieldValue.serverTimestamp(),
       });
+      try {
+        await FirebaseService.instance.notificationsCollection.add({
+          'type': AppConstants.notificationProgressReport,
+          'audienceRole': 'admin',
+          'targetRole': 'admin',
+          'userId': 'admin',
+          'title': 'New progress report — ${_projectName ?? 'Site'}',
+          'message':
+              '${user?.fullName.isNotEmpty == true ? user!.fullName : (user?.email ?? 'Resident Engineer')} submitted a site progress report (${pct.toStringAsFixed(0)}%).',
+          'projectId': _projectId,
+          'projectName': _projectName,
+          if (coverUrl != null) 'imageUrl': coverUrl,
+          'createdByUid': FirebaseAuth.instance.currentUser?.uid,
+          'isRead': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
       if (!mounted) return;
       setState(() => _progressStep = 3);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Report sent to Admin.'), backgroundColor: AppTheme.softGreen),
+        const SnackBar(
+            content: Text('Report sent to Admin.'),
+            backgroundColor: AppTheme.softGreen),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Send failed: $e'), backgroundColor: AppTheme.errorRed),
+        SnackBar(
+            content: Text('Send failed: $e'),
+            backgroundColor: AppTheme.errorRed),
       );
     }
   }
@@ -441,25 +864,69 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      key: _scaffoldKey,
+      backgroundColor: Colors.white,
+      resizeToAvoidBottomInset: true,
+      drawer: BuildIqHistoryDrawer(
+        items: _history,
+        loading: _historyLoading,
+        activeId: _threadId,
+        onNewChat: _startNewChat,
+        onOpen: _openHistoryThread,
+      ),
       appBar: AppBar(
-        backgroundColor: _headerBlue,
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.canPop() ? context.pop() : context.go(RouteNames.siteManagerHome),
+        surfaceTintColor: Colors.transparent,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: AppTheme.residentHeaderGradient,
+            ),
+          ),
         ),
-        title: const Text('GovTrack AI', style: TextStyle(fontWeight: FontWeight.w900)),
+        leading: IconButton(
+          tooltip: 'Chat history',
+          icon: const Icon(Icons.menu_rounded),
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+        ),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            BuildIqSparkle(size: 18),
+            SizedBox(width: 8),
+            Text(
+              'BuildIQ',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 18,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Home',
+            icon: const Icon(Icons.home_outlined),
+            onPressed: () => context.go(RouteNames.siteManagerHome),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabs,
           indicatorColor: Colors.white,
+          indicatorWeight: 2,
+          dividerColor: Colors.white24,
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white70,
-          labelStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+          labelStyle:
+              const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
           tabs: const [
-            Tab(text: 'AI Assistant'),
-            Tab(text: 'Progress Analysis'),
+            Tab(text: 'Assistant'),
+            Tab(text: 'Site Photos'),
           ],
         ),
       ),
@@ -467,7 +934,10 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
         controller: _tabs,
         children: [
           _buildAssistantTab(),
-          _buildProgressTab(),
+          ColoredBox(
+            color: const Color(0xFFF8FAFC),
+            child: _buildProgressTab(),
+          ),
         ],
       ),
       bottomNavigationBar: widget.showBottomNav
@@ -479,340 +949,142 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
   Widget _buildAssistantTab() {
     const chips = [
       "What's the weather right now?",
-      'Summarize my project progress',
-      'Low stock / material risks',
-      'Safety checklist for today',
-      'Delay risks this week',
+      'Summarize project progress',
+      'Materials status',
+      'Pre-pour slab checklist',
+      'Safety risks today',
     ];
+    final firstName =
+        (AuthService.instance.currentUser?.firstName ?? '').trim();
+    final hasConversation = _messages.any((m) => m.isUser);
+    final live = _weatherBundle?.liveReport;
+    final weatherLine = _weatherBundle == null
+        ? null
+        : [
+            live?.temperature ??
+                '${_weatherBundle!.now.temperatureC.toStringAsFixed(0)}°C',
+            if (_weatherBundle!.locationLabel.isNotEmpty)
+              _weatherBundle!.locationLabel,
+          ].join(' · ');
 
     return Column(
       children: [
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [_headerBlue.withValues(alpha: 0.12), _purple.withValues(alpha: 0.08)],
-            ),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: _headerBlue.withValues(alpha: 0.15)),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: _purple.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.psychology_outlined, color: _purple, size: 22),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Powered by Gemini • Live weather + project data',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: _headerBlue,
-                        fontWeight: FontWeight.w700,
-                        height: 1.3,
-                      ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        if (_weatherBundle != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: _LiveWeatherStrip(bundle: _weatherBundle!),
-          )
-        else if (_projectId != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: SiteWeatherConditionsCard(
-              projectLocation: _projectLocation,
-              margin: EdgeInsets.zero,
-              compact: true,
-            ),
-          ),
-        if ((_projectName ?? '').isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFFE5E7EB)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.apartment, size: 16, color: _headerBlue.withValues(alpha: 0.9)),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(
-                        _projectName!,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
         Expanded(
-          child: ListView.builder(
-            controller: _chatScroll,
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-            itemCount: _messages.length,
-            itemBuilder: (context, i) => _ChatBubble(message: _messages[i]),
-          ),
-        ),
-        SizedBox(
-          height: 40,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            itemCount: chips.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, i) {
-              return FilterChip(
-                label: Text(chips[i], style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-                selected: false,
-                onSelected: _chatSending ? null : (_) => _insertChatPrompt(chips[i]),
-                backgroundColor: Colors.white,
-                side: BorderSide(color: _purple.withValues(alpha: 0.35)),
-                labelStyle: const TextStyle(color: _purple),
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-              );
-            },
-          ),
-        ),
-        SafeArea(
-          top: false,
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-            padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.06),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-              border: Border.all(color: const Color(0xFFE5E7EB)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _chatController,
-                    enabled: !_chatSending,
-                    minLines: 1,
-                    maxLines: 5,
-                    textInputAction: TextInputAction.send,
-                    decoration: const InputDecoration(
-                      hintText: 'Ask about progress, materials, safety, delays…',
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                    ),
-                    onSubmitted: _chatSending ? null : (_) => _sendChat(),
+          child: hasConversation
+              ? ListView.builder(
+                  controller: _chatScroll,
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, i) => BuildIqChatTurn(
+                    isUser: _messages[i].isUser,
+                    text: _messages[i].displayText,
                   ),
+                )
+              : BuildIqGreeting(
+                  firstName: firstName,
+                  chips: chips,
+                  onChip: _insertChatPrompt,
+                  projectName: _projectName,
+                  weatherLine: weatherLine,
                 ),
-                Material(
-                  color: _purple,
-                  borderRadius: BorderRadius.circular(14),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(14),
-                    onTap: _chatSending ? null : _sendChat,
-                    child: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: Center(
-                        child: _chatSending
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                              )
-                            : const Icon(Icons.send_rounded, color: Colors.white, size: 22),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+        ),
+        BuildIqComposer(
+          controller: _chatController,
+          enabled: !_chatSending,
+          busy: _chatSending,
+          hasText: _composerHasText,
+          onSend: _sendChat,
         ),
       ],
     );
   }
 
   Widget _buildProgressTab() {
-    final pct = _mlResult?.overallProgressPercent;
+    final result = _mlResult;
+    final pct = result?.overallProgressPercent;
 
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
-        _ProjectInfoCard(projectId: _projectId, projectName: _projectName),
-        const SizedBox(height: 14),
         _StepperRow(active: _progressStep),
         if (_progressError != null) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           _InlineAlert(
             message: _progressError!,
             onDismiss: () => setState(() => _progressError = null),
           ),
         ],
-        const SizedBox(height: 16),
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE5E7EB)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.photo_camera_outlined, color: _purple.withValues(alpha: 0.9)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Site photos',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
-                    ),
-                  ),
-                  Text(
-                    '${_photoBytes.length}/10',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: AppTheme.mediumGray,
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Upload clear photos of active work areas. ML uses Vision + Gemini on each image.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray, height: 1.35),
-              ),
-              const SizedBox(height: 12),
-              GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 4,
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
-                  childAspectRatio: 1,
-                ),
-                itemCount: _photoBytes.length + (_photoBytes.length < 10 ? 1 : 0),
-                itemBuilder: (context, i) {
-                  if (i == _photoBytes.length) {
-                    return Material(
-                      color: _purple.withValues(alpha: 0.05),
-                      borderRadius: BorderRadius.circular(12),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: _analyzing ? null : _pickPhotos,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: _purple.withValues(alpha: 0.5)),
-                          ),
-                          child: const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.add_photo_alternate_outlined, color: _purple),
-                              SizedBox(height: 4),
-                              Text('Add', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: _purple)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    );
-                  }
-                  return Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.memory(_photoBytes[i], fit: BoxFit.cover),
-                      ),
-                      Positioned(
-                        top: 4,
-                        left: 4,
-                        child: CircleAvatar(
-                          radius: 11,
-                          backgroundColor: _purple,
-                          child: Text('${i + 1}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w900)),
-                        ),
-                      ),
-                      Positioned(
-                        top: 2,
-                        right: 2,
-                        child: Material(
-                          color: Colors.black54,
-                          shape: const CircleBorder(),
-                          child: InkWell(
-                            customBorder: const CircleBorder(),
-                            onTap: _analyzing
-                                ? null
-                                : () => setState(() {
-                                      _photoBytes.removeAt(i);
-                                      if (i < _photoNames.length) _photoNames.removeAt(i);
-                                      _mlResult = null;
-                                      _progressStep = 0;
-                                    }),
-                            child: const Padding(
-                              padding: EdgeInsets.all(4),
-                              child: Icon(Icons.close, color: Colors.white, size: 14),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ],
-          ),
+        const SizedBox(height: 14),
+        _SavedBlueprintBanner(
+          planUrl: _planUrl,
+          budget: _approvedBudget,
         ),
         const SizedBox(height: 14),
-        SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: FilledButton.icon(
-            onPressed: _analyzing ? null : _runMlAnalysis,
-            style: FilledButton.styleFrom(
-              backgroundColor: _purple,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-            ),
-            icon: _analyzing
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Icon(Icons.auto_awesome),
-            label: Text(_analyzing ? 'Running ML pipeline…' : 'Analyze Progress (ML)'),
-          ),
+        _ProjectLocationPinCard(
+          lat: _pinLat,
+          lon: _pinLon,
+          label: _pinLabel ?? _projectLocation,
+          projectName: _projectName,
         ),
-        if (pct != null) ...[
-          const SizedBox(height: 14),
-          ConstructionProgressPanel(
-            title: 'ML Results',
-            overallPercent: pct,
-            stages: ConstructionProgressPanel.mlStagesFromMap(_mlResult?.stageProgress),
-          ),
+        const SizedBox(height: 14),
+        _UploadSection(
+          sectionColor: _purple,
+          icon: Icons.photo_camera_outlined,
+          title: 'Site Photos',
+          subtitle:
+              'Upload actual site photos. AI compares them to the project blueprint and scores only the budgeted area — not the whole drawing.',
+          count: _photoBytes.length,
+          max: 10,
+          imageBytes: _photoBytes,
+          imageNames: _photoNames,
+          disabled: _analyzing,
+          badgeLabel: 'Site',
+          badgeColor: _purple,
+          onAdd: _pickPhotos,
+          onAddCamera: _capturePhoto,
+          onRemove: (i) => setState(() {
+            _photoBytes.removeAt(i);
+            if (i < _photoNames.length) _photoNames.removeAt(i);
+            _mlResult = null;
+            _progressStep = 0;
+          }),
+          hint: _photoBytes.isEmpty
+              ? const _UploadHint(
+                  icon: Icons.photo_camera_outlined,
+                  color: AppTheme.residentBlue,
+                  lines: [
+                    'Take or attach real site photos only',
+                    '2–6 photos recommended · max 10',
+                  ],
+                )
+              : null,
+        ),
+        const SizedBox(height: 16),
+        _AnalyseButton(
+          analyzing: _analyzing,
+          stageLabel: _analyzeStageLabel,
+          hasPhotos: _photoBytes.isNotEmpty,
+          onPressed: _analyzing ? null : _runMlAnalysis,
+        ),
+        if (result != null) ...[
+          const SizedBox(height: 20),
+          if (pct != null)
+            ConstructionProgressPanel(
+              title: 'Funded-scope progress',
+              overallPercent: pct,
+              stages: ConstructionProgressPanel.mlStagesFromMap(
+                  result.stageProgress),
+            ),
+          if (result.firstWorkArea != null ||
+              result.workSequence.isNotEmpty ||
+              result.excludedFromBudget.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _BudgetScopeCard(result: result),
+          ],
+          if ((result.crossReferenceNarrative ?? '').isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _NarrativeCard(narrative: result.crossReferenceNarrative!),
+          ],
         ],
         const SizedBox(height: 14),
         Container(
@@ -820,7 +1092,7 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
           decoration: BoxDecoration(
             color: const Color(0xFFEFF6FF),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _headerBlue.withValues(alpha: 0.15)),
+            border: Border.all(color: _headerBlue.withValues(alpha: 0.12)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -832,28 +1104,33 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
                   Expanded(
                     child: Text(
                       'Submit report to Admin',
-                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15),
+                      style: TextStyle(
+                          fontWeight: FontWeight.w800, fontSize: 15),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 6),
               Text(
-                _mlResult == null
-                    ? 'Run ML analysis first, then send the report for executive review.'
-                    : 'Includes photos, labels, and estimated progress %.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
+                result == null
+                    ? 'Analyse site photos first, then send the report.'
+                    : 'Ready to send this progress report to admin.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: AppTheme.mediumGray),
               ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 height: 46,
                 child: FilledButton.icon(
-                  onPressed: _mlResult == null ? null : _sendToAdmin,
+                  onPressed: result == null ? null : _sendToAdmin,
                   style: FilledButton.styleFrom(
                     backgroundColor: _headerBlue,
                     disabledBackgroundColor: const Color(0xFFCBD5E1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
                   ),
                   icon: const Icon(Icons.send_rounded),
                   label: const Text('Send to Admin'),
@@ -936,130 +1213,21 @@ class _ChatMsg {
   final String? recommendation;
 
   String get displayText {
-    if (summary != null && summary!.isNotEmpty) return summary!;
-    return text;
-  }
-}
-
-class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.message});
-  final _ChatMsg message;
-
-  @override
-  Widget build(BuildContext context) {
-    final isUser = message.isUser;
-    final thinking = message.text == 'Thinking…';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          if (!isUser) ...[
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: const Color(0xFF7C3AED).withValues(alpha: 0.15),
-              child: const Icon(Icons.smart_toy_outlined, size: 18, color: Color(0xFF7C3AED)),
-            ),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Container(
-              constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.82),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: isUser ? const Color(0xFF7C3AED) : Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(16),
-                  topRight: const Radius.circular(16),
-                  bottomLeft: Radius.circular(isUser ? 16 : 4),
-                  bottomRight: Radius.circular(isUser ? 4 : 16),
-                ),
-                border: isUser ? null : Border.all(color: const Color(0xFFE5E7EB)),
-                boxShadow: isUser
-                    ? null
-                    : [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 6, offset: const Offset(0, 2))],
-              ),
-              child: thinking
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Analyzing project data…',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                        ),
-                      ],
-                    )
-                  : _AssistantContent(message: message, isUser: isUser),
-            ),
-          ),
-          if (isUser) const SizedBox(width: 8),
-        ],
-      ),
-    );
-  }
-}
-
-class _AssistantContent extends StatelessWidget {
-  const _AssistantContent({required this.message, required this.isUser});
-  final _ChatMsg message;
-  final bool isUser;
-
-  @override
-  Widget build(BuildContext context) {
-    final textStyle = TextStyle(color: isUser ? Colors.white : AppTheme.darkGray, height: 1.4, fontSize: 14);
-    if (isUser) {
-      return SelectableText(message.text, style: textStyle);
+    if (isUser) return text;
+    if (keyPoints.isEmpty && (summary == null || summary!.isEmpty)) {
+      return text;
     }
-    final summary = message.summary;
-    final points = message.keyPoints;
-    final rec = message.recommendation;
-    if (summary == null && points.isEmpty) {
-      return SelectableText(message.text, style: textStyle);
+    final buf = StringBuffer();
+    if (summary != null && summary!.isNotEmpty) buf.writeln(summary);
+    for (final p in keyPoints) {
+      buf.writeln('- $p');
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (summary != null)
-          SelectableText(summary, style: textStyle.copyWith(fontWeight: FontWeight.w700)),
-        if (points.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          ...points.map(
-            (p) => Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('• ', style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF7C3AED))),
-                  Expanded(child: SelectableText(p, style: textStyle)),
-                ],
-              ),
-            ),
-          ),
-        ],
-        if (rec != null && rec.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF5F3FF),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: SelectableText(
-              rec,
-              style: textStyle.copyWith(fontSize: 12, fontStyle: FontStyle.italic),
-            ),
-          ),
-        ],
-      ],
-    );
+    if (recommendation != null && recommendation!.isNotEmpty) {
+      buf.writeln();
+      buf.writeln(recommendation);
+    }
+    final assembled = buf.toString().trim();
+    return assembled.isEmpty ? text : assembled;
   }
 }
 
@@ -1098,59 +1266,6 @@ class _InlineAlert extends StatelessWidget {
   }
 }
 
-class _ProjectInfoCard extends StatelessWidget {
-  const _ProjectInfoCard({this.projectId, this.projectName});
-  final String? projectId;
-  final String? projectName;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
-      ),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.asset(
-              'assets/images/unnamed.jpg',
-              width: 56,
-              height: 56,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                width: 56,
-                height: 56,
-                color: AppTheme.lightGray,
-                child: const Icon(Icons.apartment),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  projectName ?? 'No project',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
-                ),
-                if (projectId != null)
-                  Text(
-                    projectId!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class _StepperRow extends StatelessWidget {
   const _StepperRow({required this.active});
@@ -1176,7 +1291,7 @@ class _StepperRow extends StatelessWidget {
                 margin: const EdgeInsets.only(bottom: 18),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(2),
-                  color: leftDone ? const Color(0xFF7C3AED) : const Color(0xFFE5E7EB),
+                  color: leftDone ? AppTheme.residentBlue : const Color(0xFFE5E7EB),
                 ),
               ),
             );
@@ -1189,7 +1304,7 @@ class _StepperRow extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: isCurrent ? 15 : 13,
-                  backgroundColor: isActive ? const Color(0xFF7C3AED) : const Color(0xFFF1F5F9),
+                  backgroundColor: isActive ? AppTheme.residentBlue : const Color(0xFFF1F5F9),
                   child: isActive && stepIndex < active
                       ? const Icon(Icons.check, size: 14, color: Colors.white)
                       : Text(
@@ -1210,7 +1325,7 @@ class _StepperRow extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 9,
                     fontWeight: isCurrent ? FontWeight.w900 : FontWeight.w600,
-                    color: isActive ? const Color(0xFF7C3AED) : AppTheme.mediumGray,
+                    color: isActive ? AppTheme.residentBlue : AppTheme.mediumGray,
                   ),
                 ),
               ],
@@ -1222,80 +1337,641 @@ class _StepperRow extends StatelessWidget {
   }
 }
 
-/// Compact live weather for GovTrack chat (refreshed before each message).
-class _LiveWeatherStrip extends StatelessWidget {
-  const _LiveWeatherStrip({required this.bundle});
 
-  final SiteWeatherBundle bundle;
+// ═══════════════════════════════════════════════════════════════════════════
+// Progress tab — private widget classes
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Upload section ───────────────────────────────────────────────────────────
+
+class _UploadSection extends StatelessWidget {
+  const _UploadSection({
+    required this.sectionColor,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.count,
+    required this.max,
+    required this.imageBytes,
+    required this.imageNames,
+    required this.disabled,
+    required this.badgeLabel,
+    required this.badgeColor,
+    required this.onAdd,
+    required this.onRemove,
+    this.onAddCamera,
+    this.hint,
+  });
+
+  final Color sectionColor;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final int count;
+  final int max;
+  final List<Uint8List> imageBytes;
+  final List<String> imageNames;
+  final bool disabled;
+  final String badgeLabel;
+  final Color badgeColor;
+  final VoidCallback onAdd;
+  final VoidCallback? onAddCamera;
+  final void Function(int index) onRemove;
+  final Widget? hint;
 
   @override
   Widget build(BuildContext context) {
-    final live = bundle.liveReport;
-    final now = bundle.now;
-    final temp = live?.temperature ?? '${now.temperatureC.toStringAsFixed(0)}°C';
-    final humidity = live?.humidity ?? (now.humidity != null ? '${now.humidity}%' : '—');
-    final lighting = live?.environmentLighting ?? 'Daytime Operations';
-    final rainWarn = live?.rainIsComing == true;
-
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: rainWarn ? const Color(0xFFFEF3C7) : const Color(0xFFEFF6FF),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: rainWarn ? const Color(0xFFF59E0B) : const Color(0xFF93C5FD),
-        ),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(
-                live?.isDaylight == false ? Icons.nightlight_round : Icons.wb_sunny_outlined,
-                color: live?.isDaylight == false ? const Color(0xFF6366F1) : const Color(0xFFF59E0B),
-                size: 28,
+          // Header
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+            decoration: BoxDecoration(
+              color: sectionColor.withValues(alpha: 0.07),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(16)),
+              border: Border(
+                bottom: BorderSide(
+                    color: sectionColor.withValues(alpha: 0.15)),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Live site weather',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: const Color(0xFF1E40AF),
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                    Text(
-                      '$temp • Humidity $humidity • $lighting',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: const Color(0xFF1E3A8A),
-                          ),
-                    ),
-                    Text(
-                      bundle.locationLabel,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: AppTheme.mediumGray,
-                          ),
-                    ),
-                  ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: sectionColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, color: sectionColor, size: 18),
                 ),
-              ),
-            ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w900,
+                          color: AppTheme.darkGray,
+                        ),
+                  ),
+                ),
+                // Count badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: count > 0
+                        ? sectionColor.withValues(alpha: 0.15)
+                        : const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '$count / $max',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: count > 0 ? sectionColor : AppTheme.mediumGray,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-          if (live != null && live.rainForecast.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              live.rainForecast,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: rainWarn ? const Color(0xFFB45309) : const Color(0xFF1E40AF),
-                height: 1.3,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+            child: Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    height: 1.4,
+                  ),
+            ),
+          ),
+          if (onAddCamera != null && count < max)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: disabled ? null : onAddCamera,
+                      icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                      label: const Text('Take photo'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: sectionColor,
+                        side: BorderSide(color: sectionColor.withValues(alpha: 0.45)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: disabled ? null : onAdd,
+                      icon: const Icon(Icons.photo_library_outlined, size: 18),
+                      label: const Text('Gallery'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: sectionColor,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
               ),
+            ),
+          if (hint != null && count == 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+              child: hint!,
+            ),
+          // Image grid
+          if (count > 0)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
+              child: GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate:
+                    const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 4,
+                  mainAxisSpacing: 8,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 1,
+                ),
+                itemCount: count,
+                itemBuilder: (context, i) {
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(imageBytes[i], fit: BoxFit.cover),
+                      ),
+                      // Index badge
+                      Positioned(
+                        top: 4,
+                        left: 4,
+                        child: CircleAvatar(
+                          radius: 11,
+                          backgroundColor: badgeColor,
+                          child: Text(
+                            '${i + 1}',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                      ),
+                      // Remove button
+                      Positioned(
+                        top: 2,
+                        right: 2,
+                        child: GestureDetector(
+                          onTap: disabled ? null : () => onRemove(i),
+                          child: Container(
+                            width: 22,
+                            height: 22,
+                            decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle),
+                            child: const Icon(Icons.close,
+                                color: Colors.white, size: 13),
+                          ),
+                        ),
+                      ),
+                      // Label tag
+                      Positioned(
+                        bottom: 4,
+                        left: 4,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: badgeColor.withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            badgeLabel,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Upload hint ──────────────────────────────────────────────────────────────
+
+class _UploadHint extends StatelessWidget {
+  const _UploadHint({
+    required this.icon,
+    required this.color,
+    required this.lines,
+  });
+
+  final IconData icon;
+  final Color color;
+  final List<String> lines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: lines
+                  .map((l) => Text(l,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: color.withValues(alpha: 0.80),
+                          fontWeight: FontWeight.w600)))
+                  .toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Analyse button ────────────────────────────────────────────────────────────
+
+class _AnalyseButton extends StatelessWidget {
+  const _AnalyseButton({
+    required this.analyzing,
+    required this.stageLabel,
+    required this.hasPhotos,
+    required this.onPressed,
+  });
+
+  final bool analyzing;
+  final String stageLabel;
+  final bool hasPhotos;
+  final VoidCallback? onPressed;
+
+  String get _buttonLabel {
+    if (analyzing) {
+      return stageLabel.isNotEmpty ? stageLabel : 'Analysing site photos…';
+    }
+    if (hasPhotos) return 'Analyse site photos';
+    return 'Add site photos to analyse';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 52,
+      child: FilledButton.icon(
+        onPressed: hasPhotos ? onPressed : null,
+        style: FilledButton.styleFrom(
+          backgroundColor: AppTheme.residentBlue,
+          disabledBackgroundColor: const Color(0xFFCBD5E1),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+        icon: analyzing
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white))
+            : const Icon(Icons.auto_awesome),
+        label: Text(
+          _buttonLabel,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+}
+
+
+// ── Cross-reference narrative card ───────────────────────────────────────────
+
+class _NarrativeCard extends StatefulWidget {
+  const _NarrativeCard({required this.narrative});
+  final String narrative;
+
+  @override
+  State<_NarrativeCard> createState() => _NarrativeCardState();
+}
+
+class _NarrativeCardState extends State<_NarrativeCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    const blue = AppTheme.residentBlue;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: blue.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.psychology_outlined, color: blue, size: 16),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text('AI Analysis',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w900, color: blue)),
+            ),
+            GestureDetector(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Text(
+                _expanded ? 'Less' : 'More',
+                style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: blue),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Text(
+            widget.narrative,
+            maxLines: _expanded ? null : 3,
+            overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.residentBlue,
+                  height: 1.5,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProjectLocationPinCard extends StatelessWidget {
+  const _ProjectLocationPinCard({
+    this.lat,
+    this.lon,
+    this.label,
+    this.projectName,
+  });
+
+  final double? lat;
+  final double? lon;
+  final String? label;
+  final String? projectName;
+
+  bool get _hasPin {
+    final la = lat;
+    final lo = lon;
+    return la != null &&
+        lo != null &&
+        la.abs() <= 90 &&
+        lo.abs() <= 180;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = (label ?? '').trim().isNotEmpty
+        ? label!.trim()
+        : (projectName ?? 'Project site');
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.location_on, color: AppTheme.residentBlue, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Project location pin',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _hasPin
+                            ? title
+                            : 'No pin yet. Admin location from Create Project will drop the pin here.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_hasPin)
+            SizedBox(
+              height: 180,
+              child: FlutterMap(
+                options: MapOptions(
+                  initialCenter: LatLng(lat!, lon!),
+                  initialZoom: 14,
+                  interactionOptions: const InteractionOptions(
+                    flags: InteractiveFlag.pinchZoom |
+                        InteractiveFlag.drag |
+                        InteractiveFlag.doubleTapZoom,
+                  ),
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate:
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    tileProvider: CancellableNetworkTileProvider(),
+                    userAgentPackageName: 'com.ceoconstruction.monitoring',
+                  ),
+                  MarkerLayer(
+                    markers: [
+                      Marker(
+                        point: LatLng(lat!, lon!),
+                        width: 44,
+                        height: 44,
+                        child: const Icon(
+                          Icons.location_on,
+                          color: AppTheme.residentBlue,
+                          size: 40,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SavedBlueprintBanner extends StatelessWidget {
+  const _SavedBlueprintBanner({this.planUrl, this.budget});
+
+  final String? planUrl;
+  final double? budget;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPlan = (planUrl ?? '').isNotEmpty;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: hasPlan ? const Color(0xFFEFF6FF) : const Color(0xFFFFFBEB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: hasPlan
+              ? AppTheme.residentBlue.withValues(alpha: 0.18)
+              : const Color(0xFFFDE68A),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            hasPlan ? Icons.architecture : Icons.info_outline,
+            color: hasPlan ? AppTheme.residentBlue : const Color(0xFFB45309),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hasPlan
+                      ? 'Project blueprint on file'
+                      : 'No blueprint on this project yet',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: hasPlan
+                        ? AppTheme.residentBlue
+                        : const Color(0xFF92400E),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  hasPlan
+                      ? 'Photos are compared to the plan Admin saved at create. Only the budgeted part of the drawing counts toward %.${budget != null ? ' Budget: ${budget!.toStringAsFixed(0)}.' : ''}'
+                      : 'Ask Admin to upload the blueprint on Create/Edit Project so AI can score funded scope and tell you which side to work first.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                        height: 1.4,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BudgetScopeCard extends StatelessWidget {
+  const _BudgetScopeCard({required this.result});
+  final GovtrackMlAnalysisResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Blueprint vs funded scope',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'The whole sheet is not the project. Extra areas on the drawing stay out of % if they are not in the budget.',
+            style: TextStyle(
+                color: AppTheme.mediumGray, fontSize: 12, height: 1.4),
+          ),
+          if ((result.firstWorkArea ?? '').isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text('Work this side first',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+            const SizedBox(height: 4),
+            Text(result.firstWorkArea!,
+                style: const TextStyle(height: 1.4, fontSize: 13.5)),
+          ],
+          if (result.workSequence.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text('Sequence',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+            const SizedBox(height: 4),
+            for (var i = 0; i < result.workSequence.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('${i + 1}. ${result.workSequence[i]}',
+                    style: const TextStyle(fontSize: 13, height: 1.35)),
+              ),
+          ],
+          if (result.includedInBudget.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text('In budget: ${result.includedInBudget.take(6).join(', ')}',
+                style: const TextStyle(
+                    fontSize: 12, color: AppTheme.mediumGray)),
+          ],
+          if (result.excludedFromBudget.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Drawn, not funded: ${result.excludedFromBudget.take(6).join(', ')}',
+              style: const TextStyle(
+                  fontSize: 12, color: AppTheme.mediumGray),
             ),
           ],
         ],

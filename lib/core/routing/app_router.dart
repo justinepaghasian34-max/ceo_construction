@@ -21,6 +21,7 @@ import '../../views/site_manager/site_manager_reports_screen.dart';
 import '../../views/site_manager/project_progress_update_screen.dart';
 import '../../views/site_manager/site_manager_govtrack_screen.dart';
 import '../../views/site_manager/site_manager_otp_screen.dart';
+import '../../views/site_manager/site_weather_forecast_screen.dart';
 import '../../views/admin/admin_home.dart';
 import '../../views/admin/admin_dashboard.dart';
 import '../../views/admin/admin_reports.dart';
@@ -32,7 +33,7 @@ import '../../views/admin/admin_audit_trail.dart';
 import '../../views/admin/admin_material_monitoring.dart';
 import '../../views/admin/admin_financial_monitoring.dart';
 import '../../views/admin/admin_weather_forecast.dart';
-import '../../views/admin/admin_demo_script.dart';
+import '../../views/admin/admin_site_weather_map.dart';
 import '../../views/payroll/payroll_home.dart';
 import '../../views/payroll/payroll_monitoring_screen.dart';
 import '../../views/materials/materials_home.dart';
@@ -44,6 +45,7 @@ import '../../views/ceo/ceo_reports.dart';
 import '../../views/common/profile_screen.dart';
 import '../../views/common/settings_screen.dart';
 import '../../views/common/notifications_screen.dart';
+import '../../views/common/access_denied_screen.dart';
 
 class AppRouter {
   static final _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -142,8 +144,22 @@ class AppRouter {
             userRole == null &&
             location != RouteNames.splash &&
             location != RouteNames.login &&
-            location != RouteNames.register) {
+            location != RouteNames.register &&
+            location != RouteNames.siteManagerOtp) {
           return RouteNames.splash;
+        }
+
+        final isAdminAccount =
+            (firebaseUser?.email ?? '').toLowerCase() ==
+            AppConstants.adminEmail.toLowerCase();
+        if (hasFirebaseUser &&
+            !isAdminAccount &&
+            !authService.isOtpVerified &&
+            location != RouteNames.siteManagerOtp &&
+            location != RouteNames.login &&
+            location != RouteNames.register &&
+            location != RouteNames.splash) {
+          return RouteNames.siteManagerOtp;
         }
 
         // REMOVED: Auto-redirect from login/register/splash to home
@@ -152,6 +168,12 @@ class AppRouter {
 
         // Check role-based access
         if (isAuthenticated && !_hasAccessToRoute(location, userRole)) {
+          if (location.startsWith(RouteNames.adminHome) ||
+              location.startsWith(RouteNames.payrollHome) ||
+              location.startsWith(RouteNames.materialsHome) ||
+              location.startsWith(RouteNames.siteManagerHome)) {
+            return RouteNames.accessDenied;
+          }
           return _getHomeRouteForRole(userRole);
         }
 
@@ -265,6 +287,11 @@ class AppRouter {
               path: 'sync-queue',
               builder: (context, state) => const SyncQueueScreen(),
             ),
+            GoRoute(
+              path: 'weather-forecast',
+              builder: (context, state) =>
+                  const SiteWeatherForecastScreen(),
+            ),
           ],
         ),
 
@@ -303,6 +330,11 @@ class AppRouter {
               path: 'weather-forecast',
               pageBuilder: (context, state) =>
                   _adminPage(state, child: const AdminWeatherForecastScreen()),
+            ),
+            GoRoute(
+              path: 'site-weather-map',
+              pageBuilder: (context, state) =>
+                  _adminPage(state, child: const AdminSiteWeatherMapScreen()),
             ),
             GoRoute(
               path: 'progress-reports',
@@ -347,11 +379,6 @@ class AppRouter {
               pageBuilder: (context, state) =>
                   _adminPage(state, child: const AdminAuditTrail()),
             ),
-            GoRoute(
-              path: 'demo-script',
-              pageBuilder: (context, state) =>
-                  _adminPage(state, child: const AdminDemoScriptScreen()),
-            ),
           ],
         ),
 
@@ -384,6 +411,10 @@ class AppRouter {
         ),
 
         // Common Routes
+        GoRoute(
+          path: RouteNames.accessDenied,
+          builder: (context, state) => const AccessDeniedScreen(),
+        ),
         GoRoute(
           path: RouteNames.profile,
           builder: (context, state) => const ProfileScreen(),
@@ -433,6 +464,10 @@ class AppRouter {
     );
   }
 
+  static String getHomeRouteForRole(String? role) {
+    return _getHomeRouteForRole(role);
+  }
+
   static String _getHomeRouteForRole(String? role) {
     switch (role) {
       case AppConstants.roleSiteManager:
@@ -455,7 +490,8 @@ class AppRouter {
 
     if (route.startsWith(RouteNames.profile) ||
         route.startsWith(RouteNames.settings) ||
-        route.startsWith(RouteNames.notifications)) {
+        route.startsWith(RouteNames.notifications) ||
+        route.startsWith(RouteNames.siteManagerOtp)) {
       return true;
     }
 
@@ -478,7 +514,8 @@ class AppRouter {
     }
 
     if (userRole == AppConstants.roleSiteManager) {
-      return route.startsWith(RouteNames.siteManagerHome);
+      return route.startsWith(RouteNames.siteManagerHome) ||
+          route.startsWith(RouteNames.siteManagerOtp);
     }
 
     return false;
@@ -510,7 +547,7 @@ extension AppNavigation on BuildContext {
   void goToLogin() => go(RouteNames.login);
   void goToHome() {
     final authService = AuthService.instance;
-    final homeRoute = AppRouter._getHomeRouteForRole(authService.userRole);
+    final homeRoute = AppRouter.getHomeRouteForRole(authService.userRole);
     go(homeRoute);
   }
 
@@ -532,5 +569,7 @@ extension AppNavigation on BuildContext {
   void goToAdminHistory() => go(RouteNames.adminHistory);
   void goToAdminAuditTrail() => go(RouteNames.adminAuditTrail);
   void goToAdminMaterialMonitoring() => go(RouteNames.adminMaterialMonitoring);
-  void goToAdminFinancialMonitoring() => go(RouteNames.adminFinancialMonitoring);
+  void goToAdminFinancialMonitoring() =>
+      go(RouteNames.adminFinancialMonitoring);
+  void goToAdminSiteWeatherMap() => go(RouteNames.adminSiteWeatherMap);
 }

@@ -300,7 +300,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                       ],
                     ),
                     child: Image.asset(
-                      'assets/images/City Engineering Office logo design.png',
+                      'assets/images/image.png',
                       height: compact ? 76 : 96,
                       width: compact ? 76 : 96,
                       fit: BoxFit.contain,
@@ -355,7 +355,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       child: Column(
         children: [
           Image.asset(
-            'assets/images/City Engineering Office logo design.png',
+            'assets/images/image.png',
             height: compact ? 56 : 72,
             width: compact ? 56 : 72,
           ),
@@ -417,7 +417,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                   child: Column(
                     children: [
                       Image.asset(
-                        'assets/images/City Engineering Office logo design.png',
+                        'assets/images/image.png',
                         height: logoSize,
                         width: logoSize,
                         fit: BoxFit.contain,
@@ -451,7 +451,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
                     onPressed: _isLoading ? null : _handleResendVerification,
                     style: TextButton.styleFrom(foregroundColor: Colors.white),
                     child: const Text(
-                      "Didn't receive verification email?",
+                      "Didn't receive verification code?",
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                   ),
@@ -608,9 +608,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
             if (value == null || value.isEmpty) {
               return 'Please enter your password';
             }
-            if (value.length < 6) {
-              return 'Password must be at least 6 characters';
-            }
             return null;
           },
         ),
@@ -649,7 +646,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Enter your email and password first to resend the verification email.',
+            'Enter your email and password first to resend the 6-digit code.',
           ),
           backgroundColor: AppTheme.errorRed,
         ),
@@ -670,19 +667,30 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
 
       if (!mounted) return;
 
+      if (result.success &&
+          (result.requiresOtp || result.requiresEmailVerification)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: AppTheme.softGreen,
+          ),
+        );
+        context.go(RouteNames.siteManagerOtp);
+        return;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result.message),
-          backgroundColor: result.success
-              ? AppTheme.softGreen
-              : AppTheme.errorRed,
+          backgroundColor:
+              result.success ? AppTheme.softGreen : AppTheme.errorRed,
         ),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Failed to resend verification email: $e'),
+          content: Text('Failed to resend verification code: $e'),
           backgroundColor: AppTheme.errorRed,
         ),
       );
@@ -712,21 +720,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       if (result.success && mounted) {
         final user = result.user;
         final userRole = user?.role;
-        final email = user?.email.toLowerCase();
 
-        // Enforce privileged emails for Admin only
-        if (userRole == AppConstants.roleAdmin &&
-            email != AppConstants.adminEmail.toLowerCase()) {
-          await authService.signOut();
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'This account is not allowed to access the Admin dashboard.',
+        if (result.requiresOtp || result.requiresEmailVerification) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result.message),
+                backgroundColor: AppTheme.softGreen,
               ),
-              backgroundColor: AppTheme.errorRed,
-            ),
-          );
+            );
+            context.go(RouteNames.siteManagerOtp);
+          }
           return;
         }
 
@@ -907,7 +911,7 @@ class _ForgotPasswordDialogState extends ConsumerState<_ForgotPasswordDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Enter your email address to receive a password reset link.',
+              'Enter your email. If an account exists, we will send a reset link that expires in 1 hour.',
             ),
             const SizedBox(height: 16),
             TextField(

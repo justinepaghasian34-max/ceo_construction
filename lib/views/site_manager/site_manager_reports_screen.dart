@@ -60,7 +60,7 @@ class SiteManagerReportsScreen extends ConsumerWidget {
                     children: [
                       Icon(
                         Icons.description,
-                        color: AppTheme.deepBlue,
+                        color: AppTheme.residentBlue,
                       ),
                       const SizedBox(width: 12),
                       Expanded(
