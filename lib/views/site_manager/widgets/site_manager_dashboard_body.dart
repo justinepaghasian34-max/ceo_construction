@@ -48,12 +48,11 @@ class SiteManagerDashboardBody extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: _OverviewGrid(user: user, projectId: projectId),
+              child: _CompactWeatherTile(projectId: projectId),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: _AiInsightsRow(
-                  onTap: () => context.go(RouteNames.govTrackAi)),
+              child: _OverviewGrid(user: user, projectId: projectId),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
@@ -61,8 +60,7 @@ class SiteManagerDashboardBody extends StatelessWidget {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-              child: _WeatherAndQuickActions(
-                projectId: projectId,
+              child: _QuickActionsRow(
                 onProjectAction: onProjectAction,
                 hasProject: true,
               ),
@@ -496,8 +494,12 @@ class _OverviewGrid extends StatelessWidget {
         ? hive.totalAttendanceRecords
         : hive.getAttendanceByRecorder(userId).length;
 
-    // Live material low-stock count from Hive
-    final allMaterials = hive.getAllMaterialInventory();
+    // Live material low-stock count from Hive — this project only
+    final assignedProjectId = projectId;
+    final allMaterials = hive.getAllMaterialInventory().where((m) {
+      if (assignedProjectId == null || assignedProjectId.isEmpty) return false;
+      return (m['projectId'] ?? '').toString() == assignedProjectId;
+    }).toList();
     final lowStockCount = allMaterials.where((m) {
       final qty = m['quantity'] ?? m['currentStock'] ?? m['stock'];
       final min = m['minimumStock'] ?? m['minStock'] ?? m['threshold'] ?? 10;
@@ -507,9 +509,13 @@ class _OverviewGrid extends StatelessWidget {
     }).length;
 
     // Open issues count from Hive requests
-    final pendingRequests = hive.getAllMaterialRequests()
-        .where((r) => (r['status'] ?? '').toString().toLowerCase() == 'pending')
-        .length;
+    final pendingRequests = hive.getAllMaterialRequests().where((r) {
+      if ((r['status'] ?? '').toString().toLowerCase() != 'pending') {
+        return false;
+      }
+      if (assignedProjectId == null || assignedProjectId.isEmpty) return false;
+      return (r['projectId'] ?? '').toString() == assignedProjectId;
+    }).length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -691,141 +697,6 @@ class _AskGovtrackBar extends StatelessWidget {
   }
 }
 
-class _AiInsightsRow extends StatelessWidget {
-  const _AiInsightsRow({required this.onTap});
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    // Pull live data from Hive for real insight cards
-    final hive = HiveService.instance;
-    final pendingSync = hive.pendingSyncItemsCount;
-    final deliveries = hive.getAllDeliveries().length;
-
-    final items = <_InsightItem>[
-      _InsightItem(
-        Icons.auto_awesome,
-        const Color(0xFF8B5CF6),
-        'Ask BuildIQ about your project progress, materials, and safety.',
-        'Open',
-      ),
-      _InsightItem(
-        Icons.sync,
-        pendingSync > 0 ? const Color(0xFFFBBF24) : const Color(0xFF22C55E),
-        pendingSync > 0
-            ? '$pendingSync item${pendingSync == 1 ? '' : 's'} pending sync'
-            : 'All data synced to server.',
-        'Sync now',
-      ),
-      _InsightItem(
-        Icons.local_shipping_outlined,
-        const Color(0xFF3B82F6),
-        deliveries > 0
-            ? '$deliveries material deliver${deliveries == 1 ? 'y' : 'ies'} on record.'
-            : 'No deliveries recorded yet.',
-        'View',
-      ),
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.auto_awesome, color: Color(0xFF8B5CF6), size: 20),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                'Quick Insights',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w900),
-              ),
-            ),
-            TextButton(
-              onPressed: onTap,
-              child: const Text('Open BuildIQ'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 132,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 10),
-            itemBuilder: (context, i) =>
-                _InsightCard(item: items[i], onTap: onTap),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _InsightCard extends StatelessWidget {
-  const _InsightCard({required this.item, required this.onTap});
-
-  final _InsightItem item;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-        side: const BorderSide(color: Color(0xFFE5E7EB)),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
-        child: SizedBox(
-          width: 228,
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: item.color.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(item.icon, color: item.color, size: 20),
-                ),
-                const SizedBox(height: 10),
-                Expanded(
-                  child: Text(
-                    item.message,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          height: 1.25,
-                        ),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  item.action,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppTheme.residentBlue,
-                        fontWeight: FontWeight.w900,
-                      ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 class _ProgressAndActivity extends StatelessWidget {
   const _ProgressAndActivity({required this.projectId});
@@ -1087,107 +958,88 @@ class _ActivityTimelineRow extends StatelessWidget {
   }
 }
 
-class _WeatherAndQuickActions extends StatelessWidget {
-  const _WeatherAndQuickActions({
-    required this.projectId,
+class _CompactWeatherTile extends StatelessWidget {
+  const _CompactWeatherTile({required this.projectId});
+  final String projectId;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<DocumentSnapshot>(
+      future: FirebaseService.instance.projectsCollection.doc(projectId).get(),
+      builder: (context, snap) {
+        final raw = snap.data?.data();
+        final data = raw is Map ? raw.cast<String, dynamic>() : <String, dynamic>{};
+        final loc = (data['location'] ?? '').toString().trim();
+        final label = (data['geoAddress'] ?? data['name'] ?? loc).toString().trim();
+        final lat = (data['latitude'] as num?)?.toDouble();
+        final lon = (data['longitude'] as num?)?.toDouble();
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () =>
+                context.push(RouteNames.siteManagerWeatherForecast),
+            borderRadius: BorderRadius.circular(20),
+            child: SiteWeatherConditionsCard(
+              projectLocation: loc.isEmpty ? null : loc,
+              latitude: lat,
+              longitude: lon,
+              locationLabel: label.isEmpty ? null : label,
+              margin: EdgeInsets.zero,
+              compact: true,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _QuickActionsRow extends StatelessWidget {
+  const _QuickActionsRow({
     required this.onProjectAction,
     required this.hasProject,
   });
 
-  final String projectId;
   final void Function(bool hasProject, VoidCallback action) onProjectAction;
   final bool hasProject;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, c) {
-        final stacked = c.maxWidth < 700;
-        final weather = FutureBuilder<DocumentSnapshot>(
-          future:
-              FirebaseService.instance.projectsCollection.doc(projectId).get(),
-          builder: (context, snap) {
-            final raw = snap.data?.data();
-            final loc =
-                raw is Map ? (raw['location'] ?? '').toString().trim() : '';
-            return SiteWeatherConditionsCard(
-              projectLocation: loc.isEmpty ? null : loc,
-              margin: EdgeInsets.zero,
-            );
-          },
-        );
-
-        final actions = SiteManagerCard(
-          margin: EdgeInsets.zero,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return SiteManagerCard(
+      margin: EdgeInsets.zero,
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Quick Actions',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w900)),
+          const SizedBox(height: 10),
+          Row(
             children: [
-              Text('Quick Actions',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleSmall
-                      ?.copyWith(fontWeight: FontWeight.w900)),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: _QuickActionButton(
-                      icon: Icons.photo_camera_outlined,
-                      label: 'Upload Site Photo',
-                      onTap: () => onProjectAction(hasProject,
-                          () => context.push(RouteNames.projectProgressUpdate)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _QuickActionButton(
-                      icon: Icons.people_outline,
-                      label: 'Add Attendance',
-                      onTap: () => onProjectAction(hasProject,
-                          () => context.push(RouteNames.attendance)),
-                    ),
-                  ),
-                ],
+              Expanded(
+                child: _QuickActionButton(
+                  icon: Icons.photo_camera_outlined,
+                  label: 'Upload Site Photo',
+                  onTap: () => onProjectAction(hasProject,
+                      () => context.push(RouteNames.projectProgressUpdate)),
+                ),
               ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: _QuickActionButton(
-                      icon: Icons.inventory_2_outlined,
-                      label: 'Request Materials',
-                      onTap: () => onProjectAction(hasProject,
-                          () => context.push(RouteNames.materialRequest)),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _QuickActionButton(
-                      icon: Icons.auto_awesome_outlined,
-                      label: 'AI Daily Report',
-                      onTap: () => context.go(RouteNames.govTrackAi),
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 8),
+              Expanded(
+                child: _QuickActionButton(
+                  icon: Icons.assignment_outlined,
+                  label: 'Daily Report',
+                  onTap: () => onProjectAction(
+                      hasProject, () => context.push(RouteNames.dailyReport)),
+                ),
               ),
             ],
           ),
-        );
-
-        if (stacked) {
-          return Column(
-              children: [weather, const SizedBox(height: 12), actions]);
-        }
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(child: weather),
-            const SizedBox(width: 12),
-            Expanded(child: actions),
-          ],
-        );
-      },
+        ],
+      ),
     );
   }
 }
@@ -1293,14 +1145,6 @@ class _LatestPhotosRow extends StatelessWidget {
       ],
     );
   }
-}
-
-class _InsightItem {
-  const _InsightItem(this.icon, this.color, this.message, this.action);
-  final IconData icon;
-  final Color color;
-  final String message;
-  final String action;
 }
 
 class _SectionTitle extends StatelessWidget {

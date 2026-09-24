@@ -16,6 +16,78 @@ import '../../widgets/common/storage_network_image.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 
+String _formatPeso(double value) {
+  if (value <= 0) return '—';
+  final digits = value.round().toString();
+  final buffer = StringBuffer();
+  var count = 0;
+  for (var i = digits.length - 1; i >= 0; i--) {
+    buffer.write(digits[i]);
+    count++;
+    if (count == 3 && i != 0) {
+      buffer.write(',');
+      count = 0;
+    }
+  }
+  return '${AppConstants.currencySymbol}${buffer.toString().split('').reversed.join()}';
+}
+
+String _prettyName(String raw) {
+  final value = raw.trim();
+  if (value.isEmpty) return value;
+  return value.split(RegExp(r'\s+')).map((word) {
+    if (word.isEmpty) return word;
+    if (word.length <= 4) return word.toUpperCase();
+    return '${word[0].toUpperCase()}${word.substring(1).toLowerCase()}';
+  }).join(' ');
+}
+
+String _prettyStatus(String raw) {
+  final value = raw.trim();
+  if (value.isEmpty) return '—';
+  return _prettyName(value);
+}
+
+Future<({WeatherNow weather, String site})?> _loadPinnedSiteWeather() async {
+  final snap = await FirebaseService.instance.projectsCollection.get();
+  WeatherNow? worst;
+  var site = '';
+  var worstRank = -1;
+
+  int rank(WeatherNow weather) {
+    final condition = weather.condition.toLowerCase();
+    if (condition.contains('thunder') || condition.contains('storm')) return 3;
+    if (condition.contains('rain') || condition.contains('drizzle')) return 2;
+    return 0;
+  }
+
+  for (final doc in snap.docs) {
+    final data = (doc.data() as Map?)?.cast<String, dynamic>() ?? {};
+    if (ArchiveService.isArchived(data)) continue;
+    final lat = (data['latitude'] as num?)?.toDouble();
+    final lon = (data['longitude'] as num?)?.toDouble();
+    if (lat == null || lon == null || lat.abs() > 90 || lon.abs() > 180) {
+      continue;
+    }
+    try {
+      final weather = await WeatherService.instance.getCurrentWeatherByCoordinates(
+        lat: lat,
+        lon: lon,
+      );
+      final name = (data['name'] ?? data['geoAddress'] ?? 'Project').toString();
+      final score = rank(weather);
+      if (worst == null || score > worstRank) {
+        worst = weather;
+        worstRank = score;
+        site = name;
+      }
+    } catch (_) {}
+  }
+
+  if (worst == null) return null;
+  return (weather: worst, site: site);
+}
+
 class AdminHome extends StatelessWidget {
   const AdminHome({super.key});
 
@@ -71,7 +143,7 @@ class AdminHome extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < 1000;
-        const kpiHeight = 150.0;
+        const kpiHeight = 172.0;
 
         final List<Widget> cards = [
           _KpiCard(
@@ -140,37 +212,83 @@ class AdminHome extends StatelessWidget {
     final card = GlassCard(
       borderRadius: borderRadius,
       padding: const EdgeInsets.all(14),
-      child: FutureBuilder<WeatherNow>(
-        future: WeatherService.instance.getCurrentWeatherByCity('Manila,PH'),
+      child: FutureBuilder<({WeatherNow weather, String site})?>(
+        future: _loadPinnedSiteWeather(),
         builder: (context, snapshot) {
-          final temp = snapshot.data?.temperatureC;
-          final description = snapshot.data?.description ?? '';
-          final workHours =
-              (temp == null) ? 7 : (temp <= 26 ? 9 : (temp <= 30 ? 8 : 7));
-          final label = snapshot.connectionState == ConnectionState.waiting
-              ? 'Loading…'
-              : (description.isEmpty ? 'Weather Risk' : 'Weather Risk');
+          final waiting = snapshot.connectionState == ConnectionState.waiting;
+          final weather = snapshot.data?.weather;
+          final site = snapshot.data?.site ?? '';
+          final failed = !waiting && (snapshot.hasError || weather == null);
+          final temp = weather?.temperatureC;
+          final condition = (weather?.condition ?? '').toLowerCase();
+          final raining = condition.contains('rain') ||
+              condition.contains('drizzle') ||
+              condition.contains('thunder') ||
+              condition.contains('storm');
+
+          late final int workHours;
+          late final String riskLabel;
+          late final Color barColor;
+          if (waiting) {
+            workHours = 0;
+            riskLabel = 'Loading…';
+            barColor = const Color(0xFF2DD4BF);
+          } else if (failed || temp == null) {
+            workHours = 0;
+            riskLabel = 'Pin the project site first';
+            barColor = AppTheme.mediumGray;
+          } else if (raining) {
+            workHours = condition.contains('thunder') ? 3 : 4;
+            riskLabel = condition.contains('thunder')
+                ? 'High storm risk'
+                : 'Rain risk';
+            barColor = const Color(0xFFF97316);
+          } else if (temp >= 33) {
+            workHours = 6;
+            riskLabel = 'Heat risk';
+            barColor = const Color(0xFFF97316);
+          } else if (temp <= 26) {
+            workHours = 9;
+            riskLabel = 'Low weather risk';
+            barColor = const Color(0xFF2DD4BF);
+          } else if (temp <= 30) {
+            workHours = 8;
+            riskLabel = 'Low weather risk';
+            barColor = const Color(0xFF2DD4BF);
+          } else {
+            workHours = 7;
+            riskLabel = 'Moderate heat';
+            barColor = const Color(0xFFFACC15);
+          }
+
+          final icon = raining
+              ? Icons.thunderstorm_outlined
+              : Icons.wb_sunny_outlined;
+          final tempLabel = waiting
+              ? '…'
+              : (temp == null ? '—' : '${temp.toStringAsFixed(0)}°C');
+          final detail = weather?.description.trim();
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                label,
+                'Weather Risk',
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Icon(
-                    Icons.wb_sunny_outlined,
+                    icon,
                     color: Colors.black.withValues(alpha: 0.75),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      temp == null ? '—' : '${temp.toStringAsFixed(0)}°C',
+                      tempLabel,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w800,
                           ),
@@ -178,16 +296,20 @@ class AdminHome extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 4),
               Text(
-                'Workable Hours:',
+                detail != null && detail.isNotEmpty
+                    ? '$riskLabel · $detail${site.isNotEmpty ? ' · $site' : ''}'
+                    : (site.isNotEmpty ? '$riskLabel · $site' : riskLabel),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.mediumGray,
                     ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 8),
               Text(
-                '$workHours / 10',
+                failed ? 'Tap to open forecast' : 'Workable Hours: $workHours / 10',
                 style: Theme.of(context).textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
@@ -196,10 +318,10 @@ class AdminHome extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
-                  value: (workHours / 10).clamp(0.0, 1.0),
+                  value: waiting ? null : (workHours / 10).clamp(0.0, 1.0),
                   minHeight: 6,
                   backgroundColor: Colors.black.withValues(alpha: 0.06),
-                  color: const Color(0xFF2DD4BF),
+                  color: barColor,
                 ),
               ),
             ],
@@ -485,67 +607,55 @@ class AdminHome extends StatelessWidget {
         }
 
         final visible = summaries.take(5).toList();
+        final remaining = summaries.length - visible.length;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Project Activity Summary',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Project Activity Summary',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: const Color(0xFF0F172A),
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Progress, spend, and health for each active site',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.mediumGray,
+                            ),
+                      ),
+                    ],
                   ),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      _showFullProjectActivityTable(context, summaries),
+                  child: const Text('See all'),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
-            GestureDetector(
-              onTap: () => _showFullProjectActivityTable(context, summaries),
-              child: GlassDataTableTheme(
-                child: _buildProjectActivityDataTable(context, visible),
+            for (final item in visible)
+              _ProjectActivityRowCard(item: item),
+            if (remaining > 0)
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'Showing ${visible.length} of ${summaries.length} projects',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Text(
-                'Tap table to view all projects',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
-              ),
-            ),
           ],
-        );
-      },
-    );
-  }
-
-  Widget _buildProjectActivityDataTable(
-    BuildContext context,
-    List<Map<String, dynamic>> rows,
-  ) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: constraints.maxWidth),
-            child: DataTable(
-              dividerThickness: 0,
-              columnSpacing: 16,
-              dataRowMinHeight: 88,
-              dataRowMaxHeight: 128,
-              columns: const [
-                DataColumn(label: Text('Project')),
-                DataColumn(label: Text('Resident Engineer')),
-                DataColumn(label: Text('Status')),
-                DataColumn(label: Text('Progress')),
-                DataColumn(label: Text('Budget & expense %')),
-                DataColumn(label: Text('AI Health')),
-              ],
-              rows: [
-                for (final item in rows) _buildProjectSummaryRow(context, item),
-              ],
-            ),
-          ),
         );
       },
     );
@@ -556,7 +666,7 @@ class AdminHome extends StatelessWidget {
     List<Map<String, dynamic>> summaries,
   ) {
     final size = MediaQuery.of(context).size;
-    final width = math.min(size.width * 0.88, 1100.0);
+    final width = math.min(size.width * 0.92, 920.0);
     final height = math.min(size.height * 0.88, 860.0);
 
     showGeneralDialog<void>(
@@ -595,15 +705,22 @@ class AdminHome extends StatelessWidget {
                         ),
                         IconButton(
                           icon: const Icon(Icons.close),
-                          onPressed: () =>
-                              Navigator.of(dialogContext).pop(),
+                          onPressed: () => Navigator.of(dialogContext).pop(),
                         ),
                       ],
                     ),
                   ),
                   const Divider(height: 1),
                   Expanded(
-                    child: _HorizontalProjectStrip(summaries: summaries),
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                      itemCount: summaries.length,
+                      itemBuilder: (context, index) {
+                        return _ProjectActivityRowCard(
+                          item: summaries[index],
+                        );
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -613,192 +730,282 @@ class AdminHome extends StatelessWidget {
       },
     );
   }
+}
 
-  DataRow _buildProjectSummaryRow(
-    BuildContext context,
-    Map<String, dynamic> item,
-  ) {
-    final name = (item['name'] ?? 'Untitled').toString();
-    final siteManagerName = (item['siteManagerName'] ?? '').toString();
-    final status = (item['status'] ?? 'unknown').toString();
-    final progress = (item['progress'] ?? 0.0) as double;
-    final budget = (item['budget'] ?? 0.0) as double;
-    final expenses = (item['expenses'] ?? 0.0) as double;
 
-    String healthLabel;
-    Color healthColor;
-    Color statusColor;
+class _ProjectActivityRowCard extends StatelessWidget {
+  const _ProjectActivityRowCard({required this.item});
 
-    if (budget <= 0 && expenses <= 0) {
-      healthLabel = 'No data';
-      healthColor = AppTheme.mediumGray;
-    } else {
-      final utilization =
-          budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 2.0);
-      if (utilization < 0.7) {
-        healthLabel = 'Healthy';
-        healthColor = AppTheme.primaryBlue;
-      } else if (utilization <= 1.0) {
-        healthLabel = 'Watch';
-        healthColor = AppTheme.accentYellow;
-      } else {
-        healthLabel = 'Over budget';
-        healthColor = AppTheme.errorRed;
-      }
-    }
+  final Map<String, dynamic> item;
 
-    final normalizedStatus = status.toLowerCase();
-    if (normalizedStatus == 'ongoing') {
+  @override
+  Widget build(BuildContext context) {
+    final name = _prettyName((item['name'] ?? 'Untitled').toString());
+    final engineerRaw = (item['siteManagerName'] ?? '').toString().trim();
+    final engineer =
+        engineerRaw.isEmpty ? 'Unassigned' : _prettyName(engineerRaw);
+    final status = _prettyStatus((item['status'] ?? '').toString());
+    final progress = (item['progress'] is num)
+        ? (item['progress'] as num).toDouble()
+        : 0.0;
+    final budget = (item['budget'] is num)
+        ? (item['budget'] as num).toDouble()
+        : 0.0;
+    final expenses = (item['expenses'] is num)
+        ? (item['expenses'] as num).toDouble()
+        : 0.0;
+    final cover = (item['coverImage'] ?? '').toString();
+
+    final statusLower = status.toLowerCase();
+    final Color statusColor;
+    if (statusLower == 'ongoing') {
       statusColor = AppTheme.softGreen;
-    } else if (normalizedStatus == 'completed') {
+    } else if (statusLower == 'completed') {
       statusColor = AppTheme.primaryBlue;
-    } else if (normalizedStatus == 'pending') {
+    } else if (statusLower == 'pending') {
       statusColor = AppTheme.warningOrange;
     } else {
       statusColor = AppTheme.mediumGray;
     }
 
-    String formattedStatus;
-    if (status.isEmpty) {
-      formattedStatus = '—';
+    final spentRatio = budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 1.0);
+    final spentPercent =
+        budget <= 0 ? 0.0 : ((expenses / budget) * 100).clamp(0.0, 999.0);
+
+    late final String healthLabel;
+    late final Color healthColor;
+    if (budget <= 0 && expenses <= 0) {
+      healthLabel = 'No data';
+      healthColor = AppTheme.mediumGray;
+    } else if (budget > 0 && expenses / budget > 1.0) {
+      healthLabel = 'Over budget';
+      healthColor = AppTheme.errorRed;
+    } else if (budget > 0 && expenses / budget > 0.7) {
+      healthLabel = 'Watch';
+      healthColor = AppTheme.warningOrange;
     } else {
-      formattedStatus = status[0].toUpperCase() + status.substring(1);
+      healthLabel = 'Healthy';
+      healthColor = AppTheme.softGreen;
     }
 
-    final double utilization =
-        budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 2.0);
-    final double utilizationPercent =
-        budget <= 0 ? 0.0 : (utilization * 100).clamp(0.0, 999.0);
+    final progressColor = progress <= 0
+        ? AppTheme.mediumGray
+        : progress < 50
+            ? AppTheme.deepBlue
+            : AppTheme.softGreen;
+    final spendColor = budget <= 0
+        ? AppTheme.mediumGray
+        : expenses / budget > 1
+            ? AppTheme.errorRed
+            : expenses / budget > 0.7
+                ? AppTheme.warningOrange
+                : AppTheme.softGreen;
 
-    final siteManagerLabel =
-        siteManagerName.isEmpty ? 'Unassigned' : siteManagerName;
-
-    return DataRow(
-      cells: [
-        DataCell(
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 220),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _ProjectCoverThumb(
-                  source: (item['coverImage'] ?? '').toString(),
-                  size: 48,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        name,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+    Widget chip(String label, Color color) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
         ),
-        DataCell(
-          Text(
-            siteManagerLabel,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(
-                  color: AppTheme.mediumGray,
-                ),
-          ),
-        ),
-        DataCell(
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: statusColor.withValues(alpha: 0.22),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              formattedStatus,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: statusColor,
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-          ),
-        ),
-        DataCell(
-          Row(
-            children: [
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: (progress / 100).clamp(0.0, 1.0),
-                  minHeight: 6,
-                  backgroundColor: Colors.black.withValues(alpha: 0.06),
-                  color: const Color(0xFF2DD4BF),
-                ),
+        child: Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w800,
               ),
-              const SizedBox(width: 10),
-              Text(
-                '${progress.toStringAsFixed(0)}%',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.black.withValues(alpha: 0.75),
+        ),
+      );
+    }
+
+    Widget metric({
+      required String label,
+      required Widget child,
+    }) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppTheme.mediumGray,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 6),
+          child,
+        ],
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _ProjectCoverThumb(source: cover, size: 46),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF0F172A),
+                          ),
                     ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.engineering_outlined,
+                          size: 14,
+                          color: AppTheme.mediumGray,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            engineer,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppTheme.mediumGray,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        chip(status, statusColor),
+                        chip(healthLabel, healthColor),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-        ),
-        DataCell(
-          SizedBox(
-            width: 160,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  budget <= 0
-                      ? 'Budget: —'
-                      : 'Budget: ${budget.toStringAsFixed(0)}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.black.withValues(alpha: 0.75),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final stacked = constraints.maxWidth < 560;
+              final progressMetric = metric(
+                label: 'Progress',
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          value: (progress / 100).clamp(0.0, 1.0),
+                          minHeight: 8,
+                          backgroundColor: Colors.black.withValues(alpha: 0.06),
+                          color: progressColor,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${progress.clamp(0, 999).toStringAsFixed(0)}%',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF0F172A),
+                          ),
+                    ),
+                  ],
+                ),
+              );
+              final budgetMetric = metric(
+                label: 'Budget',
+                child: Text(
+                  _formatPeso(budget),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
                       ),
                 ),
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                  value:
-                      budget <= 0 ? 0.0 : (expenses / budget).clamp(0.0, 1.0),
-                  backgroundColor: Colors.black.withValues(alpha: 0.06),
-                  color: const Color(0xFF2DD4BF),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  budget <= 0
-                      ? 'Expense: —'
-                      : 'Expense: ${expenses.toStringAsFixed(0)} (${utilizationPercent.toStringAsFixed(0)}%)',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.mediumGray,
+              );
+              final spendMetric = metric(
+                label: 'Spent',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      budget <= 0
+                          ? _formatPeso(expenses)
+                          : '${_formatPeso(expenses)}  ·  ${spentPercent.toStringAsFixed(0)}%',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: spendColor,
+                          ),
+                    ),
+                    const SizedBox(height: 6),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: LinearProgressIndicator(
+                        value: spentRatio,
+                        minHeight: 6,
+                        backgroundColor: Colors.black.withValues(alpha: 0.06),
+                        color: spendColor,
                       ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              );
+
+              if (stacked) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    progressMetric,
+                    const SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(child: budgetMetric),
+                        const SizedBox(width: 16),
+                        Expanded(child: spendMetric),
+                      ],
+                    ),
+                  ],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 2, child: progressMetric),
+                  const SizedBox(width: 16),
+                  Expanded(child: budgetMetric),
+                  const SizedBox(width: 16),
+                  Expanded(child: spendMetric),
+                ],
+              );
+            },
           ),
-        ),
-        DataCell(
-          Text(
-            healthLabel,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: healthColor,
-                  fontWeight: FontWeight.w600,
-                ),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -1076,7 +1283,7 @@ class _ProjectActivityTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    name,
+                    _prettyName(name),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
@@ -1085,7 +1292,9 @@ class _ProjectActivityTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    siteManagerName.isEmpty ? 'Unassigned' : siteManagerName,
+                    siteManagerName.isEmpty
+                        ? 'Unassigned'
+                        : _prettyName(siteManagerName),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1124,7 +1333,7 @@ class _ProjectActivityTile extends StatelessWidget {
                   Text(
                     budget <= 0
                         ? 'Budget: —'
-                        : 'Budget: ${budget.toStringAsFixed(0)}  ·  Expense: ${expenses.toStringAsFixed(0)}',
+                        : 'Budget: ${_formatPeso(budget)}  ·  Expense: ${_formatPeso(expenses)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(

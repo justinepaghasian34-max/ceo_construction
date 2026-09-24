@@ -198,9 +198,11 @@ class AdminGlassScaffold extends StatelessWidget {
               }
 
               return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SizedBox(width: 16),
-                  AdminGlassSidebar(
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 0, 12),
+                    child: AdminGlassSidebar(
                     mode: sidebarMode,
                     onDashboard: () => context.push(RouteNames.adminHome),
                     onProjects: () => context.push(RouteNames.adminProjects),
@@ -221,9 +223,10 @@ class AdminGlassScaffold extends StatelessWidget {
                     onHistory: () => context.push(RouteNames.adminHistory),
                     onProfile: () => context.push(RouteNames.profile),
                   ),
-                  const SizedBox(width: 16),
+                  ),
+                  const SizedBox(width: 12),
                   Expanded(child: page),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 12),
                 ],
               );
             },
@@ -435,8 +438,13 @@ class _AdminGlassHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isNarrow = MediaQuery.of(context).size.width < 720;
+
     return GlassCard(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      padding: EdgeInsets.symmetric(
+        horizontal: isNarrow ? 10 : 18,
+        vertical: isNarrow ? 10 : 14,
+      ),
       borderRadius: 18,
       child: Row(
         children: [
@@ -451,56 +459,75 @@ class _AdminGlassHeader extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 4),
           ],
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: const Color(0xFF0F172A),
-                  letterSpacing: -0.3,
-                ),
-          ),
-          const SizedBox(width: 20),
-          Expanded(
-            child: SizedBox(
-              height: 42,
-              child: TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search projects, reports…',
-                  hintStyle: TextStyle(
-                    color: Colors.black.withValues(alpha: 0.38),
-                    fontSize: 14,
-                  ),
-                  prefixIcon: Icon(
-                    Icons.search_rounded,
-                    color: Colors.black.withValues(alpha: 0.45),
-                  ),
-                  isDense: true,
-                  filled: true,
-                  fillColor: const Color(0xFFF8FAFC),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide.none,
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(
-                      color: Colors.black.withValues(alpha: 0.06),
+          if (isNarrow)
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFF0F172A),
+                      letterSpacing: -0.3,
+                      fontSize: 16,
                     ),
+              ),
+            )
+          else
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: const Color(0xFF0F172A),
+                    letterSpacing: -0.3,
                   ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: const BorderSide(
-                      color: Color(0xFF2563EB),
-                      width: 1.5,
+            ),
+          if (!isNarrow) ...[
+            const SizedBox(width: 20),
+            Expanded(
+              child: SizedBox(
+                height: 42,
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search projects, reports…',
+                    hintStyle: TextStyle(
+                      color: Colors.black.withValues(alpha: 0.38),
+                      fontSize: 14,
+                    ),
+                    prefixIcon: Icon(
+                      Icons.search_rounded,
+                      color: Colors.black.withValues(alpha: 0.45),
+                    ),
+                    isDense: true,
+                    filled: true,
+                    fillColor: const Color(0xFFF8FAFC),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(
+                        color: Colors.black.withValues(alpha: 0.06),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(
+                        color: Color(0xFF2563EB),
+                        width: 1.5,
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
+          ],
+          const SizedBox(width: 8),
           ...(actions ?? const <Widget>[]),
         ],
       ),
@@ -715,9 +742,10 @@ class _AdminDrawer extends StatelessWidget {
         : RouteNames.adminMaterialMonitoring;
 
     return Drawer(
+      backgroundColor: const Color(0xFFF8FAFC),
       child: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           child: AdminGlassSidebar(
             mode: mode,
             onDashboard: () {
@@ -786,20 +814,28 @@ class AdminGlassSidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 240,
-      child: GlassCard(
-        borderRadius: 18,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-        child: _AdminSidebarBody(
-          mode: mode,
-          onDashboard: onDashboard,
-          onProjects: onProjects,
-          onAiProgressReports: onAiProgressReports,
-          onPayroll: onPayroll,
-          onBudget: onBudget,
-          onMaterials: onMaterials,
-          onHistory: onHistory,
-          onProfile: onProfile,
+      width: 228,
+      height: double.infinity,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+          boxShadow: _AdminElevation.card,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 14, 10, 10),
+          child: _AdminSidebarBody(
+            mode: mode,
+            onDashboard: onDashboard,
+            onProjects: onProjects,
+            onAiProgressReports: onAiProgressReports,
+            onPayroll: onPayroll,
+            onBudget: onBudget,
+            onMaterials: onMaterials,
+            onHistory: onHistory,
+            onProfile: onProfile,
+          ),
         ),
       ),
     );
@@ -834,7 +870,39 @@ class _AdminSidebarBody extends StatefulWidget {
 }
 
 class _AdminSidebarBodyState extends State<_AdminSidebarBody> {
-  bool _materialsExpanded = false;
+  String get _path {
+    try {
+      return GoRouterState.of(context).uri.path;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  bool _isActive(String route, {List<String> aliases = const []}) {
+    final path = _path;
+    bool matches(String r) => path == r || path.startsWith('$r/');
+    if (route == RouteNames.adminHome) {
+      return path == RouteNames.adminHome ||
+          path == RouteNames.adminDashboard ||
+          path == '${RouteNames.adminHome}/';
+    }
+    return matches(route) || aliases.any(matches);
+  }
+
+  Widget _groupLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.8,
+          color: Color(0xFF94A3B8),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -844,50 +912,63 @@ class _AdminSidebarBodyState extends State<_AdminSidebarBody> {
     final showPayroll = showFull || mode == AdminSidebarMode.payroll;
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Container(
-              width: 34,
-              height: 34,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
-                borderRadius: BorderRadius.circular(10),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(6, 0, 6, 4),
+          child: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E3A8A),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: const Icon(
+                  Icons.construction,
+                  size: 16,
+                  color: Colors.white,
+                ),
               ),
-              child: const Icon(
-                Icons.construction,
-                size: 18,
-                color: Colors.white,
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'CEO Construction',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'CEO Construction',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
-        const SizedBox(height: 14),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Divider(height: 1, color: Color(0xFFE2E8F0)),
+        ),
+        _groupLabel('MENU'),
         if (showFull) ...[
           _SidebarNavItem(
             icon: Icons.grid_view_rounded,
             label: 'Overview',
+            selected: _isActive(RouteNames.adminHome),
             onPressed: widget.onDashboard,
           ),
           _SidebarNavItem(
             icon: Icons.folder_open,
             label: 'Projects',
+            selected: _isActive(RouteNames.adminProjects),
             onPressed: widget.onProjects,
           ),
           _SidebarNavItem(
             icon: Icons.query_stats_outlined,
-            label: 'AI Progress Reports',
+            label: 'AI Progress',
+            selected: _isActive(RouteNames.adminProgressReports),
             onPressed: widget.onAiProgressReports,
           ),
         ],
@@ -895,33 +976,43 @@ class _AdminSidebarBodyState extends State<_AdminSidebarBody> {
           _SidebarNavItem(
             icon: Icons.payments_outlined,
             label: 'Payroll',
+            selected: _isActive(
+              RouteNames.adminPayroll,
+              aliases: [RouteNames.payrollHome],
+            ),
             onPressed: widget.onPayroll,
           ),
         if (showFull)
           _SidebarNavItem(
             icon: Icons.account_balance_wallet_outlined,
             label: 'Budget',
+            selected: _isActive(RouteNames.adminFinancialMonitoring),
             onPressed: widget.onBudget,
           ),
         if (showMaterials)
-          _SidebarExpandableNavItem(
+          _SidebarNavItem(
             icon: Icons.inventory_2_outlined,
             label: 'Materials',
-            expanded: _materialsExpanded,
+            selected: _isActive(
+              RouteNames.adminMaterialMonitoring,
+              aliases: [RouteNames.materialsHome],
+            ),
             onPressed: widget.onMaterials,
-            onToggleExpanded: () =>
-                setState(() => _materialsExpanded = !_materialsExpanded),
           ),
         if (showFull)
           _SidebarNavItem(
             icon: Icons.history,
             label: 'History',
+            selected: _isActive(RouteNames.adminHistory),
             onPressed: widget.onHistory,
           ),
         const Spacer(),
+        const Divider(height: 16, color: Color(0xFFE2E8F0)),
+        _groupLabel('ACCOUNT'),
         _SidebarNavItem(
           icon: Icons.person_outline,
           label: 'Profile',
+          selected: _isActive(RouteNames.profile),
           onPressed: widget.onProfile,
         ),
       ],
@@ -929,244 +1020,78 @@ class _AdminSidebarBodyState extends State<_AdminSidebarBody> {
   }
 }
 
-class _SidebarExpandableNavItem extends StatelessWidget {
-  const _SidebarExpandableNavItem({
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-    required this.expanded,
-    required this.onToggleExpanded,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-  final bool expanded;
-  final VoidCallback onToggleExpanded;
-
-  @override
-  Widget build(BuildContext context) {
-    final arrow = expanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right;
-    return _HoverNavRow(
-      borderRadius: 12,
-      onPressed: onPressed,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: Colors.black.withValues(alpha: 0.75)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black.withValues(alpha: 0.78),
-                    ),
-              ),
-            ),
-            IconButton(
-              onPressed: onToggleExpanded,
-              icon: Icon(arrow, color: Colors.black.withValues(alpha: 0.65)),
-              splashRadius: 18,
-              tooltip: expanded ? 'Collapse' : 'Expand',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SidebarSubNavItem extends StatelessWidget {
-  const _SidebarSubNavItem({
-    required this.label,
-    required this.onPressed,
-  });
-
-  final String label;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    return _HoverNavRow(
-      borderRadius: 12,
-      onPressed: onPressed,
-      child: Padding(
-        padding: const EdgeInsets.only(left: 40, right: 10, top: 8, bottom: 8),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black.withValues(alpha: 0.70),
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SidebarNavItem extends StatelessWidget {
+class _SidebarNavItem extends StatefulWidget {
   const _SidebarNavItem({
     required this.icon,
     required this.label,
     required this.onPressed,
+    this.selected = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onPressed;
+  final bool selected;
 
   @override
-  Widget build(BuildContext context) {
-    return _HoverNavRow(
-      borderRadius: 12,
-      onPressed: onPressed,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: Colors.black.withValues(alpha: 0.75)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black.withValues(alpha: 0.78),
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  State<_SidebarNavItem> createState() => _SidebarNavItemState();
 }
 
-class _HoverNavRow extends StatefulWidget {
-  const _HoverNavRow({
-    required this.child,
-    required this.borderRadius,
-    required this.onPressed,
-  });
-
-  final Widget child;
-  final double borderRadius;
-  final VoidCallback onPressed;
-
-  @override
-  State<_HoverNavRow> createState() => _HoverNavRowState();
-}
-
-class _HoverNavRowState extends State<_HoverNavRow>
-    with SingleTickerProviderStateMixin {
+class _SidebarNavItemState extends State<_SidebarNavItem> {
   bool _hovered = false;
 
-  late final AnimationController _shineController;
-
-  bool get _enableHoverMotion {
-    if (kIsWeb) return true;
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.windows:
-      case TargetPlatform.macOS:
-      case TargetPlatform.linux:
-        return true;
-      case TargetPlatform.android:
-      case TargetPlatform.iOS:
-      case TargetPlatform.fuchsia:
-        return false;
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _shineController = AnimationController(
-      vsync: this,
-      duration: _AdminMotion.shine,
-    );
-  }
-
-  @override
-  void dispose() {
-    _shineController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final bg = _hovered
-        ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.07)
-        : Colors.transparent;
+    final selected = widget.selected;
+    final color = selected
+        ? const Color(0xFF1E3A8A)
+        : const Color(0xFF334155);
 
-    final shadow =
-        _hovered ? _AdminElevation.navHover : const <BoxShadow>[];
-
-    return MouseRegion(
-      onEnter: (_) {
-        setState(() => _hovered = true);
-        if (_enableHoverMotion && !_shineController.isAnimating) {
-          _shineController.repeat();
-        }
-      },
-      onExit: (_) {
-        setState(() => _hovered = false);
-        if (_enableHoverMotion) {
-          _shineController.stop();
-          _shineController.value = 0;
-        }
-      },
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onPressed,
-        child: AnimatedContainer(
-          duration: _AdminMotion.hover,
-          curve: _AdminMotion.hoverCurve,
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(widget.borderRadius),
-            boxShadow: shadow,
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(widget.borderRadius),
-            child: Stack(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: widget.onPressed,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            decoration: BoxDecoration(
+              color: selected
+                  ? const Color(0xFFEEF2FF)
+                  : _hovered
+                      ? const Color(0xFFF1F5F9)
+                      : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
               children: [
-                widget.child,
-                IgnorePointer(
-                  child: AnimatedOpacity(
-                    duration: _AdminMotion.hover,
-                    curve: _AdminMotion.hoverCurve,
-                    opacity: (_hovered && _enableHoverMotion) ? 1 : 0,
-                    child: AnimatedBuilder(
-                      animation: _shineController,
-                      builder: (context, _) {
-                        final t = _shineController.value;
-                        final x = (-1.0 + 2.0 * t);
-                        return Transform.translate(
-                          offset: Offset(x * 160, 0),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.white.withValues(alpha: 0.00),
-                                  Colors.white.withValues(alpha: 0.13),
-                                  Colors.white.withValues(alpha: 0.00),
-                                ],
-                                stops: const [0.35, 0.5, 0.65],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  width: 3,
+                  height: 16,
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? const Color(0xFF1E3A8A)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(widget.icon, size: 18, color: color),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    widget.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                      color: color,
                     ),
                   ),
                 ),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'services/firebase_service.dart';
+import 'services/app_check_service.dart';
 import 'services/hive_service.dart';
 import 'services/session_timeout_service.dart';
 import 'services/local_notification_service.dart';
@@ -10,6 +11,7 @@ import 'services/audit_log_service.dart';
 import 'core/theme/app_theme.dart';
 import 'core/constants/app_constants.dart';
 import 'core/routing/app_router.dart';
+import 'widgets/material_request_alert_listener.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
@@ -37,6 +39,8 @@ void main() async {
         }
       }
     }
+
+    await AppCheckService.activate();
 
     if (kDebugMode && _useFunctionsEmulator) {
       FirebaseFunctions.instance.useFunctionsEmulator('localhost', 5001);
@@ -123,6 +127,11 @@ class CeoConsApp extends ConsumerWidget {
         theme: AppTheme.lightTheme,
         routerConfig: ref.watch(goRouterProvider),
         debugShowCheckedModeBanner: false,
+        builder: (context, child) {
+          return MaterialRequestAlertListener(
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
       ),
     );
   }

@@ -189,11 +189,43 @@ class SyncService {
 
         final payload = updatedReport.toJson();
         payload['geoTag'] ??= await _geoTagService.captureGeoTag();
+        try {
+          final projectSnap = await _firebaseService.projectsCollection
+              .doc(report.projectId)
+              .get();
+          final projectData =
+              (projectSnap.data() as Map?)?.cast<String, dynamic>() ?? {};
+          payload['projectName'] =
+              (projectData['name'] ?? payload['projectName'] ?? report.projectId)
+                  .toString();
+        } catch (_) {
+          payload['projectName'] ??= report.projectId;
+        }
 
         // Upload to Firestore
         await _firebaseService.dailyReportsCollection(report.projectId)
             .doc(report.id)
             .set(payload);
+
+        try {
+          final notifId = 'notif_daily_report_${report.id}';
+          await _firebaseService.notificationsCollection.doc(notifId).set({
+            'id': notifId,
+            'type': 'daily_report_submitted',
+            'audienceRole': 'admin',
+            'title': 'Daily report submitted',
+            'message':
+                '${payload['projectName'] ?? report.projectId} sent a daily report',
+            'priority': 'normal',
+            'projectId': report.projectId,
+            'projectName': payload['projectName'] ?? report.projectId,
+            'dailyReportId': report.id,
+            'createdAt': DateTime.now().toIso8601String(),
+            'userId': 'admin',
+            'createdByUid': report.reporterId,
+            'isRead': false,
+          });
+        } catch (_) {}
 
         // Update sync status to completed
         final completedReport = report.copyWith(
@@ -253,23 +285,61 @@ class SyncService {
             .doc(id)
             .set(req);
 
-        final notifId = 'notif_material_request_$id';
-        await _firebaseService.notificationsCollection.doc(notifId).set({
-          'id': notifId,
-          'type': AppConstants.notificationMaterialRequest,
-          'audienceRole': 'admin',
-          'title': 'New material request',
-          'message': (req['subject'] ?? 'Material request').toString(),
-          'projectId': projectId,
-          'projectName': (req['projectName'] ?? projectId).toString(),
-          'materialRequestId': id,
-          'createdAt': DateTime.now().toIso8601String(),
-          // Keep userId for backwards compatibility; admins read by audienceRole.
-          'userId': 'admin',
-          'createdByUid': req['createdBy'] ?? '',
-          'createdByName': req['createdByName'] ?? '',
-          'isRead': false,
-        });
+        final priority = (req['priority'] ?? 'normal').toString().toLowerCase();
+        final isUrgent = priority == 'urgent';
+        final materialName = (req['materialName'] ?? req['subject'] ?? 'Material')
+            .toString();
+        final qty = req['requestedQuantity']?.toString() ?? '';
+        final unit = (req['unit'] ?? '').toString();
+        final qtyLabel = [
+          if (qty.isNotEmpty) qty,
+          if (unit.isNotEmpty) unit,
+        ].join(' ');
+        final projectLabel = (req['projectName'] ?? projectId).toString();
+        final title = isUrgent
+            ? 'URGENT material request'
+            : 'New material request';
+        final message = qtyLabel.isEmpty
+            ? '$materialName requested for $projectLabel'
+            : '$materialName ($qtyLabel) requested for $projectLabel'
+                '${isUrgent ? ' — buy first' : ''}';
+
+        Future<void> writeRequestNotification({
+          required String notifId,
+          required String audienceRole,
+          required String userId,
+        }) {
+          return _firebaseService.notificationsCollection.doc(notifId).set({
+            'id': notifId,
+            'type': AppConstants.notificationMaterialRequest,
+            'audienceRole': audienceRole,
+            'title': title,
+            'message': message,
+            'priority': priority,
+            'projectId': projectId,
+            'projectName': projectLabel,
+            'materialRequestId': id,
+            'materialName': materialName,
+            'requestedQuantity': req['requestedQuantity'],
+            'unit': unit,
+            'createdAt': DateTime.now().toIso8601String(),
+            'userId': userId,
+            'createdByUid': req['createdBy'] ?? '',
+            'createdByName': req['createdByName'] ?? '',
+            'isRead': false,
+          });
+        }
+
+        await writeRequestNotification(
+          notifId: 'notif_material_request_$id',
+          audienceRole: 'admin',
+          userId: 'admin',
+        );
+        await writeRequestNotification(
+          notifId: 'notif_material_request_purchaser_$id',
+          audienceRole: AppConstants.roleMaterials,
+          userId: 'materials',
+        );
 
         // Ensure local copy stays consistent
         await _hiveService.saveMaterialRequest(id, req);

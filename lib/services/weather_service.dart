@@ -5,88 +5,153 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../core/security/pinned_http_client.dart';
+
 class WeatherService {
   WeatherService._();
 
   static final WeatherService instance = WeatherService._();
 
-  final Dio _dio = Dio();
+  final Dio _dio = PinnedHttpClient.create();
 
-  static const String _apiKey = String.fromEnvironment('OPENWEATHER_API_KEY');
+  // Intentionally empty — never load provider keys into the client binary.
+  static const String _apiKey = '';
   static const String _baseUrl = 'https://api.openweathermap.org/data/2.5';
-  static const String _geoBaseUrl = 'https://api.openweathermap.org/geo/1.0';
 
-  bool get hasOpenWeatherMapTiles => _apiKey.isNotEmpty;
+  bool get hasOpenWeatherMapTiles => false;
 
-  static const String _visualCrossingApiKey =
-      String.fromEnvironment('VISUAL_CROSSING_API_KEY');
+  static const String _visualCrossingApiKey = '';
   static const String _visualCrossingBaseUrl =
       'https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline';
 
   static const String _openMeteoForecastUrl = 'https://api.open-meteo.com/v1/forecast';
   static const String _openMeteoGeocodeUrl =
       'https://geocoding-api.open-meteo.com/v1/search';
+  static const String _rainViewerMapsUrl =
+      'https://api.rainviewer.com/public/weather-maps.json';
 
-  String getWeatherTileUrlTemplate(WeatherMapLayer layer) {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+  String? _rainHost;
+  String? _radarPath;
+  String? _satellitePath;
+  DateTime? _rainViewerFetchedAt;
+
+  /// Overlay tile URL. Uses RainViewer radar/satellite (no API key).
+  /// Returns null when that layer has no public tiles.
+  String? getWeatherTileUrlTemplate(WeatherMapLayer layer) {
+    if (_apiKey.isNotEmpty &&
+        (layer == WeatherMapLayer.temperature ||
+            layer == WeatherMapLayer.wind)) {
+      final layerName = layer == WeatherMapLayer.temperature
+          ? 'temp_new'
+          : 'wind_new';
+      return 'https://tile.openweathermap.org/map/$layerName/{z}/{x}/{y}.png?appid=$_apiKey';
     }
+    return _cachedRainViewerTemplate(layer);
+  }
 
-    final layerName = switch (layer) {
-      WeatherMapLayer.temperature => 'temp_new',
-      WeatherMapLayer.precipitation => 'precipitation_new',
-      WeatherMapLayer.wind => 'wind_new',
-      WeatherMapLayer.clouds => 'clouds_new',
-    };
+  Future<String?> weatherOverlayTileUrl(WeatherMapLayer layer) async {
+    if (_apiKey.isNotEmpty &&
+        (layer == WeatherMapLayer.temperature ||
+            layer == WeatherMapLayer.wind)) {
+      return getWeatherTileUrlTemplate(layer);
+    }
+    await _refreshRainViewerIfNeeded();
+    return _cachedRainViewerTemplate(layer);
+  }
 
-    return 'https://tile.openweathermap.org/map/$layerName/{z}/{x}/{y}.png?appid=$_apiKey';
+  String? _cachedRainViewerTemplate(WeatherMapLayer layer) {
+    final host = _rainHost ?? 'https://tilecache.rainviewer.com';
+    switch (layer) {
+      case WeatherMapLayer.precipitation:
+        if (_radarPath == null) return null;
+        return '$host$_radarPath/256/{z}/{x}/{y}/2/1_1.png';
+      case WeatherMapLayer.clouds:
+      case WeatherMapLayer.satellite:
+        if (_satellitePath == null) return null;
+        return '$host$_satellitePath/256/{z}/{x}/{y}/0/0_0.png';
+      case WeatherMapLayer.temperature:
+      case WeatherMapLayer.wind:
+        return null;
+    }
+  }
+
+  Future<void> _refreshRainViewerIfNeeded() async {
+    final fetched = _rainViewerFetchedAt;
+    if (fetched != null &&
+        DateTime.now().difference(fetched) < const Duration(minutes: 5) &&
+        (_radarPath != null || _satellitePath != null)) {
+      return;
+    }
+    try {
+      final response = await http
+          .get(Uri.parse(_rainViewerMapsUrl))
+          .timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return;
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      _rainHost = (json['host'] ?? 'https://tilecache.rainviewer.com').toString();
+      final radar = json['radar'] as Map<String, dynamic>? ?? {};
+      final past = radar['past'] as List<dynamic>? ?? const [];
+      if (past.isNotEmpty) {
+        final last = past.last;
+        if (last is Map) {
+          _radarPath = (last['path'] ?? '').toString();
+          if (_radarPath!.isEmpty) _radarPath = null;
+        }
+      }
+      final satellite = json['satellite'] as Map<String, dynamic>? ?? {};
+      final infrared = satellite['infrared'] as List<dynamic>? ?? const [];
+      if (infrared.isNotEmpty) {
+        final last = infrared.last;
+        if (last is Map) {
+          _satellitePath = (last['path'] ?? '').toString();
+          if (_satellitePath!.isEmpty) _satellitePath = null;
+        }
+      }
+      _rainViewerFetchedAt = DateTime.now();
+    } catch (e) {
+      debugPrint('RainViewer frames failed: $e');
+    }
   }
 
   Future<String?> reverseGeocode({
     required double lat,
     required double lon,
   }) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    try {
+      final uri = Uri.parse('https://nominatim.openstreetmap.org/reverse')
+          .replace(queryParameters: <String, String>{
+        'lat': lat.toString(),
+        'lon': lon.toString(),
+        'format': 'json',
+        'zoom': '14',
+      });
+      final response = await http.get(
+        uri,
+        headers: const {
+          'User-Agent': 'CEO-Construction-Monitoring/1.0 (admin map pins)',
+          'Accept': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) return null;
+      final label = (decoded['display_name'] ?? '').toString().trim();
+      return label.isEmpty ? null : label;
+    } catch (e) {
+      debugPrint('Nominatim reverse geocode failed: $e');
+      return null;
     }
-
-    final response = await _dio.get(
-      '$_geoBaseUrl/reverse',
-      queryParameters: <String, dynamic>{
-        'lat': lat,
-        'lon': lon,
-        'limit': 1,
-        'appid': _apiKey,
-      },
-    );
-
-    final data = response.data;
-    if (data is! List) return null;
-    if (data.isEmpty) return null;
-
-    final first = data.first;
-    if (first is! Map<String, dynamic>) return null;
-
-    final name = (first['name'] ?? '').toString().trim();
-    final state = (first['state'] ?? '').toString().trim();
-    final country = (first['country'] ?? '').toString().trim();
-
-    final parts = <String>[];
-    if (name.isNotEmpty) parts.add(name);
-    if (state.isNotEmpty) parts.add(state);
-    if (country.isNotEmpty) parts.add(country);
-
-    if (parts.isEmpty) return null;
-    return parts.join(', ');
   }
 
   Future<WeatherNow> getCurrentWeatherByCoordinates({
     required double lat,
     required double lon,
   }) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    if (kIsWeb || _apiKey.isEmpty) {
+      return _openMeteoCurrentByCoords(lat: lat, lon: lon);
     }
+
+    try {
 
     final response = await _dio.get(
       '$_baseUrl/weather',
@@ -154,12 +219,18 @@ class WeatherService {
               isUtc: true)
           : null,
     );
+    } catch (e) {
+      debugPrint('OpenWeather current by coords failed, using Open-Meteo: $e');
+      return _openMeteoCurrentByCoords(lat: lat, lon: lon);
+    }
   }
 
   Future<WeatherNow> getCurrentWeatherByCity(String city) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    if (kIsWeb || _apiKey.isEmpty) {
+      return _openMeteoCurrentByQuery(city);
     }
+
+    try {
 
     final response = await _dio.get(
       '$_baseUrl/weather',
@@ -227,6 +298,10 @@ class WeatherService {
               isUtc: true)
           : null,
     );
+    } catch (e) {
+      debugPrint('OpenWeather current by city failed, using Open-Meteo: $e');
+      return _openMeteoCurrentByQuery(city);
+    }
   }
 
   /// Resolves a city/location string to coordinates via Open-Meteo, then Nominatim.
@@ -362,6 +437,7 @@ class WeatherService {
         'current': 'temperature_2m,relative_humidity_2m,is_day',
         'hourly': 'precipitation_probability',
         'forecast_days': '2',
+        'models': 'best_match',
         'timezone': 'auto',
       },
     );
@@ -654,9 +730,11 @@ class WeatherService {
   }
 
   Future<List<WeatherDailyForecast>> get7DayForecastByCity(String city) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    if (kIsWeb || _apiKey.isEmpty) {
+      return _openMeteoDailyByQuery(city);
     }
+
+    try {
 
     final response = await _dio.get(
       '$_baseUrl/forecast',
@@ -793,6 +871,10 @@ class WeatherService {
     }
 
     return forecasts;
+    } catch (e) {
+      debugPrint('OpenWeather 7-day failed, using Open-Meteo: $e');
+      return _openMeteoDailyByQuery(city);
+    }
   }
 
   Future<List<WeatherDailyForecast>> getMonthlyForecastByCity({
@@ -810,7 +892,7 @@ class WeatherService {
 
     // Web requests can fail due to CORS. Use a callable Cloud Function proxy on web.
     // Also use it as a fallback on mobile/desktop when the API key isn't passed.
-    final shouldUseFunctions = kIsWeb || _visualCrossingApiKey.isEmpty;
+    final shouldUseFunctions = true; // VC key only on Cloud Functions
     if (shouldUseFunctions) {
       try {
         final callable = FirebaseFunctions.instance
@@ -984,9 +1066,11 @@ class WeatherService {
     String city,
     DateTime date,
   ) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    if (kIsWeb || _apiKey.isEmpty) {
+      return _openMeteoHourlyByQuery(city, date);
     }
+
+    try {
 
     final response = await _dio.get(
       '$_baseUrl/forecast',
@@ -1050,6 +1134,10 @@ class WeatherService {
 
     result.sort((a, b) => a.dateTime.compareTo(b.dateTime));
     return result;
+    } catch (e) {
+      debugPrint('OpenWeather hourly by city failed, using Open-Meteo: $e');
+      return _openMeteoHourlyByQuery(city, date);
+    }
   }
 
   Future<List<WeatherHourlyForecast>> getHourlyForecastByCoordinatesAndDate({
@@ -1057,9 +1145,11 @@ class WeatherService {
     required double lon,
     required DateTime date,
   }) async {
-    if (_apiKey.isEmpty) {
-      throw StateError('Weather API key not configured');
+    if (kIsWeb || _apiKey.isEmpty) {
+      return _openMeteoHourlyByCoords(lat: lat, lon: lon, date: date);
     }
+
+    try {
 
     final response = await _dio.get(
       '$_baseUrl/forecast',
@@ -1124,6 +1214,247 @@ class WeatherService {
 
     result.sort((a, b) => a.dateTime.compareTo(b.dateTime));
     return result;
+    } catch (e) {
+      debugPrint('OpenWeather hourly by coords failed, using Open-Meteo: $e');
+      return _openMeteoHourlyByCoords(lat: lat, lon: lon, date: date);
+    }
+  }
+
+  Future<WeatherNow> _openMeteoCurrentByQuery(String city) async {
+    final geo = await resolveOpenMeteoCoordinates(city);
+    if (geo == null) {
+      throw StateError('Could not find location "$city"');
+    }
+    return _openMeteoCurrentByCoords(
+      lat: geo.lat,
+      lon: geo.lon,
+      cityName: geo.label,
+    );
+  }
+
+  Future<WeatherNow> _openMeteoCurrentByCoords({
+    required double lat,
+    required double lon,
+    String? cityName,
+  }) async {
+    final uri = Uri.parse(_openMeteoForecastUrl).replace(
+      queryParameters: <String, String>{
+        'latitude': lat.toString(),
+        'longitude': lon.toString(),
+        'current':
+            'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,visibility,is_day',
+        'wind_speed_unit': 'ms',
+        'models': 'best_match',
+        'timezone': 'auto',
+      },
+    );
+    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw StateError('Open-Meteo HTTP ${response.statusCode}');
+    }
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final current =
+        json['current'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final code = (current['weather_code'] as num?)?.toInt() ?? 0;
+    final visM = (current['visibility'] as num?)?.toDouble();
+    return WeatherNow(
+      temperatureC: (current['temperature_2m'] as num?)?.toDouble() ?? 0,
+      description: _wmoDescription(code),
+      condition: _wmoCondition(code),
+      cityName: cityName,
+      lat: lat,
+      lon: lon,
+      feelsLikeC: (current['apparent_temperature'] as num?)?.toDouble(),
+      humidity: (current['relative_humidity_2m'] as num?)?.toInt(),
+      pressureMb: (current['pressure_msl'] as num?)?.round(),
+      visibilityKm: visM != null ? visM / 1000 : null,
+      windSpeedMs: (current['wind_speed_10m'] as num?)?.toDouble(),
+      windDeg: (current['wind_direction_10m'] as num?)?.round(),
+    );
+  }
+
+  Future<List<WeatherDailyForecast>> get7DayForecastByCoordinates({
+    required double lat,
+    required double lon,
+  }) {
+    return _openMeteoDailyByCoords(lat: lat, lon: lon);
+  }
+
+  Future<List<WeatherDailyForecast>> _openMeteoDailyByQuery(String city) async {
+    final geo = await resolveOpenMeteoCoordinates(city);
+    if (geo == null) {
+      throw StateError('Could not find location "$city"');
+    }
+    return _openMeteoDailyByCoords(lat: geo.lat, lon: geo.lon);
+  }
+
+  Future<List<WeatherDailyForecast>> _openMeteoDailyByCoords({
+    required double lat,
+    required double lon,
+  }) async {
+    final uri = Uri.parse(_openMeteoForecastUrl).replace(
+      queryParameters: <String, String>{
+        'latitude': lat.toString(),
+        'longitude': lon.toString(),
+        'daily':
+            'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_mean,wind_speed_10m_max',
+        'wind_speed_unit': 'ms',
+        'forecast_days': '7',
+        'models': 'best_match',
+        'timezone': 'auto',
+      },
+    );
+    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw StateError('Open-Meteo HTTP ${response.statusCode}');
+    }
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final daily = json['daily'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final times = (daily['time'] as List<dynamic>? ?? <dynamic>[])
+        .map((e) => e.toString())
+        .toList();
+    final codes = daily['weather_code'] as List<dynamic>? ?? <dynamic>[];
+    final maxes = daily['temperature_2m_max'] as List<dynamic>? ?? <dynamic>[];
+    final mins = daily['temperature_2m_min'] as List<dynamic>? ?? <dynamic>[];
+    final pops =
+        daily['precipitation_probability_max'] as List<dynamic>? ?? <dynamic>[];
+    final humidity =
+        daily['relative_humidity_2m_mean'] as List<dynamic>? ?? <dynamic>[];
+    final wind =
+        daily['wind_speed_10m_max'] as List<dynamic>? ?? <dynamic>[];
+
+    final result = <WeatherDailyForecast>[];
+    for (var i = 0; i < times.length && result.length < 7; i++) {
+      DateTime date;
+      try {
+        date = DateTime.parse(times[i]);
+      } catch (_) {
+        continue;
+      }
+      final code = i < codes.length ? (codes[i] as num?)?.toInt() ?? 0 : 0;
+      final popPct = i < pops.length ? (pops[i] as num?)?.toDouble() : null;
+      result.add(
+        WeatherDailyForecast(
+          date: DateTime(date.year, date.month, date.day),
+          minTempC: i < mins.length ? (mins[i] as num?)?.toDouble() ?? 0 : 0,
+          maxTempC: i < maxes.length ? (maxes[i] as num?)?.toDouble() ?? 0 : 0,
+          condition: _wmoCondition(code),
+          pop: popPct != null ? (popPct / 100).clamp(0.0, 1.0) : null,
+          humidity: i < humidity.length ? (humidity[i] as num?)?.round() : null,
+          windSpeedMs: i < wind.length ? (wind[i] as num?)?.toDouble() : null,
+        ),
+      );
+    }
+    return result;
+  }
+
+  Future<List<WeatherHourlyForecast>> _openMeteoHourlyByQuery(
+    String city,
+    DateTime date,
+  ) async {
+    final geo = await resolveOpenMeteoCoordinates(city);
+    if (geo == null) {
+      throw StateError('Could not find location "$city"');
+    }
+    return _openMeteoHourlyByCoords(lat: geo.lat, lon: geo.lon, date: date);
+  }
+
+  Future<List<WeatherHourlyForecast>> _openMeteoHourlyByCoords({
+    required double lat,
+    required double lon,
+    required DateTime date,
+  }) async {
+    final day =
+        '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    final uri = Uri.parse(_openMeteoForecastUrl).replace(
+      queryParameters: <String, String>{
+        'latitude': lat.toString(),
+        'longitude': lon.toString(),
+        'hourly':
+            'temperature_2m,precipitation_probability,precipitation,weather_code',
+        'start_date': day,
+        'end_date': day,
+        'models': 'best_match',
+        'timezone': 'auto',
+      },
+    );
+    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw StateError('Open-Meteo HTTP ${response.statusCode}');
+    }
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final hourly =
+        json['hourly'] as Map<String, dynamic>? ?? <String, dynamic>{};
+    final times = (hourly['time'] as List<dynamic>? ?? <dynamic>[])
+        .map((e) => e.toString())
+        .toList();
+    final temps = hourly['temperature_2m'] as List<dynamic>? ?? <dynamic>[];
+    final pops =
+        hourly['precipitation_probability'] as List<dynamic>? ?? <dynamic>[];
+    final rain = hourly['precipitation'] as List<dynamic>? ?? <dynamic>[];
+    final codes = hourly['weather_code'] as List<dynamic>? ?? <dynamic>[];
+
+    final result = <WeatherHourlyForecast>[];
+    for (var i = 0; i < times.length; i++) {
+      DateTime dt;
+      try {
+        dt = DateTime.parse(times[i]);
+      } catch (_) {
+        continue;
+      }
+      final popPct = i < pops.length ? (pops[i] as num?)?.toDouble() : null;
+      final code = i < codes.length ? (codes[i] as num?)?.toInt() ?? 0 : 0;
+      result.add(
+        WeatherHourlyForecast(
+          dateTime: dt,
+          tempC: i < temps.length ? (temps[i] as num?)?.toDouble() ?? 0 : 0,
+          condition: _wmoCondition(code),
+          pop: popPct != null ? (popPct / 100).clamp(0.0, 1.0) : null,
+          rainMm: i < rain.length ? (rain[i] as num?)?.toDouble() : null,
+        ),
+      );
+    }
+    return result;
+  }
+
+  static String _wmoCondition(int code) {
+    if (code == 0) return 'Clear';
+    if (code <= 3) return 'Clouds';
+    if (code == 45 || code == 48) return 'Fog';
+    if (code >= 51 && code <= 57) return 'Drizzle';
+    if (code >= 61 && code <= 67) return 'Rain';
+    if (code >= 71 && code <= 77) return 'Snow';
+    if (code >= 80 && code <= 82) return 'Rain';
+    if (code >= 85 && code <= 86) return 'Snow';
+    if (code >= 95) return 'Thunderstorm';
+    return 'Clouds';
+  }
+
+  static String _wmoDescription(int code) {
+    const map = <int, String>{
+      0: 'clear sky',
+      1: 'mainly clear',
+      2: 'partly cloudy',
+      3: 'overcast',
+      45: 'fog',
+      48: 'rime fog',
+      51: 'light drizzle',
+      53: 'drizzle',
+      55: 'dense drizzle',
+      61: 'slight rain',
+      63: 'moderate rain',
+      65: 'heavy rain',
+      71: 'slight snow',
+      73: 'moderate snow',
+      75: 'heavy snow',
+      80: 'rain showers',
+      81: 'rain showers',
+      82: 'violent rain showers',
+      95: 'thunderstorm',
+      96: 'thunderstorm with hail',
+      99: 'thunderstorm with hail',
+    };
+    return map[code] ?? _wmoCondition(code).toLowerCase();
   }
 }
 
@@ -1202,6 +1533,7 @@ enum WeatherMapLayer {
   precipitation,
   wind,
   clouds,
+  satellite,
 }
 
 /// Native Dart weather layer output for GovTrack AI site coordinator context.

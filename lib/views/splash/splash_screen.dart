@@ -72,6 +72,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
           if (!ok) {
             await authService.signOut();
           } else {
+            await authService.hydrateOtpSession();
             isAuthenticated = authService.isAuthenticated;
           }
         }
@@ -79,10 +80,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
         if (isAuthenticated) {
           final user = authService.currentUser;
           final userRole = user?.role;
-          final email = user?.email.toLowerCase();
 
-          if (email != AppConstants.adminEmail.toLowerCase() &&
-              !authService.isOtpVerified) {
+          if (!authService.isOtpVerified) {
             nextRoute = RouteNames.siteManagerOtp;
           } else {
             switch (userRole) {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../../services/auth_service.dart';
+import '../../services/push_alert_service.dart';
 import '../../widgets/common/app_button.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -474,6 +476,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
       required TextInputType keyboardType,
       required String? Function(String?) validator,
       bool obscureText = false,
+      bool enableSuggestions = true,
+      bool autocorrect = true,
+      Iterable<String>? autofillHints,
       Widget? suffix,
     }) {
       final focused = focusNode.hasFocus;
@@ -515,6 +520,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
               focusNode: focusNode,
               keyboardType: keyboardType,
               obscureText: obscureText,
+              enableSuggestions: enableSuggestions,
+              autocorrect: autocorrect,
+              autofillHints: autofillHints,
               style: const TextStyle(
                 color: Color(0xFF0B2B4A),
                 fontWeight: FontWeight.w700,
@@ -551,6 +559,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           focusNode: _emailFocusNode,
           controller: _emailController,
           keyboardType: TextInputType.emailAddress,
+          autofillHints: const [AutofillHints.username, AutofillHints.email],
           validator: (value) {
             if (value == null || value.trim().isEmpty) {
               return 'Please enter your email';
@@ -597,6 +606,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           controller: _passwordController,
           keyboardType: TextInputType.visiblePassword,
           obscureText: _obscurePassword,
+          enableSuggestions: false,
+          autocorrect: false,
+          autofillHints: const [AutofillHints.password],
           suffix: IconButton(
             icon: Icon(
               _obscurePassword ? Icons.visibility_off : Icons.visibility,
@@ -686,11 +698,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
               result.success ? AppTheme.softGreen : AppTheme.errorRed,
         ),
       );
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to resend verification code: $e'),
+        const SnackBar(
+          content: Text('Failed to resend verification code. Please try again.'),
           backgroundColor: AppTheme.errorRed,
         ),
       );
@@ -758,6 +770,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
         }
 
         context.go(homeRoute);
+        _passwordController.clear();
+        unawaited(PushAlertService.instance.ensureRegistered());
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -766,13 +780,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
           ),
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Login failed: $e'),
-            backgroundColor: AppTheme.errorRed,
-          ),
+        const SnackBar(
+          content: Text('Login failed. Please try again.'),
+          backgroundColor: AppTheme.errorRed,
+        ),
         );
       }
     } finally {
@@ -968,11 +982,11 @@ class _ForgotPasswordDialogState extends ConsumerState<_ForgotPasswordDialog> {
           ),
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
+          const SnackBar(
+            content: Text('Could not send the reset email. Please try again.'),
             backgroundColor: AppTheme.errorRed,
           ),
         );

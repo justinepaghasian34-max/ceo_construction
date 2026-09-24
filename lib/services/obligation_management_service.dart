@@ -308,12 +308,16 @@ class ObligationManagementController extends ChangeNotifier {
 
   Future<void> _writeActivityLog(
       {required String title, required String detail}) async {
-    await _firebaseService.activityLogsCollection.add({
-      'title': title,
-      'detail': detail,
-      'createdAt': FieldValue.serverTimestamp(),
-      'type': 'finance',
-    });
+    try {
+      await _firebaseService.activityLogsCollection.add({
+        'title': title,
+        'detail': detail,
+        'createdAt': FieldValue.serverTimestamp(),
+        'type': 'finance',
+      });
+    } catch (_) {
+      // Finance records should still save if activity logging is denied.
+    }
   }
 }
 

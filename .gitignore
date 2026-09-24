@@ -47,9 +47,16 @@ app.*.map.json
 node_modules/
 **/node_modules/
 
-functions/.env.*
-openai_key.txt
+# Secrets — never commit private keys or env files
 *.pem
 serviceAccount*.json
+*.p12
+*.key
+credentials.json
+**/secrets/**
 .env
 .env.*
+functions/.env
+functions/.env.*
+functions/.secret.local
+openai_key.txt

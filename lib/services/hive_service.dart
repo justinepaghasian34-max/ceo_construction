@@ -5,16 +5,29 @@ import '../models/daily_report_model.dart';
 import '../models/attendance_model.dart';
 import '../models/payroll_model.dart';
 import '../core/constants/app_constants.dart';
+import '../core/security/secure_log.dart';
+import '../core/security/secure_storage_service.dart';
 
 class HiveService {
   static HiveService? _instance;
   static HiveService get instance => _instance ??= HiveService._();
   HiveService._();
 
-  // Initialize Hive
+  static HiveAesCipher? _cipher;
+
+  /// Initialize Hive with AES encryption (key from platform secure storage).
   static Future<void> initialize() async {
     await Hive.initFlutter();
-    
+
+    try {
+      final key = await SecureStorageService.instance.getOrCreateHiveKey();
+      _cipher = HiveAesCipher(key);
+    } catch (e) {
+      SecureLog.e(e, null, 'HiveService');
+      // Fail closed on encryption key — do not open plaintext boxes.
+      rethrow;
+    }
+
     // Register adapters
     Hive.registerAdapter(UserModelAdapter());
     Hive.registerAdapter(ProjectModelAdapter());
@@ -25,32 +38,84 @@ class HiveService {
     Hive.registerAdapter(PayrollModelAdapter());
     Hive.registerAdapter(PayrollItemAdapter());
 
-    // Open boxes
     await _openBoxes();
   }
 
   static Future<void> _openBoxes() async {
-    await Hive.openBox<UserModel>(AppConstants.userBox);
-    await Hive.openBox<DailyReportModel>(AppConstants.dailyReportsBox);
-    await Hive.openBox<AttendanceModel>(AppConstants.attendanceBox);
-    await Hive.openBox<Map>(AppConstants.materialUsageBox);
-    await Hive.openBox<Map>(AppConstants.materialInventoryBox);
-    await Hive.openBox<Map>(AppConstants.materialRequestsBox);
-    await Hive.openBox<Map>(AppConstants.deliveriesBox);
-    await Hive.openBox<Map>(AppConstants.syncQueueBox);
-    await Hive.openBox<Map>(AppConstants.settingsBox);
+    final cipher = _cipher;
+    if (cipher == null) {
+      throw StateError('Hive encryption cipher not initialized');
+    }
+
+    // Encrypted box names (v2) — avoids clash with legacy plaintext boxes.
+    await _openEncryptedBox<UserModel>(AppConstants.userBox, cipher);
+    await _openEncryptedBox<DailyReportModel>(
+      AppConstants.dailyReportsBox,
+      cipher,
+    );
+    await _openEncryptedBox<AttendanceModel>(
+      AppConstants.attendanceBox,
+      cipher,
+    );
+    await _openEncryptedBox<Map>(AppConstants.materialUsageBox, cipher);
+    await _openEncryptedBox<Map>(AppConstants.materialInventoryBox, cipher);
+    await _openEncryptedBox<Map>(AppConstants.materialRequestsBox, cipher);
+    await _openEncryptedBox<Map>(AppConstants.deliveriesBox, cipher);
+    await _openEncryptedBox<Map>(AppConstants.syncQueueBox, cipher);
+    await _openEncryptedBox<Map>(AppConstants.settingsBox, cipher);
+  }
+
+  static String _encName(String name) => '${name}_enc_v2';
+
+  static Future<void> _openEncryptedBox<T>(
+    String logicalName,
+    HiveAesCipher cipher,
+  ) async {
+    final encName = _encName(logicalName);
+    if (!Hive.isBoxOpen(encName)) {
+      await Hive.openBox<T>(encName, encryptionCipher: cipher);
+    }
+
+    // Best-effort one-time migrate from legacy plaintext box, then wipe it.
+    try {
+      if (await Hive.boxExists(logicalName)) {
+        final legacy = await Hive.openBox<T>(logicalName);
+        final enc = Hive.box<T>(encName);
+        if (enc.isEmpty && legacy.isNotEmpty) {
+          for (final key in legacy.keys) {
+            final value = legacy.get(key);
+            if (value != null) await enc.put(key, value);
+          }
+        }
+        await legacy.clear();
+        await legacy.close();
+        await Hive.deleteBoxFromDisk(logicalName);
+      }
+    } catch (e) {
+      SecureLog.d('Legacy Hive migrate skipped for $logicalName: $e');
+    }
   }
 
   // Box getters
-  Box<UserModel> get userBox => Hive.box<UserModel>(AppConstants.userBox);
-  Box<DailyReportModel> get dailyReportsBox => Hive.box<DailyReportModel>(AppConstants.dailyReportsBox);
-  Box<AttendanceModel> get attendanceBox => Hive.box<AttendanceModel>(AppConstants.attendanceBox);
-  Box<Map> get materialUsageBox => Hive.box<Map>(AppConstants.materialUsageBox);
-  Box<Map> get materialInventoryBox => Hive.box<Map>(AppConstants.materialInventoryBox);
-  Box<Map> get materialRequestsBox => Hive.box<Map>(AppConstants.materialRequestsBox);
-  Box<Map> get deliveriesBox => Hive.box<Map>(AppConstants.deliveriesBox);
-  Box<Map> get syncQueueBox => Hive.box<Map>(AppConstants.syncQueueBox);
-  Box<Map> get settingsBox => Hive.box<Map>(AppConstants.settingsBox);
+  Box<UserModel> get userBox =>
+      Hive.box<UserModel>(_encName(AppConstants.userBox));
+  Box<DailyReportModel> get dailyReportsBox =>
+      Hive.box<DailyReportModel>(_encName(AppConstants.dailyReportsBox));
+  Box<AttendanceModel> get attendanceBox =>
+      Hive.box<AttendanceModel>(_encName(AppConstants.attendanceBox));
+  Box<Map> get materialUsageBox =>
+      Hive.box<Map>(_encName(AppConstants.materialUsageBox));
+  Box<Map> get materialInventoryBox =>
+      Hive.box<Map>(_encName(AppConstants.materialInventoryBox));
+  Box<Map> get materialRequestsBox =>
+      Hive.box<Map>(_encName(AppConstants.materialRequestsBox));
+  Box<Map> get deliveriesBox =>
+      Hive.box<Map>(_encName(AppConstants.deliveriesBox));
+  Box<Map> get syncQueueBox =>
+      Hive.box<Map>(_encName(AppConstants.syncQueueBox));
+  Box<Map> get settingsBox =>
+      Hive.box<Map>(_encName(AppConstants.settingsBox));
+
 
   // User operations
   Future<void> saveUser(UserModel user) async {

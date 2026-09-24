@@ -11,6 +11,9 @@ class SiteWeatherBundle {
     required this.visibilityLabel,
     required this.fetchedAt,
     this.liveReport,
+    this.fromProjectPin = false,
+    this.latitude,
+    this.longitude,
   });
 
   final String locationLabel;
@@ -21,10 +24,16 @@ class SiteWeatherBundle {
   final String visibilityLabel;
   final DateTime fetchedAt;
   final LiveWeatherReport? liveReport;
+  final bool fromProjectPin;
+  final double? latitude;
+  final double? longitude;
 
   Map<String, dynamic> toAiJson() {
     return {
       'location': locationLabel,
+      'fromProjectPin': fromProjectPin,
+      if (latitude != null) 'latitude': latitude,
+      if (longitude != null) 'longitude': longitude,
       'fetchedAt': fetchedAt.toIso8601String(),
       if (liveReport != null) 'liveSiteContext': liveReport!.toMap(),
       'current': {
@@ -65,8 +74,11 @@ class SiteWeatherContextService {
 
   String normalizeLocation(String? raw) {
     final s = (raw ?? '').trim();
-    if (s.isEmpty) return 'Manila,PH';
-    if (!s.contains(',')) return '$s,PH';
+    if (s.isEmpty) return '';
+    if (s.toLowerCase() == 'manila' || s.toLowerCase() == 'manila,ph') {
+      return s;
+    }
+    if (!s.contains(',')) return '$s, Philippines';
     return s;
   }
 
@@ -76,8 +88,24 @@ class SiteWeatherContextService {
     _cacheTime = null;
   }
 
-  Future<SiteWeatherBundle> load({String? projectLocation, bool forceRefresh = false}) async {
-    final key = normalizeLocation(projectLocation);
+  Future<SiteWeatherBundle> load({
+    String? projectLocation,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+    bool forceRefresh = false,
+  }) async {
+    final hasPin = _validPin(latitude, longitude);
+    final named = normalizeLocation(projectLocation);
+    if (!hasPin && named.isEmpty) {
+      throw StateError(
+        'No project location pin. Pin the site on the map so weather is for that barangay, not Manila.',
+      );
+    }
+
+    final key = hasPin
+        ? 'pin:${latitude!.toStringAsFixed(4)},${longitude!.toStringAsFixed(4)}'
+        : named;
     final now = DateTime.now();
     if (!forceRefresh &&
         _cache != null &&
@@ -87,18 +115,38 @@ class SiteWeatherContextService {
       return _cache!;
     }
 
-    final current = await _weather.getCurrentWeatherByCity(key);
-    final forecast = await _weather.get7DayForecastByCity(key);
+    late final WeatherNow current;
+    late final List<WeatherDailyForecast> forecast;
+    if (hasPin) {
+      current = await _weather.getCurrentWeatherByCoordinates(
+        lat: latitude!,
+        lon: longitude!,
+      );
+      forecast = await _weather.get7DayForecastByCoordinates(
+        lat: latitude,
+        lon: longitude,
+      );
+    } else {
+      current = await _weather.getCurrentWeatherByCity(named);
+      forecast = await _weather.get7DayForecastByCity(named);
+    }
 
     LiveWeatherReport liveReport;
     try {
       final openMeteoMap = await _weather.getProjectWeatherData(
         lat: current.lat,
         lon: current.lon,
-        location: key,
+        location: hasPin
+            ? '${latitude!.toStringAsFixed(5)},${longitude!.toStringAsFixed(5)}'
+            : named,
       );
       if (openMeteoMap['temperature'] == 'Unavailable') {
-        liveReport = await _weather.getLiveWeatherReportByCity(key);
+        liveReport = hasPin
+            ? await _weather.getOpenMeteoLiveReport(
+                lat: latitude!,
+                lon: longitude!,
+              )
+            : await _weather.getLiveWeatherReportByCity(named);
       } else {
         liveReport = LiveWeatherReport(
           temperature: openMeteoMap['temperature']!,
@@ -114,7 +162,12 @@ class SiteWeatherContextService {
       }
     } catch (_) {
       try {
-        liveReport = await _weather.getLiveWeatherReportByCity(key);
+        liveReport = hasPin
+            ? await _weather.getOpenMeteoLiveReport(
+                lat: latitude!,
+                lon: longitude!,
+              )
+            : await _weather.getLiveWeatherReportByCity(named);
       } catch (__) {
         liveReport = LiveWeatherReport(
           temperature: '${current.temperatureC.toStringAsFixed(0)}°C',
@@ -139,8 +192,14 @@ class SiteWeatherContextService {
       liveReport: liveReport,
     );
 
+    final label = (locationLabel ?? '').trim().isNotEmpty
+        ? locationLabel!.trim()
+        : (current.cityName?.isNotEmpty == true ? current.cityName! : named);
     final bundle = SiteWeatherBundle(
-      locationLabel: current.cityName?.isNotEmpty == true ? current.cityName! : key,
+      locationLabel: label,
+      fromProjectPin: hasPin,
+      latitude: hasPin ? latitude : current.lat,
+      longitude: hasPin ? longitude : current.lon,
       now: current,
       forecastDays: forecast,
       siteAdvice: advice,
@@ -154,6 +213,13 @@ class SiteWeatherContextService {
     _cacheKey = key;
     _cacheTime = now;
     return bundle;
+  }
+
+  static bool _validPin(double? lat, double? lon) {
+    if (lat == null || lon == null) return false;
+    if (lat.abs() > 90 || lon.abs() > 180) return false;
+    if (lat == 0 && lon == 0) return false;
+    return true;
   }
 
   static String _windLabel(double? ms) {

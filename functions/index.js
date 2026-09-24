@@ -19,8 +19,40 @@ const visualCrossingApiKey = defineSecret('VISUAL_CROSSING_API_KEY');
 
 const sendgridApiKey = defineSecret('SENDGRID_API_KEY');
 const sendgridFromEmail = defineString('SENDGRID_FROM_EMAIL', { default: '' });
-const smtpUserParam = defineString('SMTP_USER', { default: '' });
-const smtpPassParam = defineString('SMTP_PASS', { default: '' });
+const smtpUserParam = defineSecret('SMTP_USER');
+const smtpPassParam = defineSecret('SMTP_PASS');
+/** Set to "true" in Secret Manager / env to hard-reject missing App Check tokens. */
+const enforceAppCheckParam = defineString('ENFORCE_APP_CHECK', { default: 'false' });
+
+function requireAppCheck(context) {
+  let enforce = false;
+  try {
+    enforce = String(enforceAppCheckParam.value() || 'false').toLowerCase() === 'true';
+  } catch (_) {
+    enforce = String(process.env.ENFORCE_APP_CHECK || 'false').toLowerCase() === 'true';
+  }
+  if (context && context.app) return;
+  if (!enforce) {
+    console.warn('App Check token missing (soft mode). Set ENFORCE_APP_CHECK=true after clients are attested.');
+    return;
+  }
+  throw new functions.https.HttpsError(
+    'failed-precondition',
+    'App Check token required. Enable Firebase App Check for this client.'
+  );
+}
+
+
+async function requireOtpVerified(uid) {
+  const snap = await admin.firestore().collection('users').doc(uid).get();
+  const data = snap.exists ? (snap.data() || {}) : {};
+  if (data.otpVerified !== true) {
+    throw new functions.https.HttpsError(
+      'failed-precondition',
+      'Email OTP verification required before using this feature.'
+    );
+  }
+}
 
 let _geminiModelCache = {
   model: null,
@@ -90,18 +122,11 @@ async function sendAppEmail({ toEmail, subject, text, html }) {
   try {
     smtpPass = String(smtpPassParam.value() || '').replace(/\s+/g, '').trim();
   } catch (_) {}
-  if (!smtpUser) {
-    smtpUser = String(functions.config()?.smtp?.user || process.env.SMTP_USER || '').trim();
-  }
-  if (!smtpPass) {
-    smtpPass = String(functions.config()?.smtp?.pass || process.env.SMTP_PASS || '')
-      .replace(/\s+/g, '')
-      .trim();
-  }
+  // No plaintext functions.config() / process.env fallback — secrets only.
   if (!smtpUser || !smtpPass) {
     throw new functions.https.HttpsError(
       'failed-precondition',
-      'Email sending is not configured. Set a Gmail App Password as SMTP credentials.'
+      'Email sending is not configured. Set SMTP_USER and SMTP_PASS as Firebase secrets (Gmail App Password).'
     );
   }
 
@@ -307,48 +332,122 @@ async function readLoginLock(email) {
 }
 
 exports.checkLoginAllowed = functions.https.onCall(async (data, context) => {
+  requireAppCheck(context);
   const email = String((data && data.email) || '').trim().toLowerCase();
   if (!email) {
     throw new functions.https.HttpsError('invalid-argument', 'Email is required');
   }
   await readLoginLock(email);
   await readLoginLock(`ip:${clientIp(context)}`);
-  return { ok: true };
+  // Anti-DoS: issue a short-lived challenge required before recording failures.
+  const challenge = crypto.randomBytes(24).toString('hex');
+  const ip = clientIp(context);
+  await admin.firestore().collection('auth_challenges').doc(hashIdentifier(email)).set({
+    challengeHash: hashIdentifier(`${challenge}|${ip}`),
+    exp: Date.now() + 5 * 60 * 1000,
+    ip,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return { ok: true, challenge };
 });
 
 exports.recordAuthFailure = functions.https.onCall(async (data, context) => {
+  requireAppCheck(context);
   const email = String((data && data.email) || '').trim().toLowerCase();
-  if (!email) {
-    throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+  const challenge = String((data && data.challenge) || '').trim();
+  if (!email || !challenge) {
+    throw new functions.https.HttpsError('invalid-argument', 'Email and challenge are required');
   }
+  const ip = clientIp(context);
+  const challengeRef = admin.firestore().collection('auth_challenges').doc(hashIdentifier(email));
+  const snap = await challengeRef.get();
+  const row = snap.data() || {};
+  const exp = Number(row.exp || 0);
+  const expected = String(row.challengeHash || '');
+  const actual = hashIdentifier(`${challenge}|${ip}`);
+  if (!snap.exists || !expected || exp < Date.now() || expected !== actual) {
+    throw new functions.https.HttpsError('permission-denied', 'Invalid or expired login challenge');
+  }
+  await challengeRef.delete().catch(() => null);
   await consumeRateLimit({
     key: `login_${hashIdentifier(email)}`,
     windowMs: LOGIN_WINDOW_MS,
     max: LOGIN_MAX_FAILURES,
   });
   await consumeRateLimit({
-    key: `login_${hashIdentifier(`ip:${clientIp(context)}`)}`,
+    key: `login_${hashIdentifier(`ip:${ip}`)}`,
     windowMs: LOGIN_WINDOW_MS,
     max: LOGIN_MAX_FAILURES,
   });
   return { ok: true };
 });
 
-exports.recordAuthSuccess = functions.https.onCall(async (data) => {
-  const email = String((data && data.email) || '').trim().toLowerCase();
+exports.recordAuthSuccess = functions.https.onCall(async (data, context) => {
+  requireAppCheck(context);
+  // Zero-Trust: only an authenticated session may clear lockouts / sync claims.
+  if (!context.auth || !context.auth.uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'Sign in required');
+  }
+  const email = String((data && data.email) || context.auth.token.email || '')
+    .trim()
+    .toLowerCase();
   if (!email) return { ok: true };
+  const tokenEmail = String(context.auth.token.email || '').trim().toLowerCase();
+  if (tokenEmail && tokenEmail !== email) {
+    throw new functions.https.HttpsError('permission-denied', 'Email mismatch');
+  }
   const ref = admin.firestore().collection('auth_rate_limits').doc(`login_${hashIdentifier(email)}`);
   await ref.delete().catch(() => null);
+  await admin.firestore().collection('auth_challenges').doc(hashIdentifier(email)).delete().catch(() => null);
   try {
-    const user = await admin.auth().getUserByEmail(email);
-    await syncRoleClaim(user.uid);
+    await syncRoleClaim(context.auth.uid);
   } catch (_) {}
   return { ok: true };
 });
 
+// Keep JWT custom claims aligned with Firestore role (Zero-Trust RBAC source).
+
+/** After password login: clear otpVerified so Firestore/Storage stay locked until fresh email OTP. */
+exports.beginAuthenticatedSession = functions.https.onCall(async (data, context) => {
+  requireAppCheck(context);
+  if (!context.auth || !context.auth.uid) {
+    throw new functions.https.HttpsError('unauthenticated', 'Sign in required');
+  }
+  const uid = context.auth.uid;
+  await admin.firestore().collection('users').doc(uid).set(
+    {
+      otpVerified: false,
+      otpVerifiedAt: null,
+      otpSessionStartedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+  try {
+    await syncRoleClaim(uid);
+  } catch (_) {}
+  return { ok: true, requiresOtp: true };
+});
+
+exports.syncUserRoleClaimOnWrite = functions.firestore
+  .document('users/{uid}')
+  .onWrite(async (change, context) => {
+    const after = change.after.exists ? change.after.data() : null;
+    if (!after) return null;
+    const role = String(after.role || '').trim();
+    if (!role) return null;
+    try {
+      await admin.auth().setCustomUserClaims(context.params.uid, { role });
+    } catch (err) {
+      console.warn('syncUserRoleClaimOnWrite failed', err && err.message);
+    }
+    return null;
+  });
+
 exports.requestPasswordReset = functions
-  .runWith({ secrets: [sendgridApiKey] })
+  .runWith({ secrets: [sendgridApiKey, smtpUserParam, smtpPassParam] })
   .https.onCall(async (data, context) => {
+    requireAppCheck(context);
     const email = String((data && data.email) || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new functions.https.HttpsError('invalid-argument', 'Enter a valid email address.');
@@ -385,9 +484,10 @@ exports.requestPasswordReset = functions
 
 
 exports.sendEmailOtp = functions
-  .runWith({ secrets: [sendgridApiKey] })
+  .runWith({ secrets: [sendgridApiKey, smtpUserParam, smtpPassParam] })
   .https.onCall(async (data, context) => {
     try {
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
     const uid = auth?.uid;
     if (!uid) {
@@ -488,8 +588,9 @@ exports.sendEmailOtp = functions
   });
 
 exports.verifyEmailOtp = functions
-  .runWith({ secrets: [sendgridApiKey] })
+  .runWith({ secrets: [sendgridApiKey, smtpUserParam, smtpPassParam] })
   .https.onCall(async (data, context) => {
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
     const uid = auth?.uid;
     if (!uid) {
@@ -546,6 +647,7 @@ exports.verifyEmailOtp = functions
   });
 
 exports.confirmEmailVerified = functions.https.onCall(async (data, context) => {
+  requireAppCheck(context);
   const auth = await resolveAuth(context, data);
   const uid = auth?.uid;
   if (!uid) {
@@ -749,6 +851,57 @@ function normalizeStageProgress(raw) {
   };
 }
 
+// Ma'am checklist: category weights (pillar/foundation 20%, roof 30%).
+const DEFAULT_PROGRESS_WEIGHTS = {
+  foundation: 0.20,
+  structural: 0.30,
+  walls: 0.20,
+  roofing: 0.30,
+};
+
+function readProgressWeights(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const read = (key, fallback) => {
+    const n = Number(src[key]);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  const weights = {
+    foundation: read('foundation', DEFAULT_PROGRESS_WEIGHTS.foundation),
+    structural: read('structural', DEFAULT_PROGRESS_WEIGHTS.structural),
+    walls: read('walls', DEFAULT_PROGRESS_WEIGHTS.walls),
+    roofing: read('roofing', DEFAULT_PROGRESS_WEIGHTS.roofing),
+  };
+  const sum = weights.foundation + weights.structural + weights.walls + weights.roofing;
+  if (sum <= 0) return { ...DEFAULT_PROGRESS_WEIGHTS };
+  if (Math.abs(sum - 1) > 0.05 && sum > 1.5) {
+    return {
+      foundation: weights.foundation / sum,
+      structural: weights.structural / sum,
+      walls: weights.walls / sum,
+      roofing: weights.roofing / sum,
+    };
+  }
+  return weights;
+}
+
+function weightedOverallFromStages(stageProgress, weights) {
+  if (!stageProgress || typeof stageProgress !== 'object') return null;
+  const w = readProgressWeights(weights);
+  const overall =
+    (Number(stageProgress.foundation) || 0) * w.foundation +
+    (Number(stageProgress.structural) || 0) * w.structural +
+    (Number(stageProgress.walls) || 0) * w.walls +
+    (Number(stageProgress.roofing) || 0) * w.roofing;
+  if (!Number.isFinite(overall)) return null;
+  return Math.max(0, Math.min(100, Math.round(overall)));
+}
+
+const STAGE_WEIGHT_PROMPT =
+  'Weighted overall uses STAGE completion 0-100, then:\n'
+  + '  overall = foundation*20% + structural*30% + walls*20% + roofing*30%.\n'
+  + '  Example: only foundation 100% => overall 20%. Only roof 100% => overall 30%.\n'
+  + '  Do NOT treat foundation as 0-20 of the whole project; foundation stageProgress is 0-100 of the foundation itself.\n';
+
 const GOVTRACK_CHAT_SYSTEM_INSTRUCTION =
   'You are GovTrack AI, an expert construction assistant for the assigned project.\n\n'
   + 'GOVTRACK AI — 3-LAYER SCOPE\n\n'
@@ -770,7 +923,7 @@ const GOVTRACK_CHAT_SYSTEM_INSTRUCTION =
   + 'OPERATING RULES:\n'
   + '1. CONSTRUCTION QUESTIONS (Layer 1): Answer technical and safety questions using industry best practices and uploaded SOP manuals in [PROJECT DOCUMENTS]. Always emphasize PPE. Do not invent code citations.\n'
   + '2. MATERIAL & PROGRESS QUESTIONS (Layers 2 & 3): Use ONLY [PROJECT DATA] for stock levels, deliveries, milestones, dates, and logs. If numbers or dates are missing, say exactly: "That tracking metric is currently unavailable."\n'
-  + '3. WEATHER: Use [LIVE SITE DATA INTERFACE] and [WEATHER DATA] (Open-Meteo). If Unavailable/Offline: "I cannot retrieve live weather data right now. Please check your system network connection." Never guess weather.\n'
+  + '3. WEATHER: Use ONLY [WEATHER DATA] for the project location PIN (latitude/longitude). Never answer with Manila, Quezon City, or any other city unless that is the pinned site. If rain is present, say outdoor work should stop and the delay must be recorded as weather, not sunny. If [WEATHER DATA] is missing: "I cannot retrieve weather for the project pin. Ask admin to pin the site location." Never guess weather.\n'
   + '4. RAIN/NIGHT: 🚨 rain alert → cover cement/drywall/electrical. Night/low visibility → site lighting + Class 3 PPE.\n'
   + '5. GUARDRAILS: Refuse non-construction queries (sports, games, general chat) with: "I can only answer questions related to this project\'s tracking data."\n'
   + '6. NO FABRICATION: Never invent inventory, dates, BOQ lines, or progress %.\n'
@@ -835,16 +988,132 @@ function messageAsksWeather(msgLower) {
   );
 }
 
+function readCoord(value) {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function isManilaLabel(value) {
+  return typeof value === 'string' && /manila/i.test(value);
+}
+
+async function fetchOpenMeteoByCoords(lat, lon, label) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  try {
+    const forecastUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    forecastUrl.searchParams.set('latitude', String(lat));
+    forecastUrl.searchParams.set('longitude', String(lon));
+    forecastUrl.searchParams.set(
+      'current',
+      'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation,is_day'
+    );
+    forecastUrl.searchParams.set('daily', 'weather_code,precipitation_sum,precipitation_probability_max,temperature_2m_max,temperature_2m_min');
+    forecastUrl.searchParams.set('hourly', 'precipitation_probability');
+    forecastUrl.searchParams.set('forecast_days', '7');
+    forecastUrl.searchParams.set('timezone', 'auto');
+
+    const res = await fetch(forecastUrl.toString(), { method: 'GET' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+
+    const current = json?.current && typeof json.current === 'object' ? json.current : {};
+    const hourly = json?.hourly && typeof json.hourly === 'object' ? json.hourly : {};
+    const daily = json?.daily && typeof json.daily === 'object' ? json.daily : {};
+    const times = Array.isArray(hourly.time) ? hourly.time : [];
+    const rainProbs = Array.isArray(hourly.precipitation_probability)
+      ? hourly.precipitation_probability.map((v) => Number(v) || 0)
+      : [];
+    const weatherCode = Number(current.weather_code);
+    const rainingNow = [51, 53, 55, 61, 63, 65, 80, 81, 82, 95, 96, 99].includes(weatherCode)
+      || Number(current.precipitation) > 0;
+
+    const now = Date.now();
+    let startIdx = 0;
+    for (let i = 0; i < times.length; i++) {
+      const t = Date.parse(times[i]);
+      if (!Number.isNaN(t) && t >= now) {
+        startIdx = i;
+        break;
+      }
+    }
+    let rainIsComing = rainingNow;
+    for (let i = startIdx + 1; i <= startIdx + 3 && i < rainProbs.length; i++) {
+      if (rainProbs[i] > 40) {
+        rainIsComing = true;
+        break;
+      }
+    }
+
+    const rainForecast = rainingNow
+      ? 'Rain at the project pin now. Stop or cover outdoor work and record a weather delay.'
+      : rainIsComing
+        ? 'Rain approaching the project pin within 3 hours. Cover cement, drywall, and open electrical work.'
+        : 'No rain at the project pin right now. Outdoor work can proceed unless the forecast shows rain.';
+
+    const dates = Array.isArray(daily.time) ? daily.time : [];
+    const forecast = dates.slice(0, 7).map((date, i) => ({
+      date,
+      minTempC: Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min[i] : null,
+      maxTempC: Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max[i] : null,
+      pop: Array.isArray(daily.precipitation_probability_max) ? daily.precipitation_probability_max[i] : null,
+      condition: rainIsComing && i === 0 ? 'Rain risk' : 'Forecast',
+    }));
+
+    const siteLabel = label || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    return {
+      provider: 'open-meteo',
+      location: siteLabel,
+      latitude: lat,
+      longitude: lon,
+      fromProjectPin: true,
+      fetchedAt: new Date().toISOString(),
+      liveSiteContext: {
+        temperature: current.temperature_2m != null ? `${Math.round(Number(current.temperature_2m))}°C` : 'Unavailable',
+        humidity: current.relative_humidity_2m != null ? `${current.relative_humidity_2m}%` : 'Unavailable',
+        environment_lighting: Number(current.is_day) === 1 ? 'Daylight Operations' : 'Night Work / Low Visibility',
+        rain_forecast: rainForecast,
+        rain_is_coming: rainIsComing,
+        provider: 'open-meteo-project-pin',
+      },
+      current: {
+        tempC: current.temperature_2m != null ? Number(current.temperature_2m) : null,
+        feelsLikeC: current.apparent_temperature != null ? Number(current.apparent_temperature) : null,
+        humidity: current.relative_humidity_2m != null ? Number(current.relative_humidity_2m) : null,
+        windSpeedMs: current.wind_speed_10m != null ? Number(current.wind_speed_10m) : null,
+        description: rainingNow ? 'Rain' : (rainIsComing ? 'Rain likely' : 'No rain'),
+        condition: rainingNow ? 'Rain' : (rainIsComing ? 'Rain likely' : 'Clear'),
+      },
+      forecast,
+      siteAdvice: rainForecast,
+    };
+  } catch (e) {
+    console.warn('fetchOpenMeteoByCoords failed:', { message: e?.message, lat, lon });
+    return null;
+  }
+}
+
 async function fetchOpenMeteoLive(locationRaw) {
   if (!locationRaw || typeof locationRaw !== 'string') return null;
   const loc = locationRaw.trim();
   if (!loc) return null;
-  const query = loc.split(',')[0].trim();
+  const queryCandidates = [loc];
+  if (!/philippines/i.test(loc)) queryCandidates.push(`${loc}, Philippines`);
+  const query = queryCandidates[0];
   try {
-    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`;
+    const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=5&language=en&format=json&countryCode=PH`;
     const geoRes = await fetch(geoUrl, { method: 'GET' });
     const geoJson = await geoRes.json().catch(() => ({}));
-    const hit = Array.isArray(geoJson?.results) ? geoJson.results[0] : null;
+    const hit = Array.isArray(geoJson?.results)
+      ? geoJson.results.find((row) => {
+          const admin = String(row?.admin1 || row?.admin2 || row?.name || '').toLowerCase();
+          const wanted = loc.toLowerCase();
+          if (wanted.includes('oroquieta') || wanted.includes('mobod')) {
+            return admin.includes('misamis') || admin.includes('oroquieta') || String(row?.name || '').toLowerCase().includes('oroquieta');
+          }
+          return !isManilaLabel(String(row?.name || '')) || wanted.includes('manila');
+        }) || geoJson.results[0]
+      : null;
     if (!hit || hit.latitude == null || hit.longitude == null) return null;
 
     const lat = hit.latitude;
@@ -1101,9 +1370,10 @@ function buildGovtrackChatUserPrompt({
     return (
       `${dataSection}`
       + '[INSTRUCTION]\n'
-      + 'The user asked about WEATHER or TEMPERATURE. Answer using [WEATHER DATA] above. '
-      + 'Include current °C, conditions, humidity/wind if listed, and short forecast. '
-      + 'Add construction site advice. Do NOT say information is missing when [WEATHER DATA] is present.\n\n'
+      + 'The user asked about WEATHER at the PROJECT PIN, not Manila. Answer using [WEATHER DATA] above. '
+      + 'Name the pinned site. Include current °C, rain or no rain, humidity, and short forecast. '
+      + 'If rain is happening or likely, tell them to stop outdoor work and record a weather delay. '
+      + 'If it is clear, say outdoor work can proceed. Do NOT mention Manila unless the pin is in Manila.\n\n'
       + `[USER QUESTION]\n${userQuestion}`
     );
   }
@@ -1394,18 +1664,31 @@ async function resolveAuthOptional(context, data) {
   }
 }
 
+function normalizeGovtrackRole(role) {
+  const r = String(role || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (['resident_engineer', 'site_engineer', 'sitemanager', 'site_mgr'].includes(r)) {
+    return 'site_manager';
+  }
+  if (['ceo', 'ceohead', 'ceo_head'].includes(r)) return 'ceo_head';
+  return r;
+}
+
+function isGovtrackAllowedRole(role) {
+  const r = normalizeGovtrackRole(role);
+  return r === 'admin' || r === 'ceo_head' || r === 'site_manager';
+}
+
 async function requireGovtrackRole(auth) {
   if (!auth || !auth.uid) {
     throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
   }
 
   const tokenRole = (auth.token || {}).role;
-  if (typeof tokenRole === 'string' && tokenRole.trim()) {
-    const allowed = tokenRole === 'admin' || tokenRole === 'ceo_head' || tokenRole === 'site_manager';
-    if (!allowed) {
-      throw new functions.https.HttpsError('permission-denied', 'Insufficient permissions');
-    }
-    return tokenRole;
+  if (typeof tokenRole === 'string' && tokenRole.trim() && isGovtrackAllowedRole(tokenRole)) {
+    return normalizeGovtrackRole(tokenRole);
   }
 
   const uid = auth.uid;
@@ -1420,11 +1703,10 @@ async function requireGovtrackRole(auth) {
       'Unable to verify user role right now. Please check your internet connection and try again.'
     );
   }
-  const allowed = role === 'admin' || role === 'ceo_head' || role === 'site_manager';
-  if (!allowed) {
+  if (!isGovtrackAllowedRole(role)) {
     throw new functions.https.HttpsError('permission-denied', 'Insufficient permissions');
   }
-  return role;
+  return normalizeGovtrackRole(role);
 }
 
 async function requireProjectAccess({ auth, role, projectId }) {
@@ -1447,17 +1729,28 @@ async function requireProjectAccess({ auth, role, projectId }) {
   }
   const projectData = projectSnap.data() || {};
 
-  const siteManagerId = typeof projectData.siteManagerId === 'string' ? projectData.siteManagerId : '';
+  const siteManagerId = String(projectData.siteManagerId || '').trim();
   if (siteManagerId && siteManagerId === uid) return;
 
   const userSnap = await admin.firestore().collection('users').doc(uid).get();
   const userData = userSnap.exists ? (userSnap.data() || {}) : {};
-  const assigned = Array.isArray(userData.assignedProjects) ? userData.assignedProjects : [];
+  const assigned = Array.isArray(userData.assignedProjects)
+    ? userData.assignedProjects.map((id) => String(id))
+    : [];
   if (assigned.includes(projectId)) return;
 
-  const authEmail = String((auth.token && auth.token.email) || userData.email || '').trim().toLowerCase();
-  const engineerEmail = String(projectData.projectEngineerEmail || '').trim().toLowerCase();
-  if (authEmail && engineerEmail && authEmail === engineerEmail) return;
+  const authEmail = String((auth.token && auth.token.email) || userData.email || '')
+    .trim()
+    .toLowerCase();
+  const engineerEmails = [
+    projectData.projectEngineerEmail,
+    projectData.siteManagerEmail,
+    projectData.engineerEmail,
+    siteManagerId.includes('@') ? siteManagerId : '',
+  ]
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (authEmail && engineerEmails.includes(authEmail)) return;
 
   throw new functions.https.HttpsError('permission-denied', 'You do not have access to this project.');
 }
@@ -1650,7 +1943,14 @@ exports.revalidatePayrollOnAttendanceChange = functions.firestore
 // AI Progress Image Verification (Cloud Vision MVP)
 exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
   try {
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
+    await requireOtpVerified(auth.uid);
+    await consumeRateLimit({
+      key: `ai_verify_${hashIdentifier(auth.uid)}`,
+      windowMs: 60 * 60 * 1000,
+      max: 30,
+    });
     const role = await requireGovtrackRole(auth);
 
     function normalizeText(s) {
@@ -1739,6 +2039,11 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
     }
 
     await requireProjectAccess({ auth, role, projectId });
+    await consumeRateLimit({
+      key: `ai_estimate_${hashIdentifier(auth.uid)}`,
+      windowMs: 60 * 60 * 1000,
+      max: 30,
+    });
 
     if (!imageUrl && !storagePath) {
       throw new functions.https.HttpsError(
@@ -1946,6 +2251,7 @@ exports.verifyProgressImage = functions.https.onCall(async (data, context) => {
 exports.visualCrossingMonthlyForecast = functions
   .runWith({ secrets: [visualCrossingApiKey], timeoutSeconds: 60 })
   .https.onCall(async (data, context) => {
+    requireAppCheck(context);
     if (!context || !context.auth || !context.auth.uid) {
       throw new functions.https.HttpsError(
         'unauthenticated',
@@ -2012,6 +2318,7 @@ exports.govtrackChatGemini = functions
   .runWith({ secrets: [geminiApiKey, visualCrossingApiKey], timeoutSeconds: 180 })
   .https.onCall(async (data, context) => {
   try {
+    requireAppCheck(context);
     console.log('govtrackChatGemini auth presence:', {
       hasContextAuth: Boolean(context && context.auth),
       hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
@@ -2128,14 +2435,18 @@ exports.govtrackChatGemini = functions
       ? await downloadImageAsBase64(storagePath, imageUrl) 
       : null;
 
-    // Require auth if the caller wants project context OR is providing an image (Vision/GCS access).
-    const requiresAuth = Boolean(projectId) || Boolean(imageUrl || storagePath);
-    const auth = requiresAuth ? await resolveAuth(context, data) : await resolveAuthOptional(context, data);
-    let role = null;
-    if (auth) {
-      role = await requireGovtrackRole(auth);
-    } else if (projectId) {
-      throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated to use project context.');
+    // Zero-Trust: always authenticate + rate-limit Gemini cost surface.
+    // Never allow anonymous Gemini usage even for "general" chat.
+    await consumeRateLimit({
+      key: `gemini_chat_${hashIdentifier((context.auth && context.auth.uid) || clientIp(context))}`,
+      windowMs: 60 * 60 * 1000,
+      max: 40,
+    });
+    const auth = await resolveAuth(context, data);
+    await requireOtpVerified(auth.uid);
+    const role = await requireGovtrackRole(auth);
+    if (projectId) {
+      await requireProjectAccess({ auth, role, projectId });
     }
 
     let ocrText = '';
@@ -2230,34 +2541,29 @@ exports.govtrackChatGemini = functions
     let projectDataJson = '';
     let projectContextObj = null;
     if (projectId && auth) {
-      const uid = auth.uid;
-      const isPrivileged = role === 'admin' || role === 'ceo_head';
+      let canLoadProject = false;
+      try {
+        await requireProjectAccess({ auth, role, projectId });
+        canLoadProject = true;
+      } catch (accessErr) {
+        const code = accessErr && accessErr.code;
+        if (code === 'permission-denied' || code === 'not-found') {
+          console.warn('govtrackChatGemini: continuing without live project records', {
+            uid: auth.uid,
+            projectId,
+            code,
+            message: accessErr.message,
+          });
+        } else {
+          throw accessErr;
+        }
+      }
 
       const projectRef = admin.firestore().collection('projects').doc(projectId);
-      const projectSnap = await projectRef.get();
-      if (!projectSnap.exists) {
-        throw new functions.https.HttpsError('not-found', 'Project not found.');
-      }
-      const projectData = projectSnap.data() || {};
+      const projectSnap = canLoadProject ? await projectRef.get() : null;
+      const projectData = projectSnap && projectSnap.exists ? (projectSnap.data() || {}) : {};
 
-      if (!isPrivileged) {
-        let hasAccess = false;
-        const siteManagerId = typeof projectData.siteManagerId === 'string' ? projectData.siteManagerId : '';
-        if (siteManagerId && siteManagerId === uid) {
-          hasAccess = true;
-        }
-
-        if (!hasAccess) {
-          const userSnap = await admin.firestore().collection('users').doc(uid).get();
-          const userData = userSnap.exists ? (userSnap.data() || {}) : {};
-          const assigned = Array.isArray(userData.assignedProjects) ? userData.assignedProjects : [];
-          hasAccess = assigned.includes(projectId);
-        }
-
-        if (!hasAccess) {
-          throw new functions.https.HttpsError('permission-denied', 'You do not have access to this project.');
-        }
-      }
+      if (canLoadProject && projectSnap && projectSnap.exists) {
 
       const safeLimit = (arr, n) => (Array.isArray(arr) ? arr.slice(0, n) : []);
       const stringifySafe = (v, max) => {
@@ -2460,10 +2766,27 @@ exports.govtrackChatGemini = functions
         data?.weatherContext && typeof data.weatherContext === 'object'
           ? data.weatherContext
           : null;
+      const pinLat = readCoord(projectData.latitude) ?? readCoord(data?.siteLatitude);
+      const pinLon = readCoord(projectData.longitude) ?? readCoord(data?.siteLongitude);
+      const pinLabel = String(
+        data?.siteLabel || projectData.geoAddress || projectData.location || projectName || ''
+      ).trim();
       const locationRaw =
         typeof projectData.location === 'string' ? projectData.location.trim() : '';
-      let weatherContext = clientWeather;
-      if (!weatherContext && locationRaw) {
+      let weatherContext = null;
+      if (pinLat != null && pinLon != null) {
+        try {
+          weatherContext = await fetchOpenMeteoByCoords(pinLat, pinLon, pinLabel || locationRaw);
+        } catch (weatherErr) {
+          console.warn('govtrackChatGemini: pin weather fetch skipped', { message: weatherErr?.message });
+        }
+      }
+      const clientLooksLikeManila = clientWeather && isManilaLabel(String(clientWeather.location || ''));
+      const pinIsManila = isManilaLabel(pinLabel) || isManilaLabel(locationRaw);
+      if (!weatherContext && clientWeather && !(clientLooksLikeManila && !pinIsManila)) {
+        weatherContext = clientWeather;
+      }
+      if (!weatherContext && locationRaw && !isManilaLabel(locationRaw)) {
         try {
           weatherContext = await fetchOpenMeteoLive(locationRaw);
           if (!weatherContext) {
@@ -2474,19 +2797,29 @@ exports.govtrackChatGemini = functions
           console.warn('govtrackChatGemini: weather fetch skipped', { message: weatherErr?.message });
         }
       }
-      if (clientWeather && weatherContext && typeof weatherContext === 'object') {
-        weatherContext = { ...weatherContext, ...clientWeather, current: clientWeather.current || weatherContext.current };
-      }
       if (weatherContext) {
         contextObj.weather = weatherContext;
       }
 
       projectContextObj = contextObj;
       projectDataJson = stringifySafe(contextObj, 22000);
+      }
     }
 
-    // If there is no authoritative project data and no image context, avoid model speculation.
-    // Return deterministic, question-relevant GENERAL guidance without any project-specific claims.
+    if (!projectDataJson && data?.projectData && typeof data.projectData === 'object') {
+      try {
+        const stringifySafe = (v, max) => {
+          const s = JSON.stringify(v);
+          return s.length > max ? s.slice(0, max) : s;
+        };
+        projectContextObj = data.projectData;
+        projectDataJson = stringifySafe(data.projectData, 22000);
+      } catch (_) {}
+    }
+
+    // If the user is asking for live project numbers and we have none, give a
+    // bounded checklist instead of guessing inventory/progress. How-to questions
+    // still go to Gemini.
     const hasImageContext = Boolean(
       ocrText ||
       (Array.isArray(ocrLabels) && ocrLabels.length) ||
@@ -2531,6 +2864,18 @@ exports.govtrackChatGemini = functions
         lower.includes('typhoon') ||
         lower.includes('concrete pour') ||
         lower.includes('site condition');
+      const wantsHowTo =
+        lower.includes('checklist') ||
+        lower.includes('procedure') ||
+        lower.includes('steps') ||
+        lower.includes('how to') ||
+        lower.includes('how do') ||
+        lower.startsWith('how ') ||
+        lower === 'why' ||
+        lower === 'why?' ||
+        lower.startsWith('why ');
+
+      if (!wantsHowTo) {
 
       const clientWeatherOnly =
         data?.weatherContext && typeof data.weatherContext === 'object'
@@ -2617,6 +2962,7 @@ exports.govtrackChatGemini = functions
           confidence: 'Low',
         }),
       };
+      }
     }
 
     const strictEvidenceMode = Boolean(projectDataJson);
@@ -3155,8 +3501,10 @@ exports.generateGovTrackReportGemini = functions
   .runWith({ secrets: [geminiApiKey, visualCrossingApiKey] })
   .https.onCall(async (data, context) => {
   try {
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
-    await requireGovtrackRole(auth);
+    await requireOtpVerified(auth.uid);
+    const role = await requireGovtrackRole(auth);
 
     const projectId = typeof data?.projectId === 'string' ? data.projectId : '';
     const projectName = typeof data?.projectName === 'string' ? data.projectName : 'Selected Project';
@@ -3166,6 +3514,12 @@ exports.generateGovTrackReportGemini = functions
     if (!projectId) {
       throw new functions.https.HttpsError('invalid-argument', 'projectId is required');
     }
+    await requireProjectAccess({ auth, role, projectId });
+    await consumeRateLimit({
+      key: `ai_report_${hashIdentifier(auth.uid)}`,
+      windowMs: 60 * 60 * 1000,
+      max: 20,
+    });
     if (!projectData || !recentDailyReports) {
       throw new functions.https.HttpsError('invalid-argument', 'projectData and recentDailyReports are required');
     }
@@ -3384,6 +3738,38 @@ exports.deductMaterialInventoryOnUsageCreate = functions.firestore
     }
   });
 
+exports.notifyPurchaserOnMaterialRequestCreate = functions.firestore
+  .document('projects/{projectId}/material_requests/{requestId}')
+  .onCreate(async (snap, context) => {
+    try {
+      const data = snap.data() || {};
+      const materialName = String(data.materialName || data.subject || 'Material').trim();
+      const projectName = String(data.projectName || context.params.projectId).trim();
+      const qty = data.requestedQuantity != null ? String(data.requestedQuantity) : '';
+      const unit = String(data.unit || '').trim();
+      const isUrgent = String(data.priority || '').toLowerCase() === 'urgent';
+      const qtyLabel = [qty, unit].filter(Boolean).join(' ');
+      const title = isUrgent ? 'URGENT material request' : 'New material request';
+      const body = qtyLabel
+        ? `${materialName} (${qtyLabel}) requested for ${projectName}`
+        : `${materialName} requested for ${projectName}`;
+
+      await admin.messaging().send({
+        topic: 'role-materials',
+        notification: { title, body },
+        data: {
+          type: 'material_request',
+          projectId: String(context.params.projectId || ''),
+          requestId: String(context.params.requestId || ''),
+        },
+        android: { priority: 'high' },
+      });
+    } catch (error) {
+      console.error('notifyPurchaserOnMaterialRequestCreate error:', error);
+    }
+    return null;
+  });
+
 // AI Progress % Estimation (Cloud Vision OCR + Gemini Vision ML)
 exports.estimateProgressPercent = functions
   .runWith({ secrets: [geminiApiKey], timeoutSeconds: 60 })
@@ -3393,7 +3779,9 @@ exports.estimateProgressPercent = functions
       hasContextAuth: Boolean(context && context.auth),
       hasIdToken: typeof data?.idToken === 'string' && data.idToken.trim().length > 0,
     });
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
+    await requireOtpVerified(auth.uid);
     const role = await requireGovtrackRole(auth);
 
     const imageUrl = typeof data?.imageUrl === 'string' ? data.imageUrl : null;
@@ -3487,11 +3875,7 @@ exports.estimateProgressPercent = functions
         const model = geminiModel.value();
         const prompt = 'As a Professional Civil Engineer, conduct a forensic visual audit of this construction site photo.\n\n'
           + 'Score ONLY what is visibly built. Do not invent completed work.\n'
-          + 'Weighted overall progress:\n'
-          + '  - Foundation: 0-20% of total project\n'
-          + '  - Structural/Framing: 21-60% of total project\n'
-          + '  - Masonry/Walls: 61-80% of total project\n'
-          + '  - Roofing/Finishing: 81-100% of total project\n'
+          + STAGE_WEIGHT_PROMPT
           + 'stageProgress is 0-100 completion of THAT stage. Use 0 if not visible.\n\n'
           + 'Return STRICT JSON ONLY:\n'
           + '{\n'
@@ -3558,7 +3942,12 @@ exports.estimateProgressPercent = functions
     }
 
     const stageValues = Object.values(stageProgress).filter((v) => typeof v === 'number');
-    if (progressPercent == null && stageValues.length) {
+    const hasStageEvidence = stageValues.some((v) => v > 0);
+    const weighted = hasStageEvidence ? weightedOverallFromStages(stageProgress) : null;
+    if (weighted != null) {
+      progressPercent = weighted;
+      method = 'weighted_stage_progress';
+    } else if (progressPercent == null && stageValues.length) {
       progressPercent = Math.round(stageValues.reduce((a, b) => a + b, 0) / stageValues.length);
     }
 
@@ -3588,7 +3977,9 @@ exports.analyzeSiteProgressAgainstPlan = functions
   .runWith({ secrets: [geminiApiKey], timeoutSeconds: 120, memory: '1GB' })
   .https.onCall(async (data, context) => {
     try {
+    requireAppCheck(context);
       const auth = await resolveAuth(context, data);
+      await requireOtpVerified(auth.uid);
       const role = await requireGovtrackRole(auth);
 
       const projectId = typeof data?.projectId === 'string' ? data.projectId : null;
@@ -3609,6 +4000,11 @@ exports.analyzeSiteProgressAgainstPlan = functions
         throw new functions.https.HttpsError('invalid-argument', 'projectId is required.');
       }
       await requireProjectAccess({ auth, role, projectId });
+      await consumeRateLimit({
+        key: `ai_analyze_${hashIdentifier(auth.uid)}`,
+        windowMs: 60 * 60 * 1000,
+        max: 20,
+      });
 
       if (!rawImages.length) {
         throw new functions.https.HttpsError('invalid-argument', 'Upload at least one site photo.');
@@ -3661,8 +4057,9 @@ exports.analyzeSiteProgressAgainstPlan = functions
         + '2. Compare site photos to the blueprint when present. Only the funded / highlighted / budgeted area counts toward %.\n'
         + '3. Do not count empty lots, neighboring buildings, or unfunded wings drawn on the plan.\n'
         + '4. Weighted overall progress:\n'
-        + '   Foundation 0-20, Structural 21-60, Walls 61-80, Roofing/finishing 81-100.\n'
-        + '   If only foundation is visible and incomplete, overall stays in 0-20.\n'
+        + '   Foundation 20%, Structural 30%, Walls 20%, Roofing 30%.\n'
+        + '   stageProgress is 0-100 of THAT stage. overall = foundation*0.20 + structural*0.30 + walls*0.20 + roofing*0.30.\n'
+        + '   If only foundation is complete, overall is 20. If only roofing is complete, overall is 30.\n'
         + '5. stageProgress is 0-100 completion OF THAT STAGE. Use 0 if not visible. Do not invent work.\n'
         + '6. If photos are unclear, lower confidence and explain.\n\n'
         + `PROJECT: ${projectName || projectId}\n`
@@ -3714,10 +4111,13 @@ exports.analyzeSiteProgressAgainstPlan = functions
         );
       }
 
+      const stageProgress = normalizeStageProgress(parsed.stageProgress);
+      const hasStageEvidence = stageProgress && Object.values(stageProgress).some((v) => Number(v) > 0);
+      const weighted = hasStageEvidence ? weightedOverallFromStages(stageProgress) : null;
       const progressPercent =
+        weighted ??
         toProgressPercent(parsed.budgetedProgressPercent) ??
         toProgressPercent(parsed.progressPercent);
-      const stageProgress = normalizeStageProgress(parsed.stageProgress);
       const labels = Array.isArray(parsed.labels)
         ? parsed.labels.map((v) => String(v)).filter(Boolean).slice(0, 16)
         : [];
@@ -3780,8 +4180,15 @@ exports.govtrackChat = functions
   .runWith({ secrets: [openaiApiKey] })
   .https.onCall(async (data, context) => {
   try {
+    requireAppCheck(context);
     const auth = await resolveAuth(context, data);
+    await requireOtpVerified(auth.uid);
     await requireGovtrackRole(auth);
+    await consumeRateLimit({
+      key: `ai_chat_openai_${hashIdentifier(auth.uid)}`,
+      windowMs: 60 * 60 * 1000,
+      max: 40,
+    });
 
     const message = typeof data?.message === 'string' ? data.message.trim() : '';
     if (!message) {
@@ -3912,11 +4319,43 @@ exports.govtrackChat = functions
 // History Logger
 exports.logUserAction = functions.https.onCall(async (data, context) => {
   try {
+    requireAppCheck(context);
     if (!context.auth) {
       throw new functions.https.HttpsError('unauthenticated', 'User must be authenticated');
     }
+    await requireOtpVerified(context.auth.uid);
     
-    const { projectId, action, details } = data;
+    const projectId = typeof data?.projectId === 'string' ? data.projectId.trim() : '';
+    const action = typeof data?.action === 'string' ? data.action.trim().slice(0, 120) : '';
+    if (!action) {
+      throw new functions.https.HttpsError('invalid-argument', 'action is required');
+    }
+
+    // Fail-safe: never persist credentials / tokens from client-supplied details.
+    const sensitiveKey = /(pass(word)?|token|secret|api[_-]?key|authorization|cookie|otp|pin)/i;
+    const sanitizeDetails = (value, depth = 0) => {
+      if (depth > 4 || value == null) return null;
+      if (typeof value === 'string') return value.slice(0, 500);
+      if (typeof value === 'number' || typeof value === 'boolean') return value;
+      if (Array.isArray(value)) return value.slice(0, 20).map((v) => sanitizeDetails(v, depth + 1));
+      if (typeof value === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) {
+          if (sensitiveKey.test(k)) continue;
+          out[k] = sanitizeDetails(v, depth + 1);
+        }
+        return out;
+      }
+      return String(value).slice(0, 200);
+    };
+    const details = sanitizeDetails(data?.details || {});
+
+    await consumeRateLimit({
+      key: `audit_${hashIdentifier(context.auth.uid)}`,
+      windowMs: 60 * 60 * 1000,
+      max: 120,
+    });
+
     const userId = context.auth.uid;
     
     // Get user data
@@ -3926,6 +4365,16 @@ exports.logUserAction = functions.https.onCall(async (data, context) => {
       .get();
     
     const userData = userDoc.data();
+    const role = String((userData && userData.role) || '');
+
+    // BOLA: project history writes require assignment / site-manager ownership.
+    if (projectId) {
+      await requireProjectAccess({
+        auth: { uid: userId, token: (context.auth && context.auth.token) || {} },
+        role,
+        projectId,
+      });
+    }
     
     // Log to audit trail
     await admin.firestore()
@@ -3934,7 +4383,7 @@ exports.logUserAction = functions.https.onCall(async (data, context) => {
         userId,
         userEmail: userData?.email || 'unknown',
         userRole: userData?.role || 'unknown',
-        projectId,
+        projectId: projectId || null,
         action,
         details,
         timestamp: admin.firestore.FieldValue.serverTimestamp(),

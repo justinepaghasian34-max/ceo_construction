@@ -325,22 +325,28 @@ class _AdminPayrollState extends State<AdminPayroll> {
               return StreamBuilder<QuerySnapshot>(
                 stream: FirebaseService.instance.projectsCollection.snapshots(),
                 builder: (context, projectsSnap) {
-                  final Map<String, String> siteManagerNameByProject = {};
+                  final Map<String, String> projectNameById = {};
                   final projectDocs = projectsSnap.data?.docs ?? const [];
                   for (final doc in projectDocs) {
                     final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
                         <String, dynamic>{};
-                    final name = (data['siteManagerName'] ?? '').toString().trim();
-                    if (name.isNotEmpty) {
-                      siteManagerNameByProject[doc.id] = name;
-                    }
+                    final name = (data['name'] ?? '').toString().trim();
+                    projectNameById[doc.id] =
+                        name.isNotEmpty ? name : doc.id;
                   }
 
                   String siteLabel(String projectId) {
-                    final name = siteManagerNameByProject[projectId];
+                    final name = projectNameById[projectId];
                     if (name != null && name.isNotEmpty) return name;
                     return shortProjectId(projectId);
                   }
+
+                  final pendingProjectEntries = itemsByProject.entries.toList()
+                    ..sort(
+                      (a, b) => siteLabel(a.key)
+                          .toLowerCase()
+                          .compareTo(siteLabel(b.key).toLowerCase()),
+                    );
 
                   if (projectsSnap.hasError) {
                     return Center(
@@ -373,14 +379,11 @@ class _AdminPayrollState extends State<AdminPayroll> {
                     message:
                         'Track pending payouts and overtime hours to avoid payroll delays.',
                   ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Summary',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                  _sectionHeading(
+                    context,
+                    title: 'Overview',
+                    subtitle: 'Totals across every project in this payroll period',
                   ),
-                  const SizedBox(height: 8),
                   LayoutBuilder(
                     builder: (context, constraints) {
                       void showSummarySheet({
@@ -503,7 +506,12 @@ class _AdminPayrollState extends State<AdminPayroll> {
                                       padding: const EdgeInsets.all(12),
                                       onTap: () {
                                         Navigator.pop(ctx);
-                                        _showFullWorkerPayrollTable(context, projectId, workers);
+                                        _showFullWorkerPayrollTable(
+                                          context,
+                                          projectId,
+                                          workers,
+                                          projectName: siteLabel(projectId),
+                                        );
                                       },
                                       child: Row(
                                         children: [
@@ -512,7 +520,7 @@ class _AdminPayrollState extends State<AdminPayroll> {
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 Text(
-                                                  'Site: ${siteLabel(projectId)}',
+                                                  siteLabel(projectId),
                                                   maxLines: 1,
                                                   overflow: TextOverflow.ellipsis,
                                                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -641,9 +649,9 @@ class _AdminPayrollState extends State<AdminPayroll> {
                                 value,
                                 style: Theme.of(context)
                                     .textTheme
-                                    .headlineSmall
+                                    .titleMedium
                                     ?.copyWith(
-                                      fontWeight: FontWeight.w700,
+                                      fontWeight: FontWeight.w800,
                                       color: AppTheme.primaryBlue,
                                     ),
                               ),
@@ -721,120 +729,57 @@ class _AdminPayrollState extends State<AdminPayroll> {
                       );
                     },
                   ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Worker payroll details',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+                  _sectionHeading(
+                    context,
+                    title: 'Generate payroll',
+                    subtitle:
+                        'Create pending payouts from this month’s attendance records',
                   ),
-                  const SizedBox(height: 8),
-                  if (itemsByProject.isEmpty)
-                    Text(
-                      'No payroll data available yet.',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: AppTheme.mediumGray,
-                          ),
-                    ),
-                  if (itemsByProject.isNotEmpty) const SizedBox(height: 4),
-                  if (itemsByProject.isNotEmpty)
-                    for (final entry in itemsByProject.entries) ...[
-                      GlassCard(
-                        borderRadius: 16,
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    'Site: ${siteLabel(entry.key)}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
-                                ),
-                                if (validationStatusByProject[entry.key] !=
-                                        null &&
-                                    validationStatusByProject[entry.key]!
-                                        .isNotEmpty)
-                                  _buildValidationChip(
-                                    context,
-                                    validationStatusByProject[entry.key]!,
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            GestureDetector(
-                              onTap: () => _showFullWorkerPayrollTable(
-                                context,
-                                entry.key,
-                                entry.value,
-                              ),
-                              child: GlassDataTableTheme(
-                                child: _buildWorkerPayrollDataTable(
-                                  context,
-                                  entry.value,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: Text(
-                                'Tap table to view full payroll for this site',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: AppTheme.mediumGray,
-                                    ),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Align(
-                              alignment: Alignment.centerRight,
-                              child: ElevatedButton.icon(
-                                onPressed: () => _submitProjectPayroll(entry.key),
-                                icon: const Icon(Icons.check_circle_outline),
-                                label: const Text('Submit payroll for this site'),
-                              ),
-                            ),
-                          ],
-                        ),
+                  _generatePayrollActionCard(
+                    context,
+                    hasAttendance: attendanceForPayroll.isNotEmpty,
+                    onGenerate: () =>
+                        _generatePayrollFromAttendance(attendanceForPayroll),
+                  ),
+                  _sectionHeading(
+                    context,
+                    title: 'Pending payroll by project',
+                    subtitle: pendingProjectEntries.isEmpty
+                        ? 'No unpaid payroll yet'
+                        : '${pendingProjectEntries.length} project${pendingProjectEntries.length == 1 ? '' : 's'} with unpaid workers',
+                  ),
+                  if (pendingProjectEntries.isEmpty)
+                    _emptyHint(
+                      context,
+                      'No pending payroll yet. Generate from attendance, or wait for site records.',
+                    )
+                  else
+                    for (final entry in pendingProjectEntries)
+                      _projectPayrollCard(
+                        context,
+                        projectId: entry.key,
+                        projectName: siteLabel(entry.key),
+                        workers: entry.value,
+                        validationStatus:
+                            validationStatusByProject[entry.key],
                       ),
-                      const SizedBox(height: 12),
-                    ],
-                  const SizedBox(height: 12),
-                  if (attendanceForPayroll.isNotEmpty)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: ElevatedButton.icon(
-                        onPressed: () =>
-                            _generatePayrollFromAttendance(attendanceForPayroll),
-                        icon: const Icon(Icons.playlist_add_check),
-                        label: const Text('Generate payroll from attendance'),
-                      ),
-                    ),
                   if (attendanceSummary.isNotEmpty) ...[
-                    const SizedBox(height: 12),
+                    _sectionHeading(
+                      context,
+                      title: 'Attendance this month',
+                      subtitle: 'Days present grouped by project',
+                    ),
                     _buildAttendanceSummarySection(
                       context,
                       summaries: attendanceSummary.values.toList(),
                       siteLabel: siteLabel,
                     ),
                   ],
-                  if (attendanceForPayroll.isEmpty)
-                    Text(
-                      'No attendance data available to generate payroll.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.mediumGray,
-                          ),
-                    ),
+                  _sectionHeading(
+                    context,
+                    title: 'Recent payouts',
+                    subtitle: 'Latest paid disbursements',
+                  ),
                   _buildRecentPayrollPayoutsSection(context, visiblePayouts),
                     ],
                   ),
@@ -849,76 +794,422 @@ class _AdminPayrollState extends State<AdminPayroll> {
     );
   }
 
+  Widget _sectionHeading(
+    BuildContext context, {
+    required String title,
+    String? subtitle,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 18, bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF0F172A),
+                ),
+          ),
+          if (subtitle != null && subtitle.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    height: 1.35,
+                  ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _emptyHint(BuildContext context, String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppTheme.mediumGray,
+            ),
+      ),
+    );
+  }
+
+  Widget _generatePayrollActionCard(
+    BuildContext context, {
+    required bool hasAttendance,
+    required VoidCallback onGenerate,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final stacked = constraints.maxWidth < 560;
+          final text = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                hasAttendance
+                    ? 'Attendance is ready for this month'
+                    : 'No attendance recorded this month',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFF0F172A),
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                hasAttendance
+                    ? 'Generate unpaid payroll per project from present workers.'
+                    : 'Payroll can be generated once site attendance is submitted.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                      height: 1.35,
+                    ),
+              ),
+            ],
+          );
+          final button = FilledButton.icon(
+            onPressed: hasAttendance ? onGenerate : null,
+            icon: const Icon(Icons.playlist_add_check, size: 18),
+            label: const Text('Generate from attendance'),
+          );
+          if (stacked) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppTheme.deepBlue.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.event_available_outlined,
+                        color: AppTheme.deepBlue,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(child: text),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                button,
+              ],
+            );
+          }
+          return Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppTheme.deepBlue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.event_available_outlined,
+                  color: AppTheme.deepBlue,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: text),
+              const SizedBox(width: 12),
+              button,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _projectPayrollCard(
+    BuildContext context, {
+    required String projectId,
+    required String projectName,
+    required List<_WorkerPayrollEntry> workers,
+    String? validationStatus,
+  }) {
+    final preview = workers.take(4).toList();
+    final remaining = workers.length - preview.length;
+    final total = workers.fold<double>(0, (acc, e) => acc + e.item.netPay);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppTheme.deepBlue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.apartment_outlined,
+                  size: 18,
+                  color: AppTheme.deepBlue,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      projectName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF0F172A),
+                          ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${workers.length} worker${workers.length == 1 ? '' : 's'}  ·  ${formatCurrency(total)} pending',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.mediumGray,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              if (validationStatus != null && validationStatus.isNotEmpty)
+                _buildValidationChip(context, validationStatus),
+            ],
+          ),
+          const SizedBox(height: 12),
+          for (final worker in preview) _workerPreviewRow(context, worker),
+          if (remaining > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: Text(
+                '+ $remaining more worker${remaining == 1 ? '' : 's'}',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => _showFullWorkerPayrollTable(
+                  context,
+                  projectId,
+                  workers,
+                  projectName: projectName,
+                ),
+                icon: const Icon(Icons.table_chart_outlined, size: 18),
+                label: const Text('View details'),
+              ),
+              FilledButton.icon(
+                onPressed: () => _submitProjectPayroll(projectId),
+                icon: const Icon(Icons.check_circle_outline, size: 18),
+                label: const Text('Submit payroll'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _workerPreviewRow(BuildContext context, _WorkerPayrollEntry entry) {
+    final item = entry.item;
+    final name = item.workerName.trim().isEmpty ? 'Worker' : item.workerName;
+    final status = entry.payrollStatus.trim().isEmpty
+        ? 'pending'
+        : entry.payrollStatus.toLowerCase();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: AppTheme.deepBlue.withValues(alpha: 0.1),
+            child: Text(
+              name[0].toUpperCase(),
+              style: const TextStyle(
+                color: AppTheme.deepBlue,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                Text(
+                  [
+                    if (item.position.trim().isNotEmpty) item.position.trim(),
+                    formatHours(item.regularHours + item.overtimeHours),
+                  ].join('  ·  '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                formatCurrency(item.netPay),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.primaryBlue,
+                    ),
+              ),
+              Text(
+                status,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppTheme.mediumGray,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAttendanceSummarySection(
     BuildContext context, {
     required List<_AttendanceWorkerSummary> summaries,
     required String Function(String projectId) siteLabel,
   }) {
-    final sorted = [...summaries]
-      ..sort((a, b) {
-        final siteA = siteLabel(a.projectId);
-        final siteB = siteLabel(b.projectId);
-        final bySite = siteA.compareTo(siteB);
-        if (bySite != 0) return bySite;
-        return a.workerName.toLowerCase().compareTo(b.workerName.toLowerCase());
-      });
+    final grouped = <String, List<_AttendanceWorkerSummary>>{};
+    for (final summary in summaries) {
+      grouped.putIfAbsent(summary.projectId, () => []).add(summary);
+    }
+    final projectIds = grouped.keys.toList()
+      ..sort(
+        (a, b) => siteLabel(a).toLowerCase().compareTo(siteLabel(b).toLowerCase()),
+      );
 
-    return GlassCard(
-      borderRadius: 16,
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Attendance summary (this month)',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
+    return Column(
+      children: [
+        for (final projectId in projectIds)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  siteLabel(projectId),
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
+                      ),
                 ),
-          ),
-          const SizedBox(height: 8),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              return SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                  child: DataTable(
-                    columns: const [
-                      DataColumn(label: Text('Site')),
-                      DataColumn(label: Text('Worker')),
-                      DataColumn(label: Text('Days')),
-                      DataColumn(label: Text('Rate')),
-                      DataColumn(label: Text('Dates')),
-                    ],
-                    rows: [
-                      for (final s in sorted)
-                        DataRow(
-                          cells: [
-                            DataCell(Text(siteLabel(s.projectId))),
-                            DataCell(Text(s.workerName)),
-                            DataCell(Text(s.attendedDays.length.toString())),
-                            DataCell(
-                              Text(s.rate > 0 ? formatCurrency(s.rate) : '-'),
-                            ),
-                            DataCell(
-                              Text(
-                                (s.attendedDays.toList()..sort())
-                                    .map((d) => '${d.month}/${d.day}')
-                                    .join(', '),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
+                const SizedBox(height: 8),
+                for (final worker in (grouped[projectId]!
+                  ..sort(
+                    (a, b) => a.workerName
+                        .toLowerCase()
+                        .compareTo(b.workerName.toLowerCase()),
+                  )))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            worker.workerName.trim().isEmpty
+                                ? 'Worker'
+                                : worker.workerName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                          ),
                         ),
-                    ],
+                        Text(
+                          '${worker.attendedDays.length} day${worker.attendedDays.length == 1 ? '' : 's'}',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppTheme.mediumGray,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        if (worker.rate > 0) ...[
+                          const SizedBox(width: 12),
+                          Text(
+                            formatCurrency(worker.rate),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: AppTheme.deepBlue,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-              );
-            },
+              ],
+            ),
           ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -1089,6 +1380,18 @@ class _AdminPayrollState extends State<AdminPayroll> {
       }
 
       await batch.commit();
+
+      if (totalAmount > 0) {
+        await firebase.disbursementsCollection.add({
+          'projectId': projectId,
+          'amount': totalAmount,
+          'type': 'payroll',
+          'subject': 'Payroll payout',
+          'workerCount': totalWorkers,
+          'paidAt': now.toIso8601String(),
+          'createdAt': now.toIso8601String(),
+        });
+      }
 
       await AuditLogService.instance.logAction(
         action: 'payroll_submitted_by_admin',
@@ -1316,8 +1619,9 @@ class _AdminPayrollState extends State<AdminPayroll> {
   void _showFullWorkerPayrollTable(
     BuildContext context,
     String projectId,
-    List<_WorkerPayrollEntry> entries,
-  ) {
+    List<_WorkerPayrollEntry> entries, {
+    String? projectName,
+  }) {
     showCenteredAdminDialog<void>(
       context: context,
       maxWidth: 900,
@@ -1330,7 +1634,8 @@ class _AdminPayrollState extends State<AdminPayroll> {
             children: [
               adminDialogTitleRow(
                 context: dialogContext,
-                title: 'Worker payroll - Site: ${shortProjectId(projectId)}',
+                title:
+                    'Worker payroll — ${projectName ?? shortProjectId(projectId)}',
               ),
               const SizedBox(height: 8),
               Expanded(
@@ -1849,24 +2154,17 @@ Widget _buildRecentPayrollPayoutsSection(
   BuildContext context,
   List<_RecentPayout> payouts,
 ) {
-  return AppCard(
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE2E8F0)),
+    ),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Recent payroll payouts',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Latest payroll disbursements and adjustments.',
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
-        ),
-        const SizedBox(height: 12),
         if (payouts.isEmpty)
           Text(
             'No payroll payouts recorded yet.',

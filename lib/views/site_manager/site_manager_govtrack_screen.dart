@@ -6,11 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_cancellable_tile_provider/flutter_map_cancellable_tile_provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -115,10 +112,24 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     }
   }
 
-  Future<void> _refreshWeather({bool force = false}) async {
+  Future<void> _refreshWeather({
+    bool force = false,
+    double? lat,
+    double? lon,
+    String? location,
+    String? label,
+  }) async {
     try {
+      final useLat = lat ?? _pinLat;
+      final useLon = lon ?? _pinLon;
       final bundle = await SiteWeatherContextService.instance.load(
-        projectLocation: _projectLocation,
+        projectLocation: location ?? _projectLocation,
+        latitude: useLat,
+        longitude: useLon,
+        locationLabel: label ??
+            _pinLabel ??
+            _projectLocation ??
+            _projectName,
         forceRefresh: force,
       );
       if (mounted) setState(() => _weatherBundle = bundle);
@@ -194,9 +205,36 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     }
 
     buf.writeln();
+    final rainy = _rainLikely(bundle);
+    if (rainy) {
+      buf.writeln(
+        'Delay note: rain is expected at this project pin. Outdoor work (concrete, roofing, painting, electrical) should stop or be covered. Record this as a weather delay so admin sees rain, not sunny.',
+      );
+    } else {
+      buf.writeln(
+        'Delay note: no rain alert at this project pin right now. Outdoor work can proceed unless the forecast below shows rain.',
+      );
+    }
+    buf.writeln();
     buf.writeln('Sources:');
     buf.writeln('- Weather Forecast Feed – $siteName – ${_isoNow()}');
     return buf.toString().trim();
+  }
+
+  bool _rainLikely(SiteWeatherBundle bundle) {
+    final live = bundle.liveReport;
+    if (live != null && live.rainIsComing) return true;
+    final condition = bundle.now.condition.toLowerCase();
+    if (condition.contains('rain') ||
+        condition.contains('drizzle') ||
+        condition.contains('thunder') ||
+        condition.contains('storm')) {
+      return true;
+    }
+    final todayPop = bundle.forecastDays.isNotEmpty
+        ? bundle.forecastDays.first.pop
+        : null;
+    return todayPop != null && todayPop >= 0.4;
   }
 
   static String _isoNow() {
@@ -208,9 +246,40 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
   }
 
   Future<void> _loadProject() async {
+    await AuthService.instance.refreshUserData();
+
     final user = AuthService.instance.currentUser;
-    if (user == null || user.assignedProjects.isEmpty) return;
-    final id = user.assignedProjects.first;
+    final firebaseUser = AuthService.instance.currentFirebaseUser;
+
+    String? id =
+        user?.assignedProjects.isNotEmpty == true ? user!.assignedProjects.first : null;
+
+    if ((id == null || id.isEmpty) && firebaseUser != null) {
+      try {
+        final byManager = await FirebaseService.instance.projectsCollection
+            .where('siteManagerId', isEqualTo: firebaseUser.uid)
+            .limit(1)
+            .get();
+        if (byManager.docs.isNotEmpty) {
+          id = byManager.docs.first.id;
+        }
+      } catch (_) {}
+    }
+
+    if ((id == null || id.isEmpty) && firebaseUser?.email != null) {
+      try {
+        final email = firebaseUser!.email!.trim();
+        final byEmail = await FirebaseService.instance.projectsCollection
+            .where('projectEngineerEmail', isEqualTo: email)
+            .limit(1)
+            .get();
+        if (byEmail.docs.isNotEmpty) {
+          id = byEmail.docs.first.id;
+        }
+      } catch (_) {}
+    }
+
+    if (id == null || id.isEmpty) return;
     String name = id;
     String? location;
     String? planUrl;
@@ -271,12 +340,6 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       }
     } catch (_) {}
 
-    // Load weather and rich project context in parallel.
-    await Future.wait([
-      _refreshWeather(),
-      _refreshProjectContext(projectId: id, projectName: name, location: location),
-    ]);
-
     if (!mounted) return;
     setState(() {
       _projectId = id;
@@ -291,6 +354,16 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       _planAnalysis = planAnalysis;
       _approvedBudget = budget;
     });
+
+    await Future.wait([
+      _refreshWeather(
+        lat: pinLat,
+        lon: pinLon,
+        location: location,
+        label: pinLabel ?? location ?? name,
+      ),
+      _refreshProjectContext(projectId: id, projectName: name, location: location),
+    ]);
   }
 
   Future<void> _refreshProjectContext({
@@ -349,7 +422,7 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
   String _friendlyError(Object e) {
     final s = e.toString();
     if (s.contains('permission-denied')) {
-      return 'Permission denied. Ask your admin to confirm project assignment, then try again.';
+      return 'I could not load this project’s live records. You can still ask construction how-to questions, or ask admin to assign you to the project.';
     }
     if (s.contains('unauthenticated')) {
       return 'Session expired. Please sign in again.';
@@ -376,7 +449,13 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
     _scrollChatToEnd();
 
     try {
-      await _refreshWeather(force: true);
+      await _refreshWeather(
+        force: true,
+        lat: _pinLat,
+        lon: _pinLon,
+        location: _projectLocation,
+        label: _pinLabel ?? _projectLocation ?? _projectName,
+      );
       // Refresh project context if not yet loaded.
       if (_projectContext == null && _projectId != null) {
         await _refreshProjectContext(
@@ -390,7 +469,10 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
       final idToken = await user?.getIdToken(true);
 
       // Build the site name for the prompt.
-      final siteName = (_weatherBundle?.locationLabel.isNotEmpty == true
+      final siteName = (_pinLabel?.trim().isNotEmpty == true
+              ? _pinLabel
+              : null) ??
+          (_weatherBundle?.locationLabel.isNotEmpty == true
               ? _weatherBundle!.locationLabel
               : null) ??
           _projectLocation ??
@@ -448,36 +530,53 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
 
       final callable =
           FirebaseFunctions.instance.httpsCallable('govtrackChatGemini');
-      final res = await callable
-          .call(<String, dynamic>{
+      Map<String, dynamic> payload({bool includeProject = true}) =>
+          <String, dynamic>{
             'message': text,
             'history': _chatHistoryPayload(),
             'idToken': idToken,
-            'projectId': _projectId,
-            'projectName': _projectName,
-            // Full structured context for the Cloud Function.
-            if (_projectContext != null) 'projectData': _projectContext,
+            if (includeProject && _projectId != null) 'projectId': _projectId,
+            if (includeProject && _projectName != null)
+              'projectName': _projectName,
+            if (includeProject && _projectContext != null)
+              'projectData': _projectContext,
             if (_weatherBundle != null)
               'weatherContext': _weatherBundle!.toAiJson(),
+            if (_pinLat != null) 'siteLatitude': _pinLat,
+            if (_pinLon != null) 'siteLongitude': _pinLon,
+            if ((_pinLabel ?? '').trim().isNotEmpty) 'siteLabel': _pinLabel,
             if (forecastBlock.isNotEmpty)
               'weatherForecastBlock': forecastBlock,
             if (systemInstruction != null)
               'systemInstruction': systemInstruction,
-          })
-          .timeout(const Duration(seconds: 120));
+          };
+
+      late final dynamic res;
+      try {
+        res = await callable
+            .call(payload())
+            .timeout(const Duration(seconds: 120));
+      } on FirebaseFunctionsException catch (e) {
+        if (e.code == 'permission-denied' && _projectId != null) {
+          res = await callable
+              .call(payload(includeProject: false))
+              .timeout(const Duration(seconds: 120));
+        } else {
+          rethrow;
+        }
+      }
 
       final data = (res.data as Map?)?.cast<String, dynamic>() ?? {};
       var rawReply = (data['reply'] ?? data['message'] ?? '').toString().trim();
-      if (_isWeatherQuestion(text) &&
-          _weatherBundle != null &&
-          (rawReply.toLowerCase().contains('cannot find') ||
-              rawReply.toLowerCase().contains('tracking metric') ||
-              rawReply.toLowerCase().contains('not in the current project') ||
-              rawReply.toLowerCase().contains('unavailable') ||
-              rawReply.toLowerCase().contains('weather unavailable') ||
-              rawReply.toLowerCase().contains('check connection') ||
-              rawReply.toLowerCase().contains('do not have verified'))) {
-        rawReply = _localWeatherReply(_weatherBundle!);
+      if (_isWeatherQuestion(text)) {
+        if (_weatherBundle != null && _weatherBundle!.fromProjectPin) {
+          rawReply = _localWeatherReply(_weatherBundle!);
+        } else if (_pinLat == null || _pinLon == null) {
+          rawReply =
+              'I cannot answer weather until this project has a location pin. Ask admin to pin the site (for example Mobod, Oroquieta City). I will not use Manila weather for this project.';
+        } else if (_weatherBundle != null) {
+          rawReply = _localWeatherReply(_weatherBundle!);
+        }
       }
       final parsed = _GovtrackParsedReply.fromRaw(rawReply);
 
@@ -1018,13 +1117,6 @@ class _SiteManagerGovtrackScreenState extends State<SiteManagerGovtrackScreen>
         _SavedBlueprintBanner(
           planUrl: _planUrl,
           budget: _approvedBudget,
-        ),
-        const SizedBox(height: 14),
-        _ProjectLocationPinCard(
-          lat: _pinLat,
-          lon: _pinLon,
-          label: _pinLabel ?? _projectLocation,
-          projectName: _projectName,
         ),
         const SizedBox(height: 14),
         _UploadSection(
@@ -1732,118 +1824,6 @@ class _NarrativeCardState extends State<_NarrativeCard> {
                   height: 1.5,
                 ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ProjectLocationPinCard extends StatelessWidget {
-  const _ProjectLocationPinCard({
-    this.lat,
-    this.lon,
-    this.label,
-    this.projectName,
-  });
-
-  final double? lat;
-  final double? lon;
-  final String? label;
-  final String? projectName;
-
-  bool get _hasPin {
-    final la = lat;
-    final lo = lon;
-    return la != null &&
-        lo != null &&
-        la.abs() <= 90 &&
-        lo.abs() <= 180;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final title = (label ?? '').trim().isNotEmpty
-        ? label!.trim()
-        : (projectName ?? 'Project site');
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
-            child: Row(
-              children: [
-                const Icon(Icons.location_on, color: AppTheme.residentBlue, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Project location pin',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _hasPin
-                            ? title
-                            : 'No pin yet. Admin location from Create Project will drop the pin here.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppTheme.mediumGray,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (_hasPin)
-            SizedBox(
-              height: 180,
-              child: FlutterMap(
-                options: MapOptions(
-                  initialCenter: LatLng(lat!, lon!),
-                  initialZoom: 14,
-                  interactionOptions: const InteractionOptions(
-                    flags: InteractiveFlag.pinchZoom |
-                        InteractiveFlag.drag |
-                        InteractiveFlag.doubleTapZoom,
-                  ),
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    tileProvider: CancellableNetworkTileProvider(),
-                    userAgentPackageName: 'com.ceoconstruction.monitoring',
-                  ),
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: LatLng(lat!, lon!),
-                        width: 44,
-                        height: 44,
-                        child: const Icon(
-                          Icons.location_on,
-                          color: AppTheme.residentBlue,
-                          size: 40,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
         ],
       ),
     );

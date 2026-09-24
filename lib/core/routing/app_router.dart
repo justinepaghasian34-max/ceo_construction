@@ -149,11 +149,8 @@ class AppRouter {
           return RouteNames.splash;
         }
 
-        final isAdminAccount =
-            (firebaseUser?.email ?? '').toLowerCase() ==
-            AppConstants.adminEmail.toLowerCase();
+        // Tip 03 / Zero-Trust: every account must complete email 2FA OTP.
         if (hasFirebaseUser &&
-            !isAdminAccount &&
             !authService.isOtpVerified &&
             location != RouteNames.siteManagerOtp &&
             location != RouteNames.login &&

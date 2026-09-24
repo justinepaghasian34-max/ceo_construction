@@ -9,6 +9,7 @@ import '../../services/auth_service.dart';
 import '../../services/geo_tag_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../services/weather_service.dart';
+import '../../services/firebase_service.dart';
 import '../../models/user_model.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 import 'widgets/site_manager_card.dart';
@@ -82,9 +83,31 @@ class _DailyReportScreenState extends ConsumerState<DailyReportScreen> {
     }
 
     try {
+      double lat = 8.4858;
+      double lon = 123.8048;
+      try {
+        UserModel? currentUser = ref.read(currentUserProvider);
+        if (currentUser == null || currentUser.assignedProjects.isEmpty) {
+          await AuthService.instance.refreshUserData();
+          currentUser = AuthService.instance.currentUser;
+        }
+        final projectId = currentUser?.assignedProjects.isNotEmpty == true
+            ? currentUser!.assignedProjects.first
+            : null;
+        if (projectId != null && projectId.isNotEmpty) {
+          final snap = await FirebaseService.instance.projectsCollection
+              .doc(projectId)
+              .get();
+          final data =
+              (snap.data() as Map?)?.cast<String, dynamic>() ?? {};
+          lat = (data['latitude'] as num?)?.toDouble() ?? lat;
+          lon = (data['longitude'] as num?)?.toDouble() ?? lon;
+        }
+      } catch (_) {}
+
       final report = await WeatherService.instance.getOpenMeteoLiveReport(
-        lat: 8.4858,
-        lon: 123.8048,
+        lat: lat,
+        lon: lon,
       );
       if (!mounted) return;
       setState(() {

@@ -9,18 +9,29 @@ class SiteWeatherConditionsCard extends StatelessWidget {
   const SiteWeatherConditionsCard({
     super.key,
     this.projectLocation,
+    this.latitude,
+    this.longitude,
+    this.locationLabel,
     this.margin = EdgeInsets.zero,
     this.compact = false,
   });
 
   final String? projectLocation;
+  final double? latitude;
+  final double? longitude;
+  final String? locationLabel;
   final EdgeInsetsGeometry margin;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<SiteWeatherBundle>(
-      future: SiteWeatherContextService.instance.load(projectLocation: projectLocation),
+      future: SiteWeatherContextService.instance.load(
+        projectLocation: projectLocation,
+        latitude: latitude,
+        longitude: longitude,
+        locationLabel: locationLabel,
+      ),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
           return _shell(
@@ -85,17 +96,28 @@ class _Content extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  'Weather & Site Conditions',
+                  compact ? 'Site weather' : 'Weather & Site Conditions',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
                 ),
               ),
-              Text(
-                bundle.locationLabel,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: AppTheme.mediumGray,
-                      fontWeight: FontWeight.w700,
-                    ),
+              Flexible(
+                child: Text(
+                  compact ? 'View forecast' : bundle.locationLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.end,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: compact ? AppTheme.residentBlue : AppTheme.mediumGray,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
               ),
+              if (compact) ...[
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, size: 18, color: AppTheme.residentBlue),
+              ],
             ],
           ),
           const SizedBox(height: 12),
@@ -251,11 +273,10 @@ class _ForecastDayChip extends StatelessWidget {
   Widget build(BuildContext context) {
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     final label = days[day.date.weekday - 1];
-    final popPct = day.pop != null ? (day.pop! * 100).round() : null;
 
     return Container(
-      width: 72,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      width: 68,
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: BoxDecoration(
         color: isToday ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(12),
@@ -266,20 +287,11 @@ class _ForecastDayChip extends StatelessWidget {
         children: [
           Text(label, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
           Text(
-            '${day.date.month}/${day.date.day}',
-            style: TextStyle(fontSize: 9, color: AppTheme.mediumGray),
+            '${day.maxTempC.toStringAsFixed(0)}°/${day.minTempC.toStringAsFixed(0)}°',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
           ),
-          const SizedBox(height: 4),
-          Text(
-            '${day.maxTempC.toStringAsFixed(0)}°',
-            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
-          ),
-          Text(
-            '${day.minTempC.toStringAsFixed(0)}°',
-            style: TextStyle(fontSize: 10, color: AppTheme.mediumGray),
-          ),
-          if (popPct != null)
-            Text('$popPct%', style: const TextStyle(fontSize: 9, color: Color(0xFF2563EB), fontWeight: FontWeight.w700)),
         ],
       ),
     );

@@ -255,7 +255,17 @@ class _BudgetManagementPanelState extends ConsumerState<BudgetManagementPanel> {
                 ],
               );
             },
-            error: (error, stackTrace) => Center(child: Text(error.toString())),
+            error: (error, stackTrace) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text(
+                'Could not load budget records.\n${error.toString()}',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: AppTheme.errorRed,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ),
             loading: () => const Center(child: CircularProgressIndicator()),
           ),
         ],
@@ -440,10 +450,26 @@ class _BudgetManagementPanelState extends ConsumerState<BudgetManagementPanel> {
                                 updatedAt: DateTime.now(),
                               );
 
-                              await controller.saveBudget(payload);
-                              if (!mounted) return;
-                              Navigator.of(dialogContext).pop();
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              final messenger =
+                                  ScaffoldMessenger.of(context);
+                              final navigator = Navigator.of(dialogContext);
+                              try {
+                                await controller.saveBudget(payload);
+                              } catch (e) {
+                                if (!context.mounted) return;
+                                messenger.showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Could not save budget: $e',
+                                    ),
+                                    backgroundColor: AppTheme.errorRed,
+                                  ),
+                                );
+                                return;
+                              }
+                              if (!dialogContext.mounted) return;
+                              navigator.pop();
+                              messenger.showSnackBar(
                                 SnackBar(
                                   content: Text(
                                     budget == null

@@ -36,11 +36,18 @@ class NotificationsScreen extends StatelessWidget {
     Map<String, dynamic> data, {
     required bool isAdmin,
     required bool isCeo,
+    required bool isMaterials,
     String? uid,
   }) {
     if (isAdmin || isCeo) return true;
+    final audience = (data['audienceRole'] ?? '').toString();
+    final userId = (data['userId'] ?? '').toString();
+    if (isMaterials &&
+        (audience == AppConstants.roleMaterials || userId == 'materials')) {
+      return true;
+    }
     if (uid == null || uid.isEmpty) return false;
-    return (data['userId'] ?? '').toString() == uid;
+    return userId == uid;
   }
 
   IconData _iconForType(String type) {
@@ -72,12 +79,21 @@ class NotificationsScreen extends StatelessWidget {
     final isAdmin = user?.isAdmin == true;
     final isCeo = user?.role == AppConstants.roleCeo ||
         user?.role == 'ceo_head';
+    final isMaterials = user?.isMaterials == true;
 
-    final stream = uid == null
-        ? const Stream<QuerySnapshot>.empty()
-        : FirebaseService.instance.notificationsCollection
-            .limit(400)
-            .snapshots();
+    final Stream<QuerySnapshot> stream;
+    if (uid == null) {
+      stream = const Stream<QuerySnapshot>.empty();
+    } else if (isMaterials && !isAdmin) {
+      stream = FirebaseService.instance.notificationsCollection
+          .where('audienceRole', isEqualTo: AppConstants.roleMaterials)
+          .limit(400)
+          .snapshots();
+    } else {
+      stream = FirebaseService.instance.notificationsCollection
+          .limit(400)
+          .snapshots();
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -119,6 +135,7 @@ class NotificationsScreen extends StatelessWidget {
               data,
               isAdmin: isAdmin,
               isCeo: isCeo,
+              isMaterials: isMaterials,
               uid: uid,
             );
           }).toList()
@@ -127,6 +144,15 @@ class NotificationsScreen extends StatelessWidget {
                   <String, dynamic>{};
               final bd = (b.data() as Map?)?.cast<String, dynamic>() ??
                   <String, dynamic>{};
+              final aUrgent =
+                  (ad['priority'] ?? '').toString().toLowerCase() == 'urgent'
+                      ? 0
+                      : 1;
+              final bUrgent =
+                  (bd['priority'] ?? '').toString().toLowerCase() == 'urgent'
+                      ? 0
+                      : 1;
+              if (aUrgent != bUrgent) return aUrgent.compareTo(bUrgent);
               return _parseCreatedAt(bd['createdAt'])
                   .compareTo(_parseCreatedAt(ad['createdAt']));
             });
@@ -135,7 +161,9 @@ class NotificationsScreen extends StatelessWidget {
               child: Text(
                 isAdmin || isCeo
                     ? 'No site or mobile notifications yet.'
-                    : 'No notifications yet.',
+                    : isMaterials
+                        ? 'No purchase or material request notices yet.'
+                        : 'No notifications yet.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppTheme.mediumGray,
                     ),
@@ -158,6 +186,8 @@ class NotificationsScreen extends StatelessWidget {
               final projectName = (data['projectName'] ?? '').toString();
               final type = (data['type'] ?? '').toString();
               final when = _formatWhen(data['createdAt']);
+              final isUrgent =
+                  (data['priority'] ?? '').toString().toLowerCase() == 'urgent';
 
               return InkWell(
                 onTap: () async {
@@ -169,10 +199,16 @@ class NotificationsScreen extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: isRead ? Colors.white : const Color(0xFFF3F7FF),
+                    color: isUrgent
+                        ? const Color(0xFFFFF1F2)
+                        : isRead
+                            ? Colors.white
+                            : const Color(0xFFF3F7FF),
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
-                      color: Colors.black.withValues(alpha: 0.06),
+                      color: isUrgent
+                          ? AppTheme.errorRed.withValues(alpha: 0.35)
+                          : Colors.black.withValues(alpha: 0.06),
                     ),
                   ),
                   child: Row(
@@ -196,15 +232,43 @@ class NotificationsScreen extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              title,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .titleSmall
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    color: AppTheme.deepBlue,
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    title,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                          color: isUrgent
+                                              ? AppTheme.errorRed
+                                              : AppTheme.deepBlue,
+                                        ),
                                   ),
+                                ),
+                                if (isUrgent)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.errorRed
+                                          .withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      'URGENT',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelSmall
+                                          ?.copyWith(
+                                            color: AppTheme.errorRed,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                    ),
+                                  ),
+                              ],
                             ),
                             if (projectName.isNotEmpty) ...[
                               const SizedBox(height: 4),

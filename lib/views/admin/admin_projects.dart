@@ -335,6 +335,21 @@ class AdminProjects extends ConsumerStatefulWidget {
 
 class _AdminProjectsState extends ConsumerState<AdminProjects> {
   bool _showArchived = false;
+  /// Engineer group keys the admin has expanded (default: collapsed until tapped).
+  final Set<String> _expandedEngineers = <String>{};
+
+  String _engineerGroupKey(Map<String, dynamic> data) {
+    final id = (data['siteManagerId'] ?? '').toString().trim();
+    final name = (data['siteManagerName'] ?? '').toString().trim();
+    if (id.isNotEmpty) return 'id:$id';
+    if (name.isNotEmpty) return 'name:${name.toLowerCase()}';
+    return 'unassigned';
+  }
+
+  String _engineerGroupLabel(Map<String, dynamic> data) {
+    final name = (data['siteManagerName'] ?? '').toString().trim();
+    return name.isEmpty ? 'Unassigned' : name;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -367,7 +382,15 @@ class _AdminProjectsState extends ConsumerState<AdminProjects> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildRecordsTabBar(context),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
+            Text(
+              'Projects are grouped by Resident Engineer. Tap an engineer to show or hide their assigned projects.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 12),
             StreamBuilder<QuerySnapshot>(
               stream: projectsRef.snapshots(),
               builder: (context, snapshot) {
@@ -405,324 +428,154 @@ class _AdminProjectsState extends ConsumerState<AdminProjects> {
                   );
                 }
 
+                // Group projects under each Resident Engineer for easy multi-project view.
+                final groups = <String, List<QueryDocumentSnapshot>>{};
+                final labels = <String, String>{};
+                for (final doc in docs) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final key = _engineerGroupKey(data);
+                  groups.putIfAbsent(key, () => <QueryDocumentSnapshot>[]).add(doc);
+                  labels[key] = _engineerGroupLabel(data);
+                }
+                final sortedKeys = groups.keys.toList()
+                  ..sort((a, b) {
+                    if (a == 'unassigned') return 1;
+                    if (b == 'unassigned') return -1;
+                    return (labels[a] ?? a)
+                        .toLowerCase()
+                        .compareTo((labels[b] ?? b).toLowerCase());
+                  });
+                for (final key in sortedKeys) {
+                  groups[key]!.sort((a, b) {
+                    final an = ((a.data() as Map)['name'] ?? '').toString();
+                    final bn = ((b.data() as Map)['name'] ?? '').toString();
+                    return an.toLowerCase().compareTo(bn.toLowerCase());
+                  });
+                }
+
                 return ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: docs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemCount: sortedKeys.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 14),
                   itemBuilder: (context, index) {
-                    final doc = docs[index];
-                    final data = doc.data() as Map<String, dynamic>;
-                    final name =
-                        (data['name'] ?? 'Untitled Project').toString();
-                    final status = (data['status'] ?? 'unknown').toString();
-                    final progress =
-                        (data['progressPercentage'] ?? 0).toDouble();
-                    final projectId = doc.id;
-                    final String displayProjectId =
-                        (data['projectCode'] ?? projectId).toString();
-                    const String projectIdLabel = 'Project ID';
-                    final siteManagerName =
-                        (data['siteManagerName'] ?? '').toString();
-                    final location = (data['location'] ?? '').toString();
-                    final isArchivedView = _showArchived;
-                    final archivedOn = isArchivedView
-                        ? ArchiveService.formatArchivedAt(data)
-                        : null;
-                    final archivedBy =
-                        (data[ArchiveService.fieldArchivedByEmail] ?? '')
-                            .toString();
-
-                    final normalizedStatus = status.toLowerCase();
-                    final String formattedStatus = isArchivedView
-                        ? 'Archived'
-                        : (status.isEmpty
-                            ? '—'
-                            : status[0].toUpperCase() + status.substring(1));
-                    final Color statusColor = isArchivedView
-                        ? AppTheme.mediumGray
-                        : normalizedStatus == 'ongoing'
-                            ? AppTheme.softGreen
-                            : normalizedStatus == 'completed'
-                                ? AppTheme.primaryBlue
-                                : normalizedStatus == 'pending'
-                                    ? AppTheme.warningOrange
-                                    : AppTheme.mediumGray;
-
-                    String siteManagerLabel;
-                    if (siteManagerName.isEmpty) {
-                      siteManagerLabel = 'Unassigned';
-                    } else {
-                      siteManagerLabel = siteManagerName;
-                    }
+                    final key = sortedKeys[index];
+                    final engineerDocs = groups[key]!;
+                    final label = labels[key] ?? 'Unassigned';
+                    final expanded = _expandedEngineers.contains(key);
+                    final count = engineerDocs.length;
 
                     return GlassCard(
                       borderRadius: 16,
-                      padding: const EdgeInsets.all(14),
+                      padding: const EdgeInsets.all(12),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                width: 32,
-                                height: 32,
-                                decoration: BoxDecoration(
-                                  color:
-                                      AppTheme.deepBlue.withValues(alpha: 0.08),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  Icons.business,
-                                  size: 18,
-                                  color: AppTheme.deepBlue,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      name,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.center,
-                                      children: [
-                                        Expanded(
-                                          child: Text(
-                                            '$projectIdLabel: $displayProjectId',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color: AppTheme.mediumGray,
-                                                ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        if (location.isNotEmpty) ...[
-                                          const SizedBox(width: 12),
-                                          Expanded(
-                                            child: Text(
-                                              location,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall
-                                                  ?.copyWith(
-                                                    color: AppTheme.mediumGray,
-                                                  ),
-                                              overflow: TextOverflow.ellipsis,
-                                              textAlign: TextAlign.right,
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: statusColor.withValues(alpha: 0.22),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Text(
-                                  formattedStatus,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: statusColor,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  isArchivedView
-                                      ? 'Archived on $archivedOn${archivedBy.isNotEmpty ? ' · $archivedBy' : ''}'
-                                      : 'Resident Engineer: $siteManagerLabel',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: AppTheme.mediumGray,
-                                      ),
-                                ),
-                              ),
-                              if (!isArchivedView) ...[
-                                const SizedBox(width: 12),
-                                Text(
-                                  '${progress.toStringAsFixed(0)}% complete',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: Colors.black
-                                            .withValues(alpha: 0.75),
-                                      ),
-                                ),
-                              ],
-                            ],
-                          ),
-                          if (!isArchivedView) ...[
-                            const SizedBox(height: 8),
-                            LinearProgressIndicator(
-                              value: (progress.clamp(0, 100)) / 100,
-                              backgroundColor:
-                                  Colors.black.withValues(alpha: 0.06),
-                              color: const Color(0xFF2DD4BF),
-                            ),
-                          ],
-                          const SizedBox(height: 14),
-                          const Divider(height: 1),
-                          const SizedBox(height: 12),
-                          LayoutBuilder(
-                            builder: (context, constraints) {
-                              final narrow = constraints.maxWidth < 520;
-                              final secondaryActions = [
-                                if (!isArchivedView)
-                                  _ProjectActionButton(
-                                    label: 'Materials',
-                                    icon: Icons.inventory_2_outlined,
-                                    variant: _ProjectActionVariant.neutral,
-                                    onPressed: () {
-                                      final qp = <String, String>{
-                                        'projectId': projectId,
-                                        if (name.trim().isNotEmpty)
-                                          'projectName': name,
-                                      };
-                                      context.push(
-                                        Uri(
-                                          path: RouteNames
-                                              .adminMaterialMonitoring,
-                                          queryParameters: qp,
-                                        ).toString(),
-                                      );
-                                    },
-                                  ),
-                                _ProjectActionButton(
-                                  label: 'View',
-                                  icon: Icons.visibility_outlined,
-                                  variant: _ProjectActionVariant.neutral,
-                                  onPressed: () {
-                                    _openProjectDetails(
-                                      context,
-                                      projectId,
-                                      projectIdLabel,
-                                      name,
-                                      status,
-                                      progress,
-                                      location,
-                                      siteManagerLabel,
-                                      data,
-                                    );
-                                  },
-                                ),
-                              ];
-                              final crudActions = isArchivedView
-                                  ? [
-                                      _ProjectActionButton(
-                                        label: 'Restore',
-                                        icon: Icons.unarchive_outlined,
-                                        variant: _ProjectActionVariant.restore,
-                                        onPressed: () {
-                                          _confirmRestoreProject(
-                                            context,
-                                            projectId: projectId,
-                                            projectName: name,
-                                          );
-                                        },
-                                      ),
-                                    ]
-                                  : [
-                                      _ProjectActionButton(
-                                        label: 'Edit',
-                                        icon: Icons.edit_outlined,
-                                        variant: _ProjectActionVariant.edit,
-                                        onPressed: () {
-                                          _showEditProjectDialog(
-                                            context,
-                                            projectId,
-                                            data,
-                                          );
-                                        },
-                                      ),
-                                      _ProjectActionButton(
-                                        label: 'Archive',
-                                        icon: Icons.archive_outlined,
-                                        variant: _ProjectActionVariant.delete,
-                                        onPressed: () {
-                                          _confirmAndArchiveProject(
-                                            context,
-                                            projectId: projectId,
-                                            projectName: name,
-                                            siteManagerId:
-                                                (data['siteManagerId'] ?? '')
-                                                    .toString(),
-                                            previousStatus: status,
-                                          );
-                                        },
-                                      ),
-                                    ];
-
-                              if (narrow) {
-                                return Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    Wrap(
-                                      spacing: 8,
-                                      runSpacing: 8,
-                                      alignment: WrapAlignment.end,
-                                      children: [
-                                        ...secondaryActions,
-                                        ...crudActions
-                                      ],
-                                    ),
-                                  ],
-                                );
-                              }
-
-                              return Row(
+                          InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () {
+                              setState(() {
+                                if (expanded) {
+                                  _expandedEngineers.remove(key);
+                                } else {
+                                  _expandedEngineers.add(key);
+                                }
+                              });
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 4, vertical: 6),
+                              child: Row(
                                 children: [
-                                  ...secondaryActions.map(
-                                    (w) => Padding(
-                                      padding: const EdgeInsets.only(right: 8),
-                                      child: w,
+                                  Container(
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color: key == 'unassigned'
+                                          ? AppTheme.mediumGray
+                                              .withValues(alpha: 0.12)
+                                          : AppTheme.deepBlue
+                                              .withValues(alpha: 0.10),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(
+                                      key == 'unassigned'
+                                          ? Icons.person_off_outlined
+                                          : Icons.engineering_outlined,
+                                      color: key == 'unassigned'
+                                          ? AppTheme.mediumGray
+                                          : AppTheme.deepBlue,
                                     ),
                                   ),
-                                  const Spacer(),
-                                  ...crudActions.map(
-                                    (w) => Padding(
-                                      padding: const EdgeInsets.only(left: 8),
-                                      child: w,
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          label,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          count == 1
+                                              ? '1 project assigned'
+                                              : '$count projects assigned',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: AppTheme.mediumGray,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                        ),
+                                      ],
                                     ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2DD4BF)
+                                          .withValues(alpha: 0.16),
+                                      borderRadius: BorderRadius.circular(999),
+                                    ),
+                                    child: Text(
+                                      '$count',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        color: Color(0xFF0F766E),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Icon(
+                                    expanded
+                                        ? Icons.expand_less
+                                        : Icons.expand_more,
+                                    color: AppTheme.mediumGray,
                                   ),
                                 ],
-                              );
-                            },
+                              ),
+                            ),
                           ),
+                          if (expanded) ...[
+                            const SizedBox(height: 8),
+                            const Divider(height: 1),
+                            const SizedBox(height: 10),
+                            ...engineerDocs.map((doc) {
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: _buildProjectCard(context, doc),
+                              );
+                            }),
+                          ],
                         ],
                       ),
                     );
@@ -732,6 +585,325 @@ class _AdminProjectsState extends ConsumerState<AdminProjects> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildProjectCard(BuildContext context, QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final name =
+        (data['name'] ?? 'Untitled Project').toString();
+    final status = (data['status'] ?? 'unknown').toString();
+    final progress =
+        (data['progressPercentage'] ?? 0).toDouble();
+    final projectId = doc.id;
+    final String displayProjectId =
+        (data['projectCode'] ?? projectId).toString();
+    const String projectIdLabel = 'Project ID';
+    final siteManagerName =
+        (data['siteManagerName'] ?? '').toString();
+    final location = (data['location'] ?? '').toString();
+    final isArchivedView = _showArchived;
+    final archivedOn = isArchivedView
+        ? ArchiveService.formatArchivedAt(data)
+        : null;
+    final archivedBy =
+        (data[ArchiveService.fieldArchivedByEmail] ?? '')
+            .toString();
+
+    final normalizedStatus = status.toLowerCase();
+    final String formattedStatus = isArchivedView
+        ? 'Archived'
+        : (status.isEmpty
+            ? '—'
+            : status[0].toUpperCase() + status.substring(1));
+    final Color statusColor = isArchivedView
+        ? AppTheme.mediumGray
+        : normalizedStatus == 'ongoing'
+            ? AppTheme.softGreen
+            : normalizedStatus == 'completed'
+                ? AppTheme.primaryBlue
+                : normalizedStatus == 'pending'
+                    ? AppTheme.warningOrange
+                    : AppTheme.mediumGray;
+
+    String siteManagerLabel;
+    if (siteManagerName.isEmpty) {
+      siteManagerLabel = 'Unassigned';
+    } else {
+      siteManagerLabel = siteManagerName;
+    }
+
+    return GlassCard(
+      borderRadius: 16,
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color:
+                      AppTheme.deepBlue.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  Icons.business,
+                  size: 18,
+                  color: AppTheme.deepBlue,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      crossAxisAlignment:
+                          CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '$projectIdLabel: $displayProjectId',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: AppTheme.mediumGray,
+                                ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (location.isNotEmpty) ...[
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              location,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.mediumGray,
+                                  ),
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.right,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  formattedStatus,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(
+                        color: statusColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  isArchivedView
+                      ? 'Archived on $archivedOn${archivedBy.isNotEmpty ? ' · $archivedBy' : ''}'
+                      : (location.isNotEmpty
+                          ? location
+                          : 'Project under $siteManagerLabel'),
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              ),
+              if (!isArchivedView) ...[
+                const SizedBox(width: 12),
+                Text(
+                  '${progress.toStringAsFixed(0)}% complete',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(
+                        color: Colors.black
+                            .withValues(alpha: 0.75),
+                      ),
+                ),
+              ],
+            ],
+          ),
+          if (!isArchivedView) ...[
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: (progress.clamp(0, 100)) / 100,
+              backgroundColor:
+                  Colors.black.withValues(alpha: 0.06),
+              color: const Color(0xFF2DD4BF),
+            ),
+          ],
+          const SizedBox(height: 14),
+          const Divider(height: 1),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final narrow = constraints.maxWidth < 520;
+              final secondaryActions = [
+                if (!isArchivedView)
+                  _ProjectActionButton(
+                    label: 'Materials',
+                    icon: Icons.inventory_2_outlined,
+                    variant: _ProjectActionVariant.neutral,
+                    onPressed: () {
+                      final qp = <String, String>{
+                        'projectId': projectId,
+                        if (name.trim().isNotEmpty)
+                          'projectName': name,
+                      };
+                      context.push(
+                        Uri(
+                          path: RouteNames
+                              .adminMaterialMonitoring,
+                          queryParameters: qp,
+                        ).toString(),
+                      );
+                    },
+                  ),
+                _ProjectActionButton(
+                  label: 'View',
+                  icon: Icons.visibility_outlined,
+                  variant: _ProjectActionVariant.neutral,
+                  onPressed: () {
+                    _openProjectDetails(
+                      context,
+                      projectId,
+                      projectIdLabel,
+                      name,
+                      status,
+                      progress,
+                      location,
+                      siteManagerLabel,
+                      data,
+                    );
+                  },
+                ),
+              ];
+              final crudActions = isArchivedView
+                  ? [
+                      _ProjectActionButton(
+                        label: 'Restore',
+                        icon: Icons.unarchive_outlined,
+                        variant: _ProjectActionVariant.restore,
+                        onPressed: () {
+                          _confirmRestoreProject(
+                            context,
+                            projectId: projectId,
+                            projectName: name,
+                          );
+                        },
+                      ),
+                    ]
+                  : [
+                      _ProjectActionButton(
+                        label: 'Edit',
+                        icon: Icons.edit_outlined,
+                        variant: _ProjectActionVariant.edit,
+                        onPressed: () {
+                          _showEditProjectDialog(
+                            context,
+                            projectId,
+                            data,
+                          );
+                        },
+                      ),
+                      _ProjectActionButton(
+                        label: 'Archive',
+                        icon: Icons.archive_outlined,
+                        variant: _ProjectActionVariant.delete,
+                        onPressed: () {
+                          _confirmAndArchiveProject(
+                            context,
+                            projectId: projectId,
+                            projectName: name,
+                            siteManagerId:
+                                (data['siteManagerId'] ?? '')
+                                    .toString(),
+                            previousStatus: status,
+                          );
+                        },
+                      ),
+                    ];
+
+              if (narrow) {
+                return Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.stretch,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.end,
+                      children: [
+                        ...secondaryActions,
+                        ...crudActions
+                      ],
+                    ),
+                  ],
+                );
+              }
+
+              return Row(
+                children: [
+                  ...secondaryActions.map(
+                    (w) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: w,
+                    ),
+                  ),
+                  const Spacer(),
+                  ...crudActions.map(
+                    (w) => Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: w,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
       ),
     );
   }

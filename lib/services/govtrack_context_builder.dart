@@ -54,9 +54,7 @@ class GovtrackContextBuilder {
       // Fallback: Hive local inventory filtered by project
       materials = hive
           .getAllMaterialInventory()
-          .where((m) =>
-              (m['projectId'] ?? '').toString() == projectId ||
-              projectId.isEmpty)
+          .where((m) => (m['projectId'] ?? '').toString() == projectId)
           .take(40)
           .toList();
     }
@@ -77,9 +75,7 @@ class GovtrackContextBuilder {
     } catch (_) {
       materialUsage = hive
           .getAllMaterialUsage()
-          .where((m) =>
-              (m['projectId'] ?? '').toString() == projectId ||
-              projectId.isEmpty)
+          .where((m) => (m['projectId'] ?? '').toString() == projectId)
           .take(20)
           .toList();
     }
@@ -99,9 +95,7 @@ class GovtrackContextBuilder {
     } catch (_) {
       materialRequests = hive
           .getAllMaterialRequests()
-          .where((r) =>
-              (r['projectId'] ?? '').toString() == projectId ||
-              projectId.isEmpty)
+          .where((r) => (r['projectId'] ?? '').toString() == projectId)
           .take(15)
           .toList();
     }
@@ -121,9 +115,7 @@ class GovtrackContextBuilder {
     } catch (_) {
       deliveries = hive
           .getAllDeliveries()
-          .where((d) =>
-              (d['projectId'] ?? '').toString() == projectId ||
-              projectId.isEmpty)
+          .where((d) => (d['projectId'] ?? '').toString() == projectId)
           .take(15)
           .toList();
     }

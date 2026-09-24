@@ -79,6 +79,32 @@ class LocalNotificationService {
     );
   }
 
+  Future<void> showMaterialRequestAlert({
+    required int id,
+    required String title,
+    required String body,
+  }) async {
+    await initialize();
+
+    const android = AndroidNotificationDetails(
+      'material_requests',
+      'Material Requests',
+      channelDescription: 'Popup alerts when a resident engineer requests materials',
+      importance: Importance.max,
+      priority: Priority.max,
+      playSound: true,
+    );
+
+    const ios = DarwinNotificationDetails(
+      presentAlert: true,
+      presentSound: true,
+      presentBadge: true,
+    );
+
+    const details = NotificationDetails(android: android, iOS: ios);
+    await _plugin.show(id, title, body, details);
+  }
+
   Future<void> showNotification({
     required int id,
     required String title,

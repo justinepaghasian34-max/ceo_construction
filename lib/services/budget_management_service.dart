@@ -50,6 +50,7 @@ class BudgetManagementController extends ChangeNotifier {
       );
     } catch (e) {
       _error = e.toString();
+      rethrow;
     } finally {
       _isBusy = false;
       notifyListeners();
@@ -198,12 +199,16 @@ class BudgetManagementController extends ChangeNotifier {
     required String title,
     required String detail,
   }) async {
-    await _firebaseService.activityLogsCollection.add({
-      'title': title,
-      'detail': detail,
-      'createdAt': FieldValue.serverTimestamp(),
-      'type': 'finance',
-    });
+    try {
+      await _firebaseService.activityLogsCollection.add({
+        'title': title,
+        'detail': detail,
+        'createdAt': FieldValue.serverTimestamp(),
+        'type': 'finance',
+      });
+    } catch (_) {
+      // Budget save should succeed even if activity logging is unavailable.
+    }
   }
 
   Future<DocumentSnapshot?> _findBudgetForProjectAndCategory({

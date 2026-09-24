@@ -3,12 +3,12 @@ service firebase.storage {
   match /b/{bucket}/o {
     // AI verification uploads (used by Analyze Progress)
     match /ai_verifications/{allPaths=**} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
       );
-      allow write: if request.auth != null && (
+      allow write: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
@@ -17,12 +17,12 @@ service firebase.storage {
 
     // GovTrack AI chat attachments
     match /govtrack_chat_attachments/{allPaths=**} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
       );
-      allow write: if request.auth != null && (
+      allow write: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
@@ -31,12 +31,12 @@ service firebase.storage {
 
     // Progress reports uploads
     match /progress_reports/{allPaths=**} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
       );
-      allow write: if request.auth != null && (
+      allow write: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager()
@@ -45,63 +45,94 @@ service firebase.storage {
 
     // Project files - organized by project ID
     match /projects/{projectId}/{allPaths=**} {
-      allow read: if request.auth != null && (
-        isAdmin() || 
-        isCeoHead() || 
+      allow read: if isOtpVerified() && (
+        isAdmin() ||
+        isCeoHead() ||
         hasProjectAccess(projectId)
       );
-      allow write: if request.auth != null && (
-        isAdmin() || 
+      allow write: if isOtpVerified() && (
+        isAdmin() ||
         (isSiteManager() && hasProjectAccess(projectId))
       ) && isValidFileUpload();
     }
-    
-    // User profile images
+
+    // User profile images — own path only (OTP not required to upload avatar during onboarding)
     match /users/{userId}/profile/{fileName} {
-      allow read, write: if request.auth != null && request.auth.uid == userId
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if request.auth != null && request.auth.uid == userId
         && isValidImageUpload();
     }
-    
-    // Daily report attachments
+
+    // Daily report attachments — role-gated (no any-auth read)
     match /daily_reports/{reportId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isSiteManager()
+      allow read: if isOtpVerified() && (
+        isAdmin() || isCeoHead() || isSiteManager() || isMaterials() || isPayroll()
+      );
+      allow write: if isOtpVerified() && isSiteManager()
         && isValidFileUpload();
     }
-    
-    // Material delivery receipts
+
+    // Material delivery receipts — role-gated (no any-auth read)
     match /deliveries/{deliveryId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isSiteManager()
+      allow read: if isOtpVerified() && (
+        isAdmin() || isCeoHead() || isMaterials() || isSiteManager()
+      );
+      allow write: if isOtpVerified() && (isSiteManager() || isMaterials())
         && isValidFileUpload();
     }
-    
-    // Helper functions
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Prefer JWT custom claim; fall back to Firestore role only if claim missing.
+    function getUserRole() {
+      let claimRole = request.auth.token.role is string ? request.auth.token.role : '';
+      let docRole = firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role
+        : '';
+      return claimRole != ''
+        ? claimRole
+        : (docRole is string ? docRole : '');
+    }
+
+    function isOtpVerified() {
+      return isSignedIn() &&
+        firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.otpVerified == true;
+    }
+
     function isAdmin() {
       return getUserRole() in ['admin', 'Admin', 'ADMIN'];
     }
-    
+
     function isSiteManager() {
-      return getUserRole() in ['site_manager', 'Site_Manager', 'Site manager', 'site manager', 'SITE_MANAGER'];
+      return getUserRole() in [
+        'site_manager', 'Site_Manager', 'Site manager', 'site manager', 'SITE_MANAGER',
+        'resident_engineer', 'Resident_Engineer', 'RESIDENT_ENGINEER'
+      ];
     }
-    
+
     function isCeoHead() {
       return getUserRole() in ['ceo_head', 'Ceo_Head', 'CEO_HEAD', 'CEO head', 'ceo head'];
     }
-    
-    function getUserRole() {
-      return firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
-        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role
-        : '';
+
+    function isMaterials() {
+      return getUserRole() in ['materials', 'Materials', 'MATERIALS', 'material_monitoring'];
     }
-    
+
+    function isPayroll() {
+      return getUserRole() in ['payroll', 'Payroll', 'PAYROLL', 'payroll_monitoring'];
+    }
+
     function hasProjectAccess(projectId) {
-      let userData = firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
-      return projectId in userData.assignedProjects;
+      return firestore.exists(/databases/(default)/documents/users/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.assignedProjects is list &&
+        projectId in firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.assignedProjects;
     }
-    
+
     function isValidFileUpload() {
-      return request.resource.size < 10 * 1024 * 1024 // 10MB limit
+      return request.resource.size < 10 * 1024 * 1024
         && (
           request.resource.contentType.matches('image/.*') ||
           request.resource.contentType.matches('application/pdf') ||
@@ -109,9 +140,9 @@ service firebase.storage {
           request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
         );
     }
-    
+
     function isValidImageUpload() {
-      return request.resource.size < 5 * 1024 * 1024 // 5MB limit for images
+      return request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
     }
   }

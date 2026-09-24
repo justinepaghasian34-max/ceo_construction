@@ -161,10 +161,6 @@ class _FingerprintAttendanceScreenState
 
   DateTime _normalizeDate(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  DateTime _atTime(DateTime day, int hour, int minute) {
-    return DateTime(day.year, day.month, day.day, hour, minute);
-  }
-
   double _hoursBetween(DateTime start, DateTime end) {
     if (end.isBefore(start)) return 0.0;
     return end.difference(start).inMinutes / 60.0;
@@ -232,19 +228,25 @@ class _FingerprintAttendanceScreenState
 
     record.isPresent = true;
     final day = _normalizeDate(timeIn);
-    final amIn = _atTime(day, 7, 0);
-    final amOut = _atTime(day, 11, 30);
-    final pmIn = _atTime(day, 13, 0);
-    final pmOut = _atTime(day, 16, 30);
 
-    record.amTimeIn = amIn;
-    record.amTimeOut = amOut;
-    record.pmTimeIn = pmIn;
-    record.pmTimeOut = pmOut;
+    // Stamp the real scan time — do not invent a fixed 7:00–16:30 schedule.
+    if (timeIn.hour < 12) {
+      record.amTimeIn = timeIn;
+      record.timeIn = timeIn;
+    } else {
+      record.pmTimeIn = timeIn;
+      record.timeIn ??= timeIn;
+    }
+    record.remarks = 'fingerprint_realtime';
 
-    record.timeIn = amIn;
-    record.timeOut = pmOut;
-    record.hoursWorked = _hoursBetween(amIn, amOut) + _hoursBetween(pmIn, pmOut);
+    double hours = 0;
+    if (record.amTimeIn != null && record.amTimeOut != null) {
+      hours += _hoursBetween(record.amTimeIn!, record.amTimeOut!);
+    }
+    if (record.pmTimeIn != null && record.pmTimeOut != null) {
+      hours += _hoursBetween(record.pmTimeIn!, record.pmTimeOut!);
+    }
+    record.hoursWorked = hours;
 
     _setWeekdayPresence(record, day);
     activeAttendance.updatedAt = DateTime.now();

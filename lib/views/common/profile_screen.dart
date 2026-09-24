@@ -884,6 +884,9 @@ class _ChangePasswordCardState extends State<_ChangePasswordCard> {
               TextFormField(
                 controller: _current,
                 obscureText: _obscure,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.password],
                 decoration: const InputDecoration(labelText: 'Current password'),
                 validator: (v) =>
                     (v == null || v.isEmpty) ? 'Enter your current password' : null,
@@ -892,6 +895,9 @@ class _ChangePasswordCardState extends State<_ChangePasswordCard> {
               TextFormField(
                 controller: _next,
                 obscureText: _obscure,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.newPassword],
                 decoration: InputDecoration(
                   labelText: 'New password',
                   suffixIcon: IconButton(
@@ -905,6 +911,9 @@ class _ChangePasswordCardState extends State<_ChangePasswordCard> {
               TextFormField(
                 controller: _confirm,
                 obscureText: _obscure,
+                enableSuggestions: false,
+                autocorrect: false,
+                autofillHints: const [AutofillHints.newPassword],
                 decoration: const InputDecoration(labelText: 'Confirm new password'),
                 validator: (v) {
                   if (v != _next.text) return 'Passwords do not match';

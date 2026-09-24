@@ -83,7 +83,10 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
 
   String _fmtTime(DateTime? t) {
     if (t == null) return '--:--';
-    return TimeOfDay.fromDateTime(t).format(context);
+    final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final m = t.minute.toString().padLeft(2, '0');
+    final ap = t.hour >= 12 ? 'PM' : 'AM';
+    return '$h:$m $ap';
   }
 
   static double _slotHours(DateTime? s, DateTime? e) {
@@ -197,67 +200,95 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     await _syncDate();
   }
 
+  /// Real clock time for the selected attendance day (no manual time picker).
+  DateTime _liveStamp([DateTime? day]) {
+    final now = DateTime.now();
+    final d = _norm(day ?? _selectedDate);
+    if (_sameDay(d, now)) return now;
+    return DateTime(d.year, d.month, d.day, now.hour, now.minute, now.second);
+  }
+
+  void _applySlot(AttendanceRecord rec, String slot, DateTime dt) {
+    switch (slot) {
+      case 'amIn':
+        rec.amTimeIn = dt;
+        rec.timeIn = dt;
+        rec.isPresent = true;
+      case 'amOut':
+        rec.amTimeOut = dt;
+      case 'pmIn':
+        rec.pmTimeIn = dt;
+        rec.timeIn ??= dt;
+        rec.isPresent = true;
+      case 'pmOut':
+        rec.pmTimeOut = dt;
+        rec.timeOut = dt;
+        rec.isPresent = true;
+    }
+    rec.hoursWorked = _calcHours(rec);
+  }
+
   Future<void> _pickAmPm(
       AttendanceModel att, AttendanceRecord rec, String slot) async {
-    final defaults = {
-      'amIn': const TimeOfDay(hour: 8, minute: 0),
-      'amOut': const TimeOfDay(hour: 12, minute: 0),
-      'pmIn': const TimeOfDay(hour: 13, minute: 0),
-      'pmOut': const TimeOfDay(hour: 17, minute: 0),
-    };
-    final cur = switch (slot) {
-      'amIn'  => rec.amTimeIn,
-      'amOut' => rec.amTimeOut,
-      'pmIn'  => rec.pmTimeIn,
-      _       => rec.pmTimeOut,
-    };
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: cur != null
-          ? TimeOfDay.fromDateTime(cur)
-          : defaults[slot]!,
-    );
-    if (picked == null || !mounted) return;
-    final d = _norm(_selectedDate);
-    final dt = DateTime(d.year, d.month, d.day, picked.hour, picked.minute);
-      setState(() {
-      switch (slot) {
-        case 'amIn':
-          rec.amTimeIn = dt; rec.timeIn = dt; rec.isPresent = true;
-        case 'amOut':
-          rec.amTimeOut = dt;
-        case 'pmIn':
-          rec.pmTimeIn = dt;
-        case 'pmOut':
-          rec.pmTimeOut = dt; rec.timeOut = dt; rec.isPresent = true;
-      }
-      rec.hoursWorked = _calcHours(rec);
-    });
+    final dt = _liveStamp();
+    setState(() => _applySlot(rec, slot, dt));
     att.updatedAt = DateTime.now();
     await HiveService.instance.saveAttendance(att);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Logged ${slot.toUpperCase()} at ${_fmtTime(dt)}'),
+      duration: const Duration(seconds: 2),
+      backgroundColor: AppTheme.softGreen,
+    ));
   }
 
   Future<void> _markPresent(AttendanceModel att, AttendanceRecord rec) async {
-    final now = DateTime.now();
-    final d = _norm(_selectedDate);
+    final now = _liveStamp();
     rec.isPresent = true;
-    rec.timeIn ??= _sameDay(_selectedDate, now)
-        ? now
-        : DateTime(d.year, d.month, d.day, 8, 0);
     rec.remarks = 'manual_present';
+    // Always stamp the real clock (AM before noon, else PM).
+    if (now.hour < 12) {
+      rec.amTimeIn = now;
+      rec.timeIn = now;
+    } else {
+      rec.pmTimeIn = now;
+      rec.timeIn = now;
+    }
+    rec.hoursWorked = _calcHours(rec);
     att.updatedAt = DateTime.now();
     await HiveService.instance.saveAttendance(att);
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Present at ${_fmtTime(now)}'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: AppTheme.softGreen,
+      ));
+    }
   }
 
   Future<void> _markLate(AttendanceModel att, AttendanceRecord rec) async {
-    final d = _norm(_selectedDate);
+    final now = _liveStamp();
     rec.isPresent = true;
-    rec.timeIn = DateTime(d.year, d.month, d.day, 8, 30);
     rec.remarks = 'late_marked';
+    if (now.hour < 12) {
+      rec.amTimeIn = now;
+      rec.timeIn = now;
+    } else {
+      rec.pmTimeIn = now;
+      rec.timeIn = now;
+    }
+    rec.hoursWorked = _calcHours(rec);
     att.updatedAt = DateTime.now();
     await HiveService.instance.saveAttendance(att);
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Late at ${_fmtTime(now)}'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: const Color(0xFFF97316),
+      ));
+    }
   }
 
   Future<void> _markAbsent(AttendanceModel att, AttendanceRecord rec) async {
@@ -343,44 +374,8 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
       String slot,
       DateTime date,
       ) async {
-    final defaults = {
-      'amIn': const TimeOfDay(hour: 8, minute: 0),
-      'amOut': const TimeOfDay(hour: 12, minute: 0),
-      'pmIn': const TimeOfDay(hour: 13, minute: 0),
-      'pmOut': const TimeOfDay(hour: 17, minute: 0),
-    };
-    final cur = switch (slot) {
-      'amIn'  => rec.amTimeIn,
-      'amOut' => rec.amTimeOut,
-      'pmIn'  => rec.pmTimeIn,
-      _       => rec.pmTimeOut,
-    };
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: cur != null
-          ? TimeOfDay.fromDateTime(cur)
-          : defaults[slot]!,
-    );
-    if (picked == null || !mounted) return;
-    final d = DateTime(date.year, date.month, date.day);
-    final dt = DateTime(d.year, d.month, d.day, picked.hour, picked.minute);
-    setState(() {
-      switch (slot) {
-        case 'amIn':
-          rec.amTimeIn = dt;
-          rec.timeIn ??= dt;
-          rec.isPresent = true;
-        case 'amOut':
-          rec.amTimeOut = dt;
-        case 'pmIn':
-          rec.pmTimeIn = dt;
-        case 'pmOut':
-          rec.pmTimeOut = dt;
-          rec.timeOut = dt;
-          rec.isPresent = true;
-      }
-      rec.hoursWorked = _calcHours(rec);
-    });
+    final dt = _liveStamp(date);
+    setState(() => _applySlot(rec, slot, dt));
     att.updatedAt = DateTime.now();
     await HiveService.instance.saveAttendance(att);
   }
@@ -391,38 +386,49 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     DateTime day,
     String status,
   ) async {
+    final stamp = _liveStamp(day);
     switch (status) {
       case 'present':
         rec.isPresent = true;
         rec.remarks = 'manual_present';
-        rec.timeIn ??= DateTime(day.year, day.month, day.day, 8, 0);
-        rec.timeOut ??= DateTime(day.year, day.month, day.day, 17, 0);
+        if (stamp.hour < 12) {
+          rec.amTimeIn = stamp;
+          rec.timeIn = stamp;
+        } else {
+          rec.pmTimeIn = stamp;
+          rec.timeIn = stamp;
+        }
         break;
       case 'late':
         rec.isPresent = true;
         rec.remarks = 'late_marked';
-        rec.timeIn = DateTime(day.year, day.month, day.day, 8, 30);
-        rec.timeOut = DateTime(day.year, day.month, day.day, 17, 0);
+        if (stamp.hour < 12) {
+          rec.amTimeIn = stamp;
+          rec.timeIn = stamp;
+        } else {
+          rec.pmTimeIn = stamp;
+          rec.timeIn = stamp;
+        }
         break;
       case 'halfDayAm':
         rec.isPresent = true;
         rec.remarks = 'half_day_am';
-        rec.amTimeIn = DateTime(day.year, day.month, day.day, 8, 0);
-        rec.amTimeOut = DateTime(day.year, day.month, day.day, 12, 0);
+        rec.amTimeIn = stamp;
+        rec.amTimeOut = null;
         rec.pmTimeIn = null;
         rec.pmTimeOut = null;
         rec.timeIn = rec.amTimeIn;
-        rec.timeOut = rec.amTimeOut;
+        rec.timeOut = null;
         break;
       case 'halfDayPm':
         rec.isPresent = true;
         rec.remarks = 'half_day_pm';
         rec.amTimeIn = null;
         rec.amTimeOut = null;
-        rec.pmTimeIn = DateTime(day.year, day.month, day.day, 13, 0);
-        rec.pmTimeOut = DateTime(day.year, day.month, day.day, 17, 0);
+        rec.pmTimeIn = stamp;
+        rec.pmTimeOut = null;
         rec.timeIn = rec.pmTimeIn;
-        rec.timeOut = rec.pmTimeOut;
+        rec.timeOut = null;
         break;
       case 'absent':
         default:
@@ -488,7 +494,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
                     ),
                     const SizedBox(height: 8),
                         Text(
-                      'Set attendance status for this day and adjust times.',
+                      'Times are stamped from the real clock when you mark attendance.',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppTheme.mediumGray),
                     ),
                   ],
@@ -497,22 +503,22 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
               const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.check_circle_outline),
-                title: const Text('Present'),
+                title: const Text('Present (now)'),
                 onTap: () => Navigator.of(context).pop('present'),
               ),
               ListTile(
                 leading: const Icon(Icons.schedule),
-                title: const Text('Late'),
+                title: const Text('Late (now)'),
                 onTap: () => Navigator.of(context).pop('late'),
               ),
               ListTile(
                 leading: const Icon(Icons.sunny),
-                title: const Text('Half day AM'),
+                title: const Text('Half day AM (now)'),
                 onTap: () => Navigator.of(context).pop('halfDayAm'),
               ),
               ListTile(
                 leading: const Icon(Icons.sunny),
-                title: const Text('Half day PM'),
+                title: const Text('Half day PM (now)'),
                 onTap: () => Navigator.of(context).pop('halfDayPm'),
               ),
               ListTile(
@@ -521,9 +527,24 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
                 onTap: () => Navigator.of(context).pop('absent'),
               ),
               ListTile(
-                leading: const Icon(Icons.access_time),
-                title: const Text('Edit time slots'),
-                onTap: () => Navigator.of(context).pop('editTime'),
+                leading: const Icon(Icons.login),
+                title: const Text('Clock AM In now'),
+                onTap: () => Navigator.of(context).pop('amIn'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Clock AM Out now'),
+                onTap: () => Navigator.of(context).pop('amOut'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.login),
+                title: const Text('Clock PM In now'),
+                onTap: () => Navigator.of(context).pop('pmIn'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Clock PM Out now'),
+                onTap: () => Navigator.of(context).pop('pmOut'),
               ),
             ],
           ),
@@ -532,11 +553,11 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     );
 
     if (action == null || !mounted) return;
-    if (action == 'editTime') {
-      await _pickDayTime(att, rec, 'amIn', date);
-      await _pickDayTime(att, rec, 'amOut', date);
-      await _pickDayTime(att, rec, 'pmIn', date);
-      await _pickDayTime(att, rec, 'pmOut', date);
+    if (action == 'amIn' ||
+        action == 'amOut' ||
+        action == 'pmIn' ||
+        action == 'pmOut') {
+      await _pickDayTime(att, rec, action, date);
       return;
     }
 
@@ -771,8 +792,10 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
           const SizedBox(height: 16),
 
           // ── Section header ──────────────────────────────────────────────
-          _SectionHeader(title: "Today's checklist",
-              subtitle: _fmtDate(_selectedDate)),
+          _SectionHeader(
+            title: "Today's checklist",
+            subtitle: '${_fmtDate(_selectedDate)} · tap In/Out for live clock time',
+          ),
           const SizedBox(height: 8),
 
           if (records.isEmpty)
@@ -820,7 +843,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
           const SizedBox(height: 24),
 
           // ── Attendance history ──────────────────────────────────────────
-          _SectionHeader(title: 'Attendance history'),
+          _SectionHeader(title: 'Attendance history', subtitle: 'Grouped by week for each worker'),
           const SizedBox(height: 8),
 
           if (roster.isEmpty)
@@ -988,16 +1011,30 @@ class _SectionHeader extends StatelessWidget {
   final String title; final String? subtitle;
 
   @override
-  Widget build(BuildContext context) => Row(
-            children: [
-      Expanded(child: Text(title,
-          style: Theme.of(context).textTheme.titleMedium
-              ?.copyWith(fontWeight: FontWeight.w900))),
-      if (subtitle != null)
-        Text(subtitle!, style: Theme.of(context).textTheme.bodySmall
-            ?.copyWith(color: AppTheme.mediumGray)),
-    ],
-  );
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w900),
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            subtitle!,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: AppTheme.mediumGray,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+        ],
+      ],
+    );
+  }
 }
 
 class _EmptyChecklist extends StatelessWidget {
@@ -1122,6 +1159,7 @@ class _WorkerCard extends StatelessWidget {
                         Row(children: [
                               Expanded(
                             child: Text(record.workerName,
+                                  overflow: TextOverflow.ellipsis,
                                   style: Theme.of(context)
                                     .textTheme.titleSmall
                                     ?.copyWith(fontWeight: FontWeight.w900)),
@@ -1133,6 +1171,7 @@ class _WorkerCard extends StatelessWidget {
                         const SizedBox(height: 2),
                         Text(
                           record.position.trim().isEmpty ? 'Worker' : record.position,
+                          overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: AppTheme.mediumGray),
                         ),
@@ -1210,7 +1249,15 @@ class _WorkerCard extends StatelessWidget {
               ],
             ],
 
-            // AM / PM time chips
+            // AM / PM time chips — tap stamps the real clock time
+            Text(
+              'Tap a slot to log the current time',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 6),
             Row(children: [
               Expanded(child: _TimeChip(label: 'AM In',
                   time: record.amTimeIn, fmtTime: fmtTime,
@@ -1234,21 +1281,36 @@ class _WorkerCard extends StatelessWidget {
             Row(children: [
               const Icon(Icons.access_time, size: 14, color: AppTheme.mediumGray),
               const SizedBox(width: 5),
-              Text('$hours hrs today',
-                  style: const TextStyle(fontSize: 11,
-                      fontWeight: FontWeight.w700, color: AppTheme.mediumGray)),
-              if (hours > 0 && record.rate > 0) ...[
-                          const SizedBox(width: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF16A34A).withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(8),
+              Expanded(
+                child: Text(
+                  '$hours hrs today',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.mediumGray,
                   ),
-                  child: Text(
-                    '≈ ₱${(record.rate * (hours / 8)).round()}',
-                    style: const TextStyle(fontSize: 11,
-                        fontWeight: FontWeight.w800, color: Color(0xFF16A34A)),
+                ),
+              ),
+              if (hours > 0 && record.rate > 0) ...[
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF16A34A).withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '≈ ₱${(record.rate * (hours / 8)).round()}',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF16A34A),
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -1461,7 +1523,7 @@ class _TimeChip extends StatelessWidget {
               style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700,
                   color: has ? color : AppTheme.mediumGray)),
           const SizedBox(height: 3),
-          Text(fmtTime(time),
+          Text(has ? fmtTime(time) : 'Tap now',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
                   color: has ? color : AppTheme.mediumGray)),
         ]),
@@ -1529,15 +1591,40 @@ class _HistorySection extends StatelessWidget {
     _          => const Color(0xFF94A3B8),
   };
 
+  DateTime _weekStart(DateTime d) {
+    final day = DateTime(d.year, d.month, d.day);
+    return day.subtract(Duration(days: day.weekday - DateTime.monday));
+  }
+
+  String _weekLabel(DateTime monday) {
+    final sunday = monday.add(const Duration(days: 5)); // Sat work week end
+    String md(DateTime x) =>
+        '${x.month.toString().padLeft(2, '0')}/${x.day.toString().padLeft(2, '0')}';
+    return 'Week of ${md(monday)} – ${md(sunday)}';
+  }
+
+  List<MapEntry<DateTime, List<({DateTime date, AttendanceRecord rec})>>>
+      _groupByWeek() {
+    final sorted = [...history]
+      ..sort((a, b) => b.date.compareTo(a.date));
+    final map = <DateTime, List<({DateTime date, AttendanceRecord rec})>>{};
+    for (final h in sorted) {
+      final key = _weekStart(h.date);
+      map.putIfAbsent(key, () => []).add(h);
+    }
+    final keys = map.keys.toList()..sort((a, b) => b.compareTo(a));
+    return [for (final k in keys) MapEntry(k, map[k]!)];
+  }
+
   @override
   Widget build(BuildContext context) {
+    final weeks = _groupByWeek();
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: Column(
         children: [
-          // Toggle header
           InkWell(
             onTap: onToggle,
             borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
@@ -1546,37 +1633,47 @@ class _HistorySection extends StatelessWidget {
               child: Row(children: [
                 CircleAvatar(
                   radius: 16,
-                    backgroundColor:
+                  backgroundColor:
                       AppTheme.residentBlue.withValues(alpha: 0.1),
                   child: Text(
                     worker.workerName.isNotEmpty
-                        ? worker.workerName[0].toUpperCase() : '?',
-                    style: const TextStyle(fontWeight: FontWeight.w900,
-                        color: AppTheme.residentBlue, fontSize: 12),
+                        ? worker.workerName[0].toUpperCase()
+                        : '?',
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.residentBlue,
+                        fontSize: 12),
                   ),
                 ),
                 const SizedBox(width: 10),
-                Expanded(child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(worker.workerName,
-                        style: Theme.of(context).textTheme.bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w800)),
-                    Text('${history.length} records · '
-                        '₱${worker.rate.toStringAsFixed(0)}/day',
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        worker.workerName,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      Text(
+                        '${history.length} records · ${weeks.length} week${weeks.length == 1 ? '' : 's'} · ₱${worker.rate.toStringAsFixed(0)}/day',
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                            fontSize: 11, color: AppTheme.mediumGray)),
-                  ],
-                )),
+                            fontSize: 11, color: AppTheme.mediumGray),
+                      ),
+                    ],
+                  ),
+                ),
                 Icon(isOpen ? Icons.expand_less : Icons.expand_more,
                     color: AppTheme.mediumGray),
               ]),
             ),
           ),
-          // History rows
           if (isOpen) ...[
-            const Divider(height: 1, thickness: 0.5,
-                indent: 14, endIndent: 14),
+            const Divider(height: 1, thickness: 0.5, indent: 14, endIndent: 14),
             if (history.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(16),
@@ -1584,30 +1681,95 @@ class _HistorySection extends StatelessWidget {
                     style: TextStyle(color: AppTheme.mediumGray)),
               )
             else
-              ...history.take(15).map((h) {
-                final hrs = calcHours(h.rec);
-                final pay = hrs > 0 && worker.rate > 0
-                    ? (worker.rate * (hrs / 8)).round() : 0;
-                final st = calcStatus(h.rec);
-                final sc = _statusColor(st);
-                return ListTile(
-                  dense: true,
-                  title: Text(fmtDate(h.date),
-                      style: const TextStyle(fontWeight: FontWeight.w700,
-                          fontSize: 13)),
-                  subtitle: Text('$hrs hrs${pay > 0 ? " · ₱$pay" : ""}',
-                      style: const TextStyle(fontSize: 11)),
-                  trailing: Container(
+              ...weeks.take(8).expand((week) {
+                final days = week.value;
+                final weekHours = days.fold<double>(
+                    0, (sum, h) => sum + calcHours(h.rec));
+                final presentDays = days
+                    .where((h) =>
+                        h.rec.isPresent ||
+                        h.rec.timeIn != null ||
+                        calcHours(h.rec) > 0)
+                    .length;
+                return [
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(12, 10, 12, 4),
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 9, vertical: 3),
+                        horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
-                      color: sc.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(20),
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Text(st, style: TextStyle(
-                        color: sc, fontSize: 11, fontWeight: FontWeight.w800)),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_view_week,
+                            size: 16, color: AppTheme.residentBlue),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _weekLabel(week.key),
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        Flexible(
+                          child: Text(
+                            '$presentDays day${presentDays == 1 ? '' : 's'} · ${weekHours.toStringAsFixed(1)} hrs',
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.mediumGray,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                );
+                  ...days.map((h) {
+                    final hrs = calcHours(h.rec);
+                    final pay = hrs > 0 && worker.rate > 0
+                        ? (worker.rate * (hrs / 8)).round()
+                        : 0;
+                    final st = calcStatus(h.rec);
+                    final sc = _statusColor(st);
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        fmtDate(h.date),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700, fontSize: 13),
+                      ),
+                      subtitle: Text(
+                        '$hrs hrs${pay > 0 ? " · ₱$pay" : ""}',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                      trailing: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 9, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: sc.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          st,
+                          style: TextStyle(
+                            color: sc,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ];
               }),
           ],
         ],
@@ -1932,14 +2094,18 @@ class _WorkerDetailSheet extends StatelessWidget {
                         .titleSmall
                         ?.copyWith(fontWeight: FontWeight.w900)),
               ),
-              Text(
-                '${weeklyRow!.presentCount} / ${weeklyRow!.workDays} days  ·  '
-                '${weeklyHours.toStringAsFixed(1)} hrs'
-                '${rate > 0 ? "  ·  ₱${weeklySalary.round()}" : ""}',
-                style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.mediumGray),
+              Flexible(
+                child: Text(
+                  '${weeklyRow!.presentCount}/${weeklyRow!.workDays} days · '
+                  '${weeklyHours.toStringAsFixed(1)} hrs'
+                  '${rate > 0 ? " · ₱${weeklySalary.round()}" : ""}',
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.mediumGray),
+                ),
               ),
             ]),
             const SizedBox(height: 10),

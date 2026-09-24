@@ -19,6 +19,7 @@ import '../../models/daily_report_model.dart';
 import '../../services/auth_service.dart';
 import '../../services/firebase_service.dart';
 import '../../utils/dialog_utils.dart';
+import '../../utils/daily_report_print.dart';
 import '../../services/archive_service.dart';
 import '../../services/govtrack_ai_service.dart';
 import '../../widgets/common/status_chip.dart';
@@ -66,6 +67,34 @@ class AdminReports extends StatelessWidget {
                               fontWeight: FontWeight.w700,
                             ),
                       ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.print_outlined),
+                      tooltip: 'Print paper form',
+                      onPressed: () {
+                        printDailyReportForm(
+                          projectName: report.projectId,
+                          reporterName: report.reporterId,
+                          reportDate: report.reportDate,
+                          weather: report.weatherCondition,
+                          temperature:
+                              '${report.temperatureC.toStringAsFixed(1)}°C',
+                          remarks: report.remarks ?? '',
+                          accomplishments: [
+                            for (final item in report.workAccomplishments)
+                              {
+                                'description': item.description,
+                                'quantity':
+                                    '${item.quantityAccomplished} ${item.unit}'
+                                        .trim(),
+                                'progress':
+                                    '${item.percentageComplete.toStringAsFixed(1)}%',
+                                'remarks': item.remarks ?? '',
+                              },
+                          ],
+                          issues: report.issues,
+                        );
+                      },
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),

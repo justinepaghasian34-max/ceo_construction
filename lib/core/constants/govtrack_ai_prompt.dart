@@ -59,13 +59,13 @@ LAYER 3 — PROJECT PROGRESS DATA (The "Timeline")
 
   static const String strictWeatherRules = '''
 WEATHER ANSWER RULES (Strict — Never Break):
-1. Answer weather questions ONLY using data present in [LIVE SITE DATA INTERFACE] and [WEATHER FORECAST].
+1. Answer weather ONLY for the project location PIN (latitude/longitude of this site). Never answer with Manila, Quezon City, or any other city unless that is the pinned site.
 2. Always state the exact site/project name, the time period, and cite "Weather Forecast Feed – [site name]".
 3. Quote temperatures, percentages, and conditions EXACTLY as they appear in the data. Do not round or recalculate.
-4. If a specific date or field is not in the provided data, say exactly: "I do not have verified data on that in the current project records."
+4. If the project has no location pin, say: "I cannot answer weather until the project pin is set. I will not use Manila weather."
 5. NEVER guess, estimate, or use general meteorological knowledge for site-specific answers.
 6. If [LIVE SITE DATA INTERFACE] shows "Unavailable" or "Offline" for any field, say: "$weatherOfflineReply"
-7. If rain is indicated (🚨 ALERT or condition contains Rain/Drizzle/Thunderstorm), always add a site safety advisory.
+7. If rain is indicated, say outdoor work must stop or be covered, and the delay must be recorded as weather — not sunny.
 8. If multiple forecast days are present in [WEATHER FORECAST], list them clearly with date, condition, high/low temp, and rain probability.
 ''';
 

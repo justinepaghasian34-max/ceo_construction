@@ -248,12 +248,39 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                     });
 
                                     if (allocations.isEmpty) {
-                                      return Text(
-                                        'No assigned materials for this project yet (${(_projectName ?? projectId).toString().trim().isEmpty ? projectId : (_projectName ?? projectId).toString().trim()}). Please ask admin to assign/budget materials first.',
-                                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                              color: AppTheme.warningOrange,
-                                              fontWeight: FontWeight.w700,
-                                            ),
+                                      return Column(
+                                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                                        children: [
+                                          Text(
+                                            'No budget materials are assigned to this project yet. You can still request by typing the material name. Material Monitoring will review it.',
+                                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                  color: AppTheme.warningOrange,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          _FocusField(
+                                            focusNode: _materialFocus,
+                                            builder: (focused) {
+                                              return TextFormField(
+                                                controller: _materialNameController,
+                                                focusNode: _materialFocus,
+                                                textInputAction: TextInputAction.next,
+                                                decoration: const InputDecoration(
+                                                  labelText: 'Material name',
+                                                  hintText: 'e.g. Cement, Rebar, Tiles',
+                                                  prefixIcon: Icon(Icons.inventory_2_outlined),
+                                                ),
+                                                validator: (value) {
+                                                  if ((value ?? '').trim().isEmpty) {
+                                                    return 'Please enter the material name';
+                                                  }
+                                                  return null;
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ],
                                       );
                                     }
 
@@ -401,7 +428,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
                                       if (rem != null && rem > 0 && parsed > rem) {
                                         return 'Requested quantity exceeds remaining allocation (${rem.toStringAsFixed(1)}).';
                                       }
-                                      if (rem != null && rem <= 0) {
+                                      if (_selectedAllocationId != null && rem != null && rem <= 0) {
                                         return 'No remaining allocation for this material.';
                                       }
                                       return null;
@@ -564,15 +591,16 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
     try {
       final now = DateTime.now().toIso8601String();
       final materialName = _materialNameController.text.trim();
+      if (materialName.isEmpty) {
+        throw Exception('Please enter the material name.');
+      }
+
       final quantityText = _quantityController.text.trim();
       final parsedQuantity =
           double.tryParse(quantityText.replaceAll(',', ''));
       final purpose = _purposeController.text.trim();
 
       final allocationId = (_selectedAllocationId ?? '').trim();
-      if (allocationId.isEmpty) {
-        throw Exception('No assigned material selected.');
-      }
 
       final requestId =
           'mr_${projectId}_${DateTime.now().millisecondsSinceEpoch.toString()}';
@@ -585,7 +613,7 @@ class _MaterialRequestScreenState extends State<MaterialRequestScreen>
         'subject': subject,
         'details': purpose,
         'materialName': materialName,
-        'allocationId': allocationId,
+        if (allocationId.isNotEmpty) 'allocationId': allocationId,
         'unit': (_selectedAllocationUnit ?? '').toString(),
         if ((_selectedAllocationUnitPrice ?? 0) > 0)
           'unitPriceAtRequest': _selectedAllocationUnitPrice,

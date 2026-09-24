@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
+import '../../models/budget_model.dart';
 import '../../services/firebase_service.dart';
 import '../../services/audit_log_service.dart';
 import '../../services/sync_service.dart';
@@ -67,6 +68,635 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
 
   String? _projectsWithInventoryCacheKey;
   Set<String>? _projectsWithInventoryCache;
+  String _requestPriorityFilter = 'all';
+
+  static double _toMoney(dynamic value) {
+    if (value is num) return value.toDouble();
+    if (value is String) {
+      final cleaned = value.replaceAll(',', '').replaceAll('₱', '').trim();
+      return double.tryParse(cleaned) ?? 0.0;
+    }
+    return 0.0;
+  }
+
+  static String _peso(double value) =>
+      '${AppConstants.currencySymbol}${value.toStringAsFixed(2)}';
+
+  DateTime _parseRequestDate(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String) {
+      return DateTime.tryParse(value) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    }
+    return DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  String _prettyDate(DateTime? date) {
+    if (date == null) return '—';
+    const months = <String>[
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  String _qtyWithUnit(double qty, [String unit = '']) {
+    final amount = qty % 1 == 0 ? qty.toStringAsFixed(0) : qty.toStringAsFixed(1);
+    final trimmed = unit.trim();
+    return trimmed.isEmpty ? amount : '$amount $trimmed';
+  }
+
+  String _projectIdFromSnapshot(DocumentSnapshot d) {
+    final data =
+        (d.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    final fromField = (data['projectId'] ?? '').toString().trim();
+    if (fromField.isNotEmpty) return fromField;
+    final segments = d.reference.path.split('/');
+    if (segments.length >= 2 && segments.first == 'projects') {
+      return segments[1];
+    }
+    return '';
+  }
+
+  String _projectNameFor(String projectId) {
+    if (projectId.isEmpty) return 'This project';
+    if (projectId == _selectedProjectId &&
+        (_selectedProjectName ?? '').trim().isNotEmpty) {
+      return _selectedProjectName!.trim();
+    }
+    for (final p in _allProjectOptions) {
+      if ((p['id'] ?? '') == projectId) {
+        final name = (p['name'] ?? '').trim();
+        if (name.isNotEmpty) return name;
+      }
+    }
+    return projectId;
+  }
+
+  Widget _sectionHeading(
+    BuildContext context, {
+    required String title,
+    String? subtitle,
+    VoidCallback? onSeeAll,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
+                      ),
+                ),
+                if (subtitle != null && subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                          height: 1.35,
+                        ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (onSeeAll != null)
+            TextButton(
+              onPressed: onSeeAll,
+              child: const Text('See all'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusChip(String rawStatus) {
+    final status = rawStatus.trim().toLowerCase();
+    late final Color color;
+    late final String label;
+    if (status == 'used' || status == 'completed') {
+      color = AppTheme.softGreen;
+      label = 'Used';
+    } else if (status == 'released' || status == 'approved') {
+      color = AppTheme.deepBlue;
+      label = 'Released';
+    } else if (status.contains('sync')) {
+      color = AppTheme.warningOrange;
+      label = 'Syncing';
+    } else if (status.isEmpty) {
+      color = AppTheme.mediumGray;
+      label = 'Logged';
+    } else {
+      color = AppTheme.mediumGray;
+      label = rawStatus;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
+  Widget _metricChip({
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: color.withValues(alpha: 0.9),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _siteSummaryCard(
+    BuildContext context,
+    _SiteDistributionSummary summary,
+  ) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppTheme.deepBlue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.location_on_outlined,
+                  size: 18,
+                  color: AppTheme.deepBlue,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  summary.siteLabel,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _metricChip(
+                label: 'Materials',
+                value: '${summary.materialsCount}',
+                color: AppTheme.deepBlue,
+              ),
+              const SizedBox(width: 8),
+              _metricChip(
+                label: 'Qty used',
+                value: _qtyWithUnit(summary.totalQuantity),
+                color: const Color(0xFF0F766E),
+              ),
+              const SizedBox(width: 8),
+              _metricChip(
+                label: 'Last used',
+                value: summary.lastUsageDate == null
+                    ? '—'
+                    : _prettyDate(summary.lastUsageDate)
+                        .replaceAll(RegExp(r', \d{4}$'), ''),
+                color: const Color(0xFFB45309),
+              ),
+            ],
+          ),
+          if (summary.totalCost > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Cost ${_peso(summary.totalCost)}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _projectStockCard(
+    BuildContext context,
+    Map<String, dynamic> item,
+  ) {
+    final name = (item['materialName'] ?? 'Material').toString();
+    final unit = (item['unit'] ?? '').toString();
+    final stock = _toMoney(item['stock']);
+    final unitPrice = _toMoney(item['unitPrice'] ?? item['price']);
+    final cost = unitPrice > 0 ? unitPrice * stock : 0.0;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppTheme.deepBlue.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.inventory_2_outlined,
+                  size: 18,
+                  color: AppTheme.deepBlue,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
+                      ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => _showRestockDialog(item),
+                icon: const Icon(Icons.add_box_outlined, size: 18),
+                label: const Text('Restock'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _metricChip(
+                label: 'In stock',
+                value: _qtyWithUnit(stock, unit),
+                color: AppTheme.deepBlue,
+              ),
+              if (unitPrice > 0) ...[
+                const SizedBox(width: 8),
+                _metricChip(
+                  label: 'Unit price',
+                  value: _peso(unitPrice),
+                  color: const Color(0xFF0F766E),
+                ),
+              ],
+            ],
+          ),
+          if (cost > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Stock value ${_peso(cost)}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppTheme.mediumGray,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showRestockDialog(Map<String, dynamic> item) async {
+    final projectId = (_selectedProjectId ?? '').trim();
+    final itemId = (item['id'] ?? '').toString().trim();
+    if (projectId.isEmpty || itemId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select a project first, then restock that item.'),
+        ),
+      );
+      return;
+    }
+
+    final name = (item['materialName'] ?? 'Material').toString();
+    final unit = (item['unit'] ?? '').toString();
+    final currentStock = _toMoney(item['stock']);
+    final qtyController = TextEditingController();
+    final noteController = TextEditingController();
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text('Restock $name'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Current stock: ${_qtyWithUnit(currentStock, unit)}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: qtyController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: unit.isEmpty
+                        ? 'Quantity to add'
+                        : 'Quantity to add ($unit)',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: noteController,
+                  decoration: const InputDecoration(
+                    labelText: 'Purchase / restock note (optional)',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Add to stock'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (saved != true) return;
+    final qty = _toMoney(qtyController.text);
+    if (qty <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a quantity greater than 0.')),
+      );
+      return;
+    }
+
+    try {
+      final ref = FirebaseService.instance
+          .materialInventoryCollection(projectId)
+          .doc(itemId);
+      await FirebaseService.instance.firestore.runTransaction((tx) async {
+        final snap = await tx.get(ref);
+        if (!snap.exists) {
+          throw Exception('Inventory item not found.');
+        }
+        final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? {};
+        final stock = _toMoney(data['stock']);
+        tx.update(ref, {
+          'stock': stock + qty,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'lastRestockAt': FieldValue.serverTimestamp(),
+          'lastRestockQty': qty,
+          'lastRestockNote': noteController.text.trim(),
+        });
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Restocked ${_qtyWithUnit(qty, unit)} of $name on ${_selectedProjectName ?? 'this project'}.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Restock failed: $e')),
+      );
+    }
+  }
+
+  Widget _usageLineCard(BuildContext context, _MaterialUsageEntry entry) {
+    final costText = entry.totalCost != null && entry.totalCost! > 0
+        ? _peso(entry.totalCost!)
+        : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFF6FF),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              entry.materialName.isEmpty
+                  ? '?'
+                  : entry.materialName[0].toUpperCase(),
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: AppTheme.deepBlue,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.materialName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF0F172A),
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  [
+                    _qtyWithUnit(entry.quantity, entry.unit),
+                    if (costText != null) costText,
+                    _prettyDate(entry.date),
+                  ].join('  ·  '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          _statusChip(entry.status),
+        ],
+      ),
+    );
+  }
+
+  Widget _emptyState(BuildContext context, String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: AppTheme.mediumGray,
+            ),
+      ),
+    );
+  }
+
+  Future<_ProjectMaterialBudget> _loadProjectMaterialBudget(
+    String projectId,
+  ) async {
+    double remainingFromBudgets = 0;
+    double allocatedFromBudgets = 0;
+    var hasBudgetDocs = false;
+
+    try {
+      final snap = await FirebaseService.instance.budgetsCollection
+          .where('projectId', isEqualTo: projectId)
+          .get();
+      for (final doc in snap.docs) {
+        final budget = BudgetModel.fromFirestore(doc);
+        final status = budget.status.toLowerCase();
+        if (status == 'closed' || status == 'cancelled') continue;
+        hasBudgetDocs = true;
+        allocatedFromBudgets += budget.allocatedAmount;
+        remainingFromBudgets += budget.remaining;
+      }
+    } catch (_) {}
+
+    double committed = 0;
+    try {
+      final allocSnap = await FirebaseService.instance
+          .materialAllocationsCollection(projectId)
+          .get();
+      for (final doc in allocSnap.docs) {
+        final data =
+            (doc.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        final qty = _toMoney(data['budgetQuantity'] ?? data['requiredQuantity']);
+        final price = _toMoney(data['unitPrice'] ?? data['price']);
+        committed += qty * price;
+      }
+    } catch (_) {}
+
+    if (hasBudgetDocs) {
+      return _ProjectMaterialBudget(
+        remaining: remainingFromBudgets < 0 ? 0 : remainingFromBudgets,
+        allocated: allocatedFromBudgets,
+        committed: committed,
+        sourceLabel: 'project budget',
+      );
+    }
+
+    double contract = 0;
+    try {
+      final proj = await FirebaseService.instance.projectsCollection
+          .doc(projectId)
+          .get();
+      final data =
+          (proj.data() as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      contract = _toMoney(data['contractAmount'] ?? data['approvedBudget']);
+    } catch (_) {}
+
+    final remaining = contract - committed;
+    return _ProjectMaterialBudget(
+      remaining: remaining < 0 ? 0 : remaining,
+      allocated: contract,
+      committed: committed,
+      sourceLabel: 'contract amount',
+    );
+  }
 
   @override
   void initState() {
@@ -728,21 +1358,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
           (a, b) => (a['name'] ?? '').compareTo((b['name'] ?? '')),
         );
 
-        final Map<String, String> siteManagerNameByProject = {};
-        for (final doc in projectDocs) {
-          final data = (doc.data() as Map?)?.cast<String, dynamic>() ??
-              <String, dynamic>{};
-          final name = (data['siteManagerName'] ?? '').toString().trim();
-          if (name.isNotEmpty) {
-            siteManagerNameByProject[doc.id] = name;
-          }
-        }
-
-        String siteLabel(String projectId) {
-          final name = siteManagerNameByProject[projectId];
-          if (name != null && name.isNotEmpty) return name;
-          return projectId;
-        }
+        String siteLabel(String projectId) => _projectNameFor(projectId);
 
         if (_selectedProjectId == null && projectDocs.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -766,11 +1382,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                 .orderBy('materialName')
                 .snapshots();
 
-        final deliveriesStream = FirebaseService.instance.firestore
-            .collectionGroup('deliveries')
-            .where('type', isEqualTo: 'material_request_release')
-            .limit(500)
-            .snapshots();
+        final deliveriesStream = selectedProjectId == null
+            ? Stream<QuerySnapshot>.empty()
+            : FirebaseService.instance
+                .deliveriesCollection(selectedProjectId)
+                .snapshots();
 
         final usageStream = FirebaseService.instance.firestore
             .collectionGroup('material_usage')
@@ -890,11 +1506,19 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
 
                 final deliveryDocs = deliveriesSnap.data?.docs ?? const [];
                 final deliveryRows = deliveryDocs
+                    .where((d) {
+                      final data =
+                          (d.data() as Map?)?.cast<String, dynamic>() ??
+                              <String, dynamic>{};
+                      return (data['type'] ?? '').toString() ==
+                          'material_request_release';
+                    })
                     .map(
                       (d) => <String, dynamic>{
                         ...(d.data() as Map?)?.cast<String, dynamic>() ??
                             <String, dynamic>{},
                         'id': d.id,
+                        'projectId': _projectIdFromSnapshot(d),
                       },
                     )
                     .toList();
@@ -952,7 +1576,14 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                             ...(d.data() as Map?)?.cast<String, dynamic>() ??
                                 <String, dynamic>{},
                             'id': d.id,
+                            'projectId': _projectIdFromSnapshot(d),
                           },
+                        )
+                        .where(
+                          (row) =>
+                              selectedProjectId == null ||
+                              (row['projectId'] ?? '').toString() ==
+                                  selectedProjectId,
                         )
                         .toList();
 
@@ -970,6 +1601,12 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                     final List<_MaterialUsageEntry> monthUsageEntries = [];
 
                     for (final usage in combinedDocs) {
+                      if (selectedProjectId != null &&
+                          (usage['projectId'] ?? '').toString() !=
+                              selectedProjectId) {
+                        continue;
+                      }
+
                       final isDelivery = (usage['type'] ?? '').toString() ==
                           'material_request_release';
 
@@ -1043,40 +1680,15 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                     for (final e in usageEntries) {
                       usageByProject.putIfAbsent(e.projectId, () => []).add(e);
                     }
+                    for (final list in usageByProject.values) {
+                      list.sort((a, b) {
+                        final ad = a.date ?? DateTime.fromMillisecondsSinceEpoch(0);
+                        final bd = b.date ?? DateTime.fromMillisecondsSinceEpoch(0);
+                        return bd.compareTo(ad);
+                      });
+                    }
 
-                    final List<_SiteDistributionSummary> siteSummaries = [];
-                    usageByProject.forEach((projectId, entries) {
-                      double siteTotalQuantity = 0;
-                      double siteTotalCost = 0;
-                      final Set<String> siteMaterials = {};
-                      DateTime? lastUsageDate;
-
-                      for (final entry in entries) {
-                        siteTotalQuantity += entry.quantity;
-                        siteTotalCost += entry.totalCost ?? 0.0;
-                        siteMaterials.add(entry.materialName);
-                        if (entry.date != null) {
-                          if (lastUsageDate == null ||
-                              entry.date!.isAfter(lastUsageDate)) {
-                            lastUsageDate = entry.date;
-                          }
-                        }
-                      }
-
-                      siteSummaries.add(
-                        _SiteDistributionSummary(
-                          projectId: projectId,
-                          siteLabel: siteLabel(projectId),
-                          materialsCount: siteMaterials.length,
-                          totalQuantity: siteTotalQuantity,
-                          totalCost: siteTotalCost,
-                          lastUsageDate: lastUsageDate,
-                        ),
-                      );
-                    });
-
-                    siteSummaries.sort(
-                        (a, b) => b.totalQuantity.compareTo(a.totalQuantity));
+                    final isPhone = MediaQuery.of(context).size.width < 720;
 
                     return AdminGlassScaffold(
                       title: 'Material & Inventory Monitoring',
@@ -1090,28 +1702,89 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                               )
                               .snapshots(),
                           builder: (context, snapshot) {
+                            final pending = snapshot.data?.docs ?? const [];
+                            final urgentCount = pending.where((d) {
+                              final data = d.data();
+                              return (data['priority'] ?? '')
+                                      .toString()
+                                      .toLowerCase() ==
+                                  'urgent';
+                            }).length;
                             return IconButton(
-                              icon: const Icon(Icons.notifications_none),
-                              tooltip: 'Material requests',
+                              tooltip: urgentCount > 0
+                                  ? '$urgentCount urgent request${urgentCount == 1 ? '' : 's'}'
+                                  : 'Material requests',
                               onPressed: _showMaterialRequestsBottomSheet,
+                              icon: Badge(
+                                isLabelVisible: pending.isNotEmpty,
+                                label: Text('${pending.length}'),
+                                backgroundColor: urgentCount > 0
+                                    ? AppTheme.errorRed
+                                    : AppTheme.deepBlue,
+                                child: Icon(
+                                  pending.isEmpty
+                                      ? Icons.notifications_none
+                                      : Icons.notifications_active_outlined,
+                                ),
+                              ),
                             );
                           },
                         ),
-                        IconButton(
-                          tooltip: 'Assign/budget material',
-                          icon: const Icon(Icons.playlist_add_rounded),
-                          onPressed: _showAddAllocationDialog,
-                        ),
-                        IconButton(
-                          tooltip: 'Sync inventory to site budget',
-                          icon: const Icon(Icons.sync_alt_rounded),
-                          onPressed: _showSyncInventoryToBudgetDialog,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.person_outline),
-                          onPressed: () => context.push(RouteNames.profile),
-                        ),
+                        if (!isPhone) ...[
+                          IconButton(
+                            tooltip: 'Add material to project',
+                            icon: const Icon(Icons.playlist_add_rounded),
+                            onPressed: _showAddAllocationDialog,
+                          ),
+                          IconButton(
+                            tooltip: 'Sync inventory to site budget',
+                            icon: const Icon(Icons.sync_alt_rounded),
+                            onPressed: _showSyncInventoryToBudgetDialog,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.person_outline),
+                            onPressed: () => context.push(RouteNames.profile),
+                          ),
+                        ] else
+                          PopupMenuButton<String>(
+                            tooltip: 'More',
+                            icon: const Icon(Icons.more_vert),
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'add':
+                                  _showAddAllocationDialog();
+                                  break;
+                                case 'sync':
+                                  _showSyncInventoryToBudgetDialog();
+                                  break;
+                                case 'profile':
+                                  context.push(RouteNames.profile);
+                                  break;
+                              }
+                            },
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: 'add',
+                                child: Text('Add material to project'),
+                              ),
+                              PopupMenuItem(
+                                value: 'sync',
+                                child: Text('Sync inventory to site budget'),
+                              ),
+                              PopupMenuItem(
+                                value: 'profile',
+                                child: Text('Profile'),
+                              ),
+                            ],
+                          ),
                       ],
+                      floatingActionButton: isPhone && !widget.showBottomNav
+                          ? FloatingActionButton.extended(
+                              onPressed: _showAddAllocationDialog,
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add material'),
+                            )
+                          : null,
                       showSidebar: widget.showSidebar,
                       sidebarMode: widget.sidebarMode,
                       bottomNavigationBar: widget.showBottomNav
@@ -1230,6 +1903,145 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                   );
                                 },
                               ),
+                              const SizedBox(height: 12),
+                              StreamBuilder<
+                                  QuerySnapshot<Map<String, dynamic>>>(
+                                stream: FirebaseService.instance.firestore
+                                    .collectionGroup('material_requests')
+                                    .where(
+                                      'status',
+                                      isEqualTo:
+                                          AppConstants.materialRequestPending,
+                                    )
+                                    .snapshots(),
+                                builder: (context, snapshot) {
+                                  final pending = (snapshot.data?.docs ??
+                                          const [])
+                                      .where((d) =>
+                                          selectedProjectId == null ||
+                                          _projectIdFromSnapshot(d) ==
+                                              selectedProjectId)
+                                      .toList();
+                                  if (pending.isEmpty) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  final urgent = pending.where((d) {
+                                    return (d.data()['priority'] ?? '')
+                                            .toString()
+                                            .toLowerCase() ==
+                                        'urgent';
+                                  }).toList();
+                                  return Padding(
+                                    padding: const EdgeInsets.only(bottom: 12),
+                                    child: Material(
+                                      color: urgent.isNotEmpty
+                                          ? const Color(0xFFFFF1F2)
+                                          : const Color(0xFFEFF6FF),
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(14),
+                                        onTap:
+                                            _showMaterialRequestsBottomSheet,
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                urgent.isNotEmpty
+                                                    ? Icons.priority_high
+                                                    : Icons
+                                                        .shopping_cart_outlined,
+                                                color: urgent.isNotEmpty
+                                                    ? AppTheme.errorRed
+                                                    : AppTheme.deepBlue,
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  urgent.isEmpty
+                                                      ? '${pending.length} Resident Engineer request${pending.length == 1 ? '' : 's'} waiting to purchase'
+                                                      : '${urgent.length} urgent • ${pending.length} total — buy urgent items first',
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodyMedium
+                                                      ?.copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                        color: urgent.isNotEmpty
+                                                            ? AppTheme.errorRed
+                                                            : AppTheme.deepBlue,
+                                                      ),
+                                                ),
+                                              ),
+                                              const Icon(
+                                                Icons.chevron_right,
+                                                color: AppTheme.mediumGray,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              if (selectedProjectId != null &&
+                                  selectedProjectId.isNotEmpty)
+                                FutureBuilder<_ProjectMaterialBudget>(
+                                  key: ValueKey<String>(
+                                      'budget_$selectedProjectId'),
+                                  future: _loadProjectMaterialBudget(
+                                      selectedProjectId),
+                                  builder: (context, snap) {
+                                    final budget = snap.data;
+                                    return Padding(
+                                      padding:
+                                          const EdgeInsets.only(bottom: 12),
+                                      child: Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        crossAxisAlignment:
+                                            WrapCrossAlignment.center,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 12, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFF1F5F9),
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: Colors.black
+                                                    .withValues(alpha: 0.06),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              budget == null
+                                                  ? 'Loading project budget…'
+                                                  : budget.hasBudget
+                                                      ? 'Remaining ${budget.sourceLabel}: ${_peso(budget.remaining)}'
+                                                      : 'No project budget on file',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w700,
+                                                    color: AppTheme.deepBlue,
+                                                  ),
+                                            ),
+                                          ),
+                                          FilledButton.icon(
+                                            onPressed:
+                                                _showAddAllocationDialog,
+                                            icon: const Icon(Icons.add, size: 18),
+                                            label: const Text(
+                                                'Add material to this project'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
                               LayoutBuilder(
                                 builder: (context, constraints) {
                                   final isNarrow = constraints.maxWidth < 700;
@@ -1304,10 +2116,14 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                     );
                                   }
 
+                                  final projectLabel = selectedProjectId == null
+                                      ? 'this project'
+                                      : siteLabel(selectedProjectId);
+
                                   final totalStockCard = buildStatCard(
                                     icon: Icons.inventory_2_outlined,
                                     iconColor: AppTheme.deepBlue,
-                                    label: 'Total material in stock',
+                                    label: 'Stock on $projectLabel',
                                     value: totalStock.toStringAsFixed(1),
                                     onTap: inventoryItems.isEmpty
                                         ? null
@@ -1320,7 +2136,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                   final usedThisMonthCard = buildStatCard(
                                     icon: Icons.stacked_bar_chart,
                                     iconColor: AppTheme.accentYellow,
-                                    label: 'Material used this month',
+                                    label: 'Used this month on $projectLabel',
                                     value: monthQuantity.toStringAsFixed(1),
                                     onTap: monthUsageEntries.isEmpty
                                         ? null
@@ -1352,175 +2168,115 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                   );
                                 },
                               ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'Distribution per site',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 8),
-                              if (siteSummaries.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 4),
-                                  child: Text(
-                                    'Top site by material usage: '
-                                    '${siteSummaries.first.siteLabel} '
-                                    '(${siteSummaries.first.totalQuantity.toStringAsFixed(1)} units)',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: AppTheme.mediumGray,
+                              _sectionHeading(
+                                context,
+                                title: selectedProjectId == null
+                                    ? 'Stock on this project'
+                                    : 'Stock on ${siteLabel(selectedProjectId)}',
+                                subtitle:
+                                    'Saved only to the selected project. Other projects cannot see or use this stock.',
+                                onSeeAll: inventoryItems.isEmpty
+                                    ? null
+                                    : () => _showFullInventoryTable(
+                                          context,
+                                          inventoryItems,
                                         ),
-                                  ),
-                                ),
-                              if (siteSummaries.isEmpty)
-                                Text(
-                                  'No material distribution recorded yet.',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(
-                                        color: AppTheme.mediumGray,
-                                      ),
+                              ),
+                              if (inventoryItems.isEmpty)
+                                _emptyState(
+                                  context,
+                                  'No stock saved to this project yet. Use Add material to this project.',
                                 )
                               else
-                                for (final summary in siteSummaries) ...[
-                                  Text(
-                                    'Site: ${summary.siteLabel}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  GestureDetector(
-                                    onTap: () => _showFullSiteDistributionTable(
-                                      context,
-                                      siteSummaries,
+                                for (final item in inventoryItems)
+                                  _projectStockCard(context, item),
+                              _sectionHeading(
+                                context,
+                                title: selectedProjectId == null
+                                    ? 'Material usage'
+                                    : 'Usage on ${siteLabel(selectedProjectId)}',
+                                subtitle: usageByProject.isEmpty
+                                    ? null
+                                    : 'Releases and site usage for this project only',
+                              ),
+                              if (usageByProject.isEmpty)
+                                _emptyState(
+                                  context,
+                                  'No material usage records yet.',
+                                )
+                              else
+                                for (final entry in usageByProject.entries) ...[
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    padding: const EdgeInsets.fromLTRB(
+                                        14, 12, 14, 8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(
+                                          color: const Color(0xFFE2E8F0)),
                                     ),
-                                    child: GlassDataTableTheme(
-                                      child: LayoutBuilder(
-                                        builder: (context, constraints) {
-                                          return SingleChildScrollView(
-                                            scrollDirection: Axis.horizontal,
-                                            child: ConstrainedBox(
-                                              constraints: BoxConstraints(
-                                                  minWidth:
-                                                      constraints.maxWidth),
-                                              child: DataTable(
-                                                columnSpacing: 16,
-                                                columns: const [
-                                                  DataColumn(
-                                                      label: Text('Materials')),
-                                                  DataColumn(
-                                                      label: Text(
-                                                          'Total qty used')),
-                                                  DataColumn(
-                                                      label:
-                                                          Text('Total cost')),
-                                                  DataColumn(
-                                                      label:
-                                                          Text('Last usage')),
-                                                ],
-                                                rows: [
-                                                  _buildSiteDistributionRow(
-                                                      context, summary),
-                                                ],
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.apartment_outlined,
+                                              size: 16,
+                                              color: AppTheme.deepBlue,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              child: Text(
+                                                siteLabel(entry.key),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .bodySmall
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                      color: AppTheme.deepBlue,
+                                                    ),
                                               ),
                                             ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 12),
-                                ],
-                              const SizedBox(height: 16),
-                              Text(
-                                'Material usage details',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 8),
-                              if (usageByProject.isEmpty)
-                                Text(
-                                  'No material usage records yet.',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(
-                                        color: AppTheme.mediumGray,
-                                      ),
-                                ),
-                              if (usageByProject.isNotEmpty)
-                                const SizedBox(height: 4),
-                              for (final entry in usageByProject.entries) ...[
-                                Text(
-                                  'Site: ${siteLabel(entry.key)}',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                ),
-                                const SizedBox(height: 4),
-                                GestureDetector(
-                                  onTap: () => _showFullMaterialUsageTable(
-                                    context,
-                                    siteLabel(entry.key),
-                                    entry.value,
-                                  ),
-                                  child: GlassDataTableTheme(
-                                    child: LayoutBuilder(
-                                      builder: (context, constraints) {
-                                        return SingleChildScrollView(
-                                          scrollDirection: Axis.horizontal,
-                                          child: ConstrainedBox(
-                                            constraints: BoxConstraints(
-                                              minWidth: constraints.maxWidth,
+                                            TextButton(
+                                              onPressed: () =>
+                                                  _showFullMaterialUsageTable(
+                                                context,
+                                                siteLabel(entry.key),
+                                                entry.value,
+                                              ),
+                                              child: const Text('See all'),
                                             ),
-                                            child: DataTable(
-                                              columnSpacing: 16,
-                                              columns: const [
-                                                DataColumn(
-                                                    label: Text('Material')),
-                                                DataColumn(label: Text('Qty')),
-                                                DataColumn(label: Text('Unit')),
-                                                DataColumn(
-                                                    label: Text('Unit price')),
-                                                DataColumn(label: Text('Cost')),
-                                                DataColumn(
-                                                    label: Text('Status')),
-                                                DataColumn(
-                                                    label: Text('Report ID')),
-                                                DataColumn(label: Text('Date')),
-                                              ],
-                                              rows: [
-                                                for (final usage in entry.value)
-                                                  _buildMaterialUsageRow(
-                                                      context, usage),
-                                              ],
+                                          ],
+                                        ),
+                                        const Divider(height: 8),
+                                        for (final usage in entry.value.take(6))
+                                          _usageLineCard(context, usage),
+                                        if (entry.value.length > 6)
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                                top: 4, bottom: 6),
+                                            child: Text(
+                                              '+${entry.value.length - 6} more records',
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: AppTheme.mediumGray,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
                                             ),
                                           ),
-                                        );
-                                      },
+                                      ],
                                     ),
                                   ),
-                                ),
-                                const SizedBox(height: 12),
-                              ],
+                                ],
+                              const SizedBox(height: 72),
                             ],
                           ),
                         ),
@@ -1543,98 +2299,39 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.white,
       builder: (sheetContext) {
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.92,
+            height: MediaQuery.of(sheetContext).size.height * 0.88,
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Text(
-                        'Distribution per site',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                      Expanded(
+                        child: Text(
+                          'Distribution per site',
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
                       ),
-                      const Spacer(),
                       IconButton(
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.of(sheetContext).pop(),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final verticalController = ScrollController();
-                        return Scrollbar(
-                          thumbVisibility: true,
-                          controller: verticalController,
-                          child: SingleChildScrollView(
-                            controller: verticalController,
-                            scrollDirection: Axis.vertical,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                for (final summary in siteSummaries) ...[
-                                  Text(
-                                    'Site: ${summary.siteLabel}',
-                                    style: Theme.of(sheetContext)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.copyWith(fontWeight: FontWeight.w700),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  GlassDataTableTheme(
-                                    child: SingleChildScrollView(
-                                      scrollDirection: Axis.horizontal,
-                                      child: ConstrainedBox(
-                                        constraints: BoxConstraints(
-                                          minWidth: constraints.maxWidth,
-                                        ),
-                                        child: DataTable(
-                                          columnSpacing: 16,
-                                          headingTextStyle:
-                                              Theme.of(sheetContext)
-                                                  .textTheme
-                                                  .bodySmall
-                                                  ?.copyWith(
-                                                    fontWeight: FontWeight.w600,
-                                                    color: AppTheme.mediumGray,
-                                                  ),
-                                          columns: const [
-                                            DataColumn(
-                                                label: Text('Materials')),
-                                            DataColumn(
-                                                label: Text('Total qty used')),
-                                            DataColumn(
-                                                label: Text('Total cost')),
-                                            DataColumn(
-                                                label: Text('Last usage')),
-                                          ],
-                                          rows: [
-                                            _buildSiteDistributionRow(
-                                              sheetContext,
-                                              summary,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 14),
-                                ],
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+                    child: ListView.builder(
+                      itemCount: siteSummaries.length,
+                      itemBuilder: (context, index) =>
+                          _siteSummaryCard(context, siteSummaries[index]),
                     ),
                   ),
                 ],
@@ -1653,118 +2350,92 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.white,
       builder: (sheetContext) {
         return SafeArea(
           child: SizedBox(
             height: MediaQuery.of(sheetContext).size.height * 0.8,
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Text(
-                        'Inventory items',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                      Expanded(
+                        child: Text(
+                          (_selectedProjectName ?? '').trim().isEmpty
+                              ? 'Inventory'
+                              : 'Inventory on ${_selectedProjectName!.trim()}',
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
                       ),
-                      const Spacer(),
                       IconButton(
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.of(sheetContext).pop(),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final verticalController = ScrollController();
-                        return Scrollbar(
-                          thumbVisibility: true,
-                          controller: verticalController,
-                          child: SingleChildScrollView(
-                            controller: verticalController,
-                            scrollDirection: Axis.vertical,
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  minWidth: constraints.maxWidth,
-                                ),
-                                child: DataTable(
-                                  columnSpacing: 16,
-                                  headingTextStyle: Theme.of(sheetContext)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                        color: AppTheme.mediumGray,
+                    child: ListView.separated(
+                      itemCount: inventoryItems.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final item = inventoryItems[index];
+                        final name =
+                            (item['materialName'] ?? 'Material').toString();
+                        final unit = (item['unit'] ?? '').toString();
+                        final stock = _toMoney(item['stock']);
+                        final unitPrice =
+                            _toMoney(item['unitPrice'] ?? item['price']);
+                        return Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w800,
                                       ),
-                                  columns: const [
-                                    DataColumn(label: Text('Material')),
-                                    DataColumn(label: Text('Stock')),
-                                    DataColumn(label: Text('Unit')),
-                                    DataColumn(label: Text('Unit price')),
-                                  ],
-                                  rows: [
-                                    for (final item in inventoryItems)
-                                      () {
-                                        final name =
-                                            (item['materialName'] ?? '')
-                                                .toString();
-                                        final unit =
-                                            (item['unit'] ?? '').toString();
-                                        final stockRaw = item['stock'];
-                                        final stock = stockRaw is num
-                                            ? stockRaw.toDouble()
-                                            : (double.tryParse(
-                                                    stockRaw?.toString() ??
-                                                        '0') ??
-                                                0.0);
-
-                                        final unitPriceRaw =
-                                            item['unitPrice'] ?? item['price'];
-                                        final unitPrice = unitPriceRaw is num
-                                            ? unitPriceRaw.toDouble()
-                                            : double.tryParse(
-                                                unitPriceRaw?.toString() ?? '');
-
-                                        return DataRow(
-                                          cells: [
-                                            DataCell(
-                                              SizedBox(
-                                                width:
-                                                    constraints.maxWidth * 0.38,
-                                                child: Text(
-                                                  name.isEmpty ? '-' : name,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ),
-                                            DataCell(
-                                              Text(stock.toStringAsFixed(1)),
-                                            ),
-                                            DataCell(
-                                              Text(unit.isEmpty ? '-' : unit),
-                                            ),
-                                            DataCell(
-                                              Text(unitPrice == null
-                                                  ? '-'
-                                                  : unitPrice
-                                                      .toStringAsFixed(2)),
-                                            ),
-                                          ],
-                                        );
-                                      }(),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      [
+                                        _qtyWithUnit(stock, unit),
+                                        if (unitPrice > 0)
+                                          '${_peso(unitPrice)} / ${unit.isEmpty ? 'unit' : unit}',
+                                      ].join('  ·  '),
+                                      style: const TextStyle(
+                                        color: AppTheme.mediumGray,
+                                        fontSize: 13,
+                                      ),
+                                    ),
                                   ],
                                 ),
                               ),
-                            ),
+                              TextButton(
+                                onPressed: () {
+                                  Navigator.of(sheetContext).pop();
+                                  _showRestockDialog(item);
+                                },
+                                child: const Text('Restock'),
+                              ),
+                            ],
                           ),
                         );
                       },
@@ -1787,78 +2458,49 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.white,
       builder: (sheetContext) {
         return SafeArea(
           child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.92,
+            height: MediaQuery.of(sheetContext).size.height * 0.88,
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     children: [
-                      Text(
-                        'Material usage – Site: $siteId',
-                        style: Theme.of(sheetContext)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                      Expanded(
+                        child: Text(
+                          siteId,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
                       ),
-                      const Spacer(),
                       IconButton(
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.of(sheetContext).pop(),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  Text(
+                    '${usages.length} usage record${usages.length == 1 ? '' : 's'}',
+                    style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+                          color: AppTheme.mediumGray,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
                   Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final verticalController = ScrollController();
-                        return Scrollbar(
-                          thumbVisibility: true,
-                          controller: verticalController,
-                          child: SingleChildScrollView(
-                            controller: verticalController,
-                            scrollDirection: Axis.vertical,
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  minWidth: constraints.maxWidth,
-                                ),
-                                child: DataTable(
-                                  columnSpacing: 16,
-                                  headingTextStyle: Theme.of(sheetContext)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                        color: AppTheme.mediumGray,
-                                      ),
-                                  columns: const [
-                                    DataColumn(label: Text('Material')),
-                                    DataColumn(label: Text('Qty')),
-                                    DataColumn(label: Text('Unit')),
-                                    DataColumn(label: Text('Unit price')),
-                                    DataColumn(label: Text('Cost')),
-                                    DataColumn(label: Text('Status')),
-                                    DataColumn(label: Text('Report ID')),
-                                    DataColumn(label: Text('Date')),
-                                  ],
-                                  rows: [
-                                    for (final usage in usages)
-                                      _buildMaterialUsageRow(
-                                          sheetContext, usage),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                    child: ListView.separated(
+                      itemCount: usages.length,
+                      separatorBuilder: (_, __) =>
+                          const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                      itemBuilder: (context, index) =>
+                          _usageLineCard(context, usages[index]),
                     ),
                   ),
                 ],
@@ -1893,7 +2535,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
             )
             .snapshots();
 
-        return DefaultTabController(
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return DefaultTabController(
           length: 2,
           child: SafeArea(
             child: Center(
@@ -1904,7 +2548,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                   borderRadius:
                       const BorderRadius.vertical(top: Radius.circular(22)),
                   child: SizedBox(
-                    height: MediaQuery.of(sheetContext).size.height * 0.82,
+                    height: MediaQuery.of(sheetContext).size.height *
+                        (MediaQuery.of(sheetContext).size.width < 720
+                            ? 0.92
+                            : 0.82),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -1925,7 +2572,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                             children: [
                               Expanded(
                                 child: Text(
-                                  'Material requests',
+                                  'Purchase queue',
                                   style: Theme.of(sheetContext)
                                       .textTheme
                                       .titleLarge
@@ -1983,7 +2630,12 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                             children: [
                               _buildMaterialRequestList(
                                 pendingStream,
-                                emptyMessage: 'No pending material requests.',
+                                emptyMessage:
+                                    'No pending material requests from Resident Engineers.',
+                                enablePriorityFilter: true,
+                                onPriorityFilterChanged: (value) =>
+                                    setSheetState(() =>
+                                        _requestPriorityFilter = value),
                               ),
                               _buildMaterialRequestList(
                                 releasedStream,
@@ -2001,6 +2653,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
               ),
             ),
           ),
+            );
+          },
         );
       },
     );
@@ -2010,6 +2664,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     Stream<QuerySnapshot<Map<String, dynamic>>> stream, {
     required String emptyMessage,
     bool showReleasedLabel = false,
+    bool enablePriorityFilter = false,
+    ValueChanged<String>? onPriorityFilterChanged,
   }) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: stream,
@@ -2034,8 +2690,34 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
           );
         }
 
-        final docs = snapshot.data?.docs ?? [];
-        if (docs.isEmpty) {
+        var docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+          snapshot.data?.docs ?? const [],
+        );
+        docs.sort((a, b) {
+          final ap = (a.data()['priority'] ?? '').toString().toLowerCase() ==
+                  'urgent'
+              ? 0
+              : 1;
+          final bp = (b.data()['priority'] ?? '').toString().toLowerCase() ==
+                  'urgent'
+              ? 0
+              : 1;
+          if (ap != bp) return ap.compareTo(bp);
+          return _parseRequestDate(b.data()['createdAt'])
+              .compareTo(_parseRequestDate(a.data()['createdAt']));
+        });
+
+        if (enablePriorityFilter && _requestPriorityFilter != 'all') {
+          docs = docs
+              .where((d) =>
+                  (d.data()['priority'] ?? 'normal')
+                      .toString()
+                      .toLowerCase() ==
+                  _requestPriorityFilter)
+              .toList();
+        }
+
+        if (snapshot.data?.docs.isEmpty ?? true) {
           return Center(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -2051,11 +2733,47 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
           );
         }
 
-        return ListView.separated(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-          itemCount: docs.length,
-          separatorBuilder: (_, __) => const SizedBox(height: 10),
-          itemBuilder: (context, index) {
+        return Column(
+          children: [
+            if (enablePriorityFilter)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final option in const [
+                      ('all', 'All'),
+                      ('urgent', 'Urgent — buy first'),
+                      ('normal', 'Normal'),
+                    ])
+                      ChoiceChip(
+                        label: Text(option.$2),
+                        selected: _requestPriorityFilter == option.$1,
+                        onSelected: (_) {
+                          onPriorityFilterChanged?.call(option.$1);
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            Expanded(
+              child: docs.isEmpty
+                  ? Center(
+                      child: Text(
+                        _requestPriorityFilter == 'urgent'
+                            ? 'No urgent requests right now.'
+                            : 'No normal-priority requests.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: AppTheme.mediumGray),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
             final doc = docs[index];
             final data = doc.data();
             final subject = (data['subject'] ?? 'Material request').toString();
@@ -2064,6 +2782,14 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
             final projectName = (data['projectName'] ?? '').toString();
             final createdBy = (data['createdBy'] ?? '').toString();
             final createdByName = (data['createdByName'] ?? '').toString();
+            final isUrgent =
+                (data['priority'] ?? '').toString().toLowerCase() == 'urgent';
+            final qty = data['requestedQuantity'];
+            final unit = (data['unit'] ?? '').toString();
+            final qtyText = qty == null
+                ? ''
+                : '${qty is num ? qty.toStringAsFixed(qty % 1 == 0 ? 0 : 1) : qty} $unit'
+                    .trim();
 
             final siteLabel = projectName.isNotEmpty ? projectName : projectId;
 
@@ -2076,10 +2802,13 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
               child: Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: isUrgent ? const Color(0xFFFFF1F2) : Colors.white,
                   borderRadius: BorderRadius.circular(16),
-                  border:
-                      Border.all(color: Colors.black.withValues(alpha: 0.06)),
+                  border: Border.all(
+                    color: isUrgent
+                        ? AppTheme.errorRed.withValues(alpha: 0.35)
+                        : Colors.black.withValues(alpha: 0.06),
+                  ),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.05),
@@ -2091,42 +2820,104 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            subject,
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleSmall
-                                ?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                          ),
+                    // Project first so admin can tell which site needs materials.
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.deepBlue.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: AppTheme.deepBlue.withValues(alpha: 0.18),
                         ),
-                        if (showReleasedLabel)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppTheme.softGreen.withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                  color: AppTheme.softGreen
-                                      .withValues(alpha: 0.35)),
-                            ),
-                            child: Text(
-                              'Released',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: AppTheme.softGreen,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.apartment_outlined,
+                              size: 18, color: AppTheme.deepBlue),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'PROJECT',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(
+                                        color: AppTheme.deepBlue,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.4,
+                                      ),
+                                ),
+                                Text(
+                                  siteLabel,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .titleSmall
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w800,
+                                        color: AppTheme.deepBlue,
+                                      ),
+                                ),
+                              ],
                             ),
                           ),
-                      ],
+                          if (isUrgent)
+                            Container(
+                              margin: const EdgeInsets.only(right: 6),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color:
+                                    AppTheme.errorRed.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Text(
+                                'URGENT',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppTheme.errorRed,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                              ),
+                            ),
+                          if (showReleasedLabel)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: AppTheme.softGreen
+                                    .withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                    color: AppTheme.softGreen
+                                        .withValues(alpha: 0.35)),
+                              ),
+                              child: Text(
+                                'Released',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppTheme.softGreen,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      subject,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                     ),
                     if (details.isNotEmpty) ...[
                       const SizedBox(height: 6),
@@ -2138,28 +2929,22 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                             ?.copyWith(color: AppTheme.mediumGray),
                       ),
                     ],
-                    const SizedBox(height: 10),
+                    if (qtyText.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Need: $qtyText${isUrgent ? ' — purchase immediately' : ''}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: isUrgent
+                                  ? AppTheme.errorRed
+                                  : AppTheme.deepBlue,
+                            ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
                     Row(
                       children: [
-                        const Icon(Icons.location_on_outlined,
-                            size: 16, color: AppTheme.mediumGray),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            siteLabel,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(color: AppTheme.mediumGray),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        const Icon(Icons.person_outline,
+                        const Icon(Icons.engineering_outlined,
                             size: 16, color: AppTheme.mediumGray),
                         const SizedBox(width: 6),
                         Expanded(
@@ -2168,7 +2953,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                             style: Theme.of(context)
                                 .textTheme
                                 .bodySmall
-                                ?.copyWith(color: AppTheme.mediumGray),
+                                ?.copyWith(
+                                  color: AppTheme.mediumGray,
+                                  fontWeight: FontWeight.w600,
+                                ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -2188,7 +2976,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                     Row(
                       children: [
                         Text(
-                          'Open to approve / reject',
+                          isUrgent
+                              ? 'Open to buy now'
+                              : 'Open to purchase / reject',
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: AppTheme.deepBlue,
@@ -2204,7 +2994,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                 ),
               ),
             );
-          },
+                      },
+                    ),
+            ),
+          ],
         );
       },
     );
@@ -2221,6 +3014,11 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     final createdBy = (data['createdBy'] ?? '').toString();
     final createdByName = (data['createdByName'] ?? '').toString();
     final allocationId = (data['allocationId'] ?? '').toString().trim();
+    final isUrgent =
+        (data['priority'] ?? '').toString().toLowerCase() == 'urgent';
+    final requestedQty = _toMoney(data['requestedQuantity']);
+    final requestedUnit = (data['unit'] ?? '').toString();
+    final dateNeeded = (data['dateNeeded'] ?? '').toString();
 
     final siteLabel = projectName.isNotEmpty ? projectName : projectId;
     final managerDisplay =
@@ -2262,9 +3060,28 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
     if (!mounted) return;
 
     final commentController = TextEditingController();
-    final quantityController = TextEditingController();
+    final quantityController = TextEditingController(
+      text: requestedQty > 0
+          ? (requestedQty % 1 == 0
+              ? requestedQty.toStringAsFixed(0)
+              : requestedQty.toStringAsFixed(1))
+          : '',
+    );
     String? selectedInventoryId;
     Map<String, dynamic>? selectedInventory;
+
+    final requestedName =
+        (data['materialName'] ?? subject).toString().trim().toLowerCase();
+    if (requestedName.isNotEmpty) {
+      for (final item in inventoryItems) {
+        final name = (item['materialName'] ?? '').toString().trim().toLowerCase();
+        if (name == requestedName) {
+          selectedInventoryId = (item['id'] ?? '').toString();
+          selectedInventory = item;
+          break;
+        }
+      }
+    }
 
     await showDialog<void>(
       context: context,
@@ -2577,6 +3394,31 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                       'Requested Material',
                                       requestedMaterial,
                                     ),
+                                    const SizedBox(height: 12),
+                                    infoRow(
+                                      Icons.priority_high,
+                                      'Priority',
+                                      isUrgent
+                                          ? 'URGENT — buy first'
+                                          : 'Normal — purchase when ready',
+                                    ),
+                                    if (requestedQty > 0) ...[
+                                      const SizedBox(height: 12),
+                                      infoRow(
+                                        Icons.numbers,
+                                        'Requested quantity',
+                                        '${requestedQty.toStringAsFixed(requestedQty % 1 == 0 ? 0 : 1)} $requestedUnit'
+                                            .trim(),
+                                      ),
+                                    ],
+                                    if (dateNeeded.isNotEmpty) ...[
+                                      const SizedBox(height: 12),
+                                      infoRow(
+                                        Icons.event_outlined,
+                                        'Date needed',
+                                        dateNeeded.split('T').first,
+                                      ),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -2617,7 +3459,9 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
-                                        'Pending Approval',
+                                        isUrgent
+                                            ? 'Urgent — purchaser should buy now'
+                                            : 'Pending purchase',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodyMedium
@@ -2766,12 +3610,26 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                   quantity != null &&
                                   quantity > 0)
                                 Text(
-                                  'This release cost: ₱${calculatedAmount.toStringAsFixed(2)}',
+                                  'This purchase cost: ₱${calculatedAmount.toStringAsFixed(2)}',
                                   style: Theme.of(context)
                                       .textTheme
                                       .bodySmall
                                       ?.copyWith(color: AppTheme.mediumGray),
                                 ),
+                              const SizedBox(height: 14),
+                              TextField(
+                                controller: quantityController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                        decimal: true),
+                                decoration: InputDecoration(
+                                  labelText: 'Quantity to buy / release',
+                                  hintText: requestedQty > 0
+                                      ? 'Requested: ${requestedQty.toStringAsFixed(requestedQty % 1 == 0 ? 0 : 1)}'
+                                      : null,
+                                ),
+                                onChanged: (_) => setStateDialog(() {}),
+                              ),
                               const SizedBox(height: 14),
                               TextField(
                                 controller: commentController,
@@ -2781,17 +3639,27 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                                 maxLines: 3,
                               ),
                               const Spacer(),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.end,
+                              Wrap(
+                                alignment: WrapAlignment.end,
+                                spacing: 12,
+                                runSpacing: 8,
                                 children: [
                                   OutlinedButton(
                                     onPressed: rejectAction,
                                     child: const Text('Reject'),
                                   ),
-                                  const SizedBox(width: 12),
                                   FilledButton(
                                     onPressed: approveAction,
-                                    child: const Text('Approve & Release'),
+                                    style: isUrgent
+                                        ? FilledButton.styleFrom(
+                                            backgroundColor: AppTheme.errorRed,
+                                          )
+                                        : null,
+                                    child: Text(
+                                      isUrgent
+                                          ? 'Buy now (urgent)'
+                                          : 'Purchase & release',
+                                    ),
                                   ),
                                 ],
                               ),
@@ -2918,6 +3786,27 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
           inventoryMaterialName =
               (invData['materialName'] ?? subject).toString().trim();
           inventoryUnit = (invData['unit'] ?? '').toString().trim();
+
+          double readStock(dynamic v) {
+            if (v is num) return v.toDouble();
+            return double.tryParse(
+                    (v ?? '').toString().replaceAll(',', '')) ??
+                0.0;
+          }
+
+          final currentStock = readStock(invData['stock']);
+          if (releasedQuantity > currentStock) {
+            throw Exception(
+                'Not enough stock to release. In stock: ${currentStock.toStringAsFixed(1)}');
+          }
+
+          tx.update(inventoryRef, {
+            'stock': currentStock - releasedQuantity,
+            'updatedAt': FieldValue.serverTimestamp(),
+            'lastReleasedAt': FieldValue.serverTimestamp(),
+            'lastReleasedQty': releasedQuantity,
+            'lastReleaseRequestId': doc.id,
+          });
         });
       }
 
@@ -3047,7 +3936,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
         SnackBar(
           content: Text(
             status == AppConstants.materialRequestApproved
-                ? 'Material request released and recorded as project expense'
+                ? 'Material purchased and released to the site'
                 : 'Material request rejected',
           ),
           backgroundColor: status == AppConstants.materialRequestApproved
@@ -3098,6 +3987,10 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
       }
     }
 
+    _ProjectMaterialBudget budgetSummary =
+        await _loadProjectMaterialBudget(selectedProjectId);
+    if (!mounted) return;
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
@@ -3135,6 +4028,35 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                 return;
               }
 
+              if (unitPrice == null || unitPrice < 0) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                        'Enter a unit price so this material can be checked against the project budget.'),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
+              final estimatedCost = unitPrice * budget;
+              if (budgetSummary.hasBudget &&
+                  estimatedCost > budgetSummary.remaining + 0.009) {
+                setStateDialog(() => isSaving = false);
+                if (!mounted) return;
+                rootMessenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'This material (${_peso(estimatedCost)}) exceeds remaining ${budgetSummary.sourceLabel} (${_peso(budgetSummary.remaining)}).',
+                    ),
+                    backgroundColor: AppTheme.errorRed,
+                  ),
+                );
+                return;
+              }
+
               try {
                 final nowIso = DateTime.now().toIso8601String();
                 final docRef = FirebaseService.instance
@@ -3147,8 +4069,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                   'budgetQuantity': budget,
                   'requiredQuantity': budget,
                   'usedQuantity': 0,
-                  if (unitPrice != null && unitPrice >= 0)
-                    'unitPrice': unitPrice,
+                  'unitPrice': unitPrice,
                   'projectId': selectedProjectId,
                   'projectName': (selectedProjectName ??
                       nameForProject(selectedProjectId)),
@@ -3176,8 +4097,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                         'materialName': name,
                         'unit': unit,
                         'stock': budget,
-                        if (unitPrice != null && unitPrice >= 0)
-                          'unitPrice': unitPrice,
+                        'unitPrice': unitPrice,
                         'projectId': selectedProjectId,
                         'projectName': (selectedProjectName ??
                             nameForProject(selectedProjectId)),
@@ -3212,8 +4132,8 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                 if (!mounted) return;
                 rootMessenger.showSnackBar(
                   const SnackBar(
-                    content:
-                        Text('Material assigned/budgeted for this project.'),
+                    content: Text(
+                        'Material added to this project from the project budget.'),
                     backgroundColor: AppTheme.softGreen,
                   ),
                 );
@@ -3229,14 +4149,48 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
               }
             }
 
+            final livePrice = double.tryParse(
+                  unitPriceController.text.trim().replaceAll(',', ''),
+                ) ??
+                0;
+            final liveQty = double.tryParse(
+                  budgetController.text.trim().replaceAll(',', ''),
+                ) ??
+                0;
+            final liveCost = livePrice * liveQty;
+
             return AlertDialog(
-              title: const Text('Assign/Budget Material'),
+              insetPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              title: const Text('Add material to project'),
               content: SizedBox(
                 width: 420,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (options.isNotEmpty) ...[
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: budgetSummary.hasBudget
+                              ? const Color(0xFFEFF6FF)
+                              : const Color(0xFFFFF7ED),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          budgetSummary.hasBudget
+                              ? 'Remaining ${budgetSummary.sourceLabel}: ${_peso(budgetSummary.remaining)}\nAlready assigned materials: ${_peso(budgetSummary.committed)}'
+                              : 'No project budget on file. Add a unit price and quantity so costs stay trackable.',
+                          style: Theme.of(dialogContext)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (options.isNotEmpty) ...[
                       DropdownButtonFormField<String>(
                         initialValue: selectedProjectId,
                         items: [
@@ -3251,12 +4205,15 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                         ],
                         onChanged: isSaving
                             ? null
-                            : (v) {
+                            : (v) async {
                                 if (v == null || v.isEmpty) return;
                                 setStateDialog(() {
                                   selectedProjectId = v;
                                   selectedProjectName = nameForProject(v);
                                 });
+                                final next =
+                                    await _loadProjectMaterialBudget(v);
+                                setStateDialog(() => budgetSummary = next);
                               },
                         decoration: const InputDecoration(
                           labelText: 'Project',
@@ -3286,6 +4243,7 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                       keyboardType:
                           const TextInputType.numberWithOptions(decimal: true),
                       textInputAction: TextInputAction.next,
+                      onChanged: (_) => setStateDialog(() {}),
                       decoration:
                           const InputDecoration(labelText: 'Unit price (₱)'),
                     ),
@@ -3295,13 +4253,35 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
                       keyboardType:
                           const TextInputType.numberWithOptions(decimal: true),
                       textInputAction: TextInputAction.done,
+                      onChanged: (_) => setStateDialog(() {}),
                       onSubmitted: (_) => save(),
-                      decoration:
-                          const InputDecoration(labelText: 'Budget quantity'),
+                      decoration: const InputDecoration(
+                        labelText: 'Budget quantity',
+                        helperText:
+                            'How many units this project may request',
+                      ),
                     ),
+                    if (liveCost > 0) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        'Estimated cost: ${_peso(liveCost)}'
+                        '${budgetSummary.hasBudget ? ' • remaining after add: ${_peso((budgetSummary.remaining - liveCost).clamp(0, double.infinity))}' : ''}',
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: budgetSummary.hasBudget &&
+                                      liveCost > budgetSummary.remaining
+                                  ? AppTheme.errorRed
+                                  : AppTheme.deepBlue,
+                            ),
+                      ),
+                    ],
                   ],
                 ),
               ),
+            ),
               actions: [
                 TextButton(
                   onPressed:
@@ -3326,6 +4306,22 @@ class _AdminMaterialMonitoringState extends State<AdminMaterialMonitoring>
       },
     );
   }
+}
+
+class _ProjectMaterialBudget {
+  const _ProjectMaterialBudget({
+    required this.remaining,
+    required this.allocated,
+    required this.committed,
+    required this.sourceLabel,
+  });
+
+  final double remaining;
+  final double allocated;
+  final double committed;
+  final String sourceLabel;
+
+  bool get hasBudget => allocated > 0;
 }
 
 class _MaterialUsageEntry {
@@ -3368,114 +4364,4 @@ class _SiteDistributionSummary {
     required this.totalCost,
     required this.lastUsageDate,
   });
-}
-
-DataRow _buildSiteDistributionRow(
-  BuildContext context,
-  _SiteDistributionSummary summary,
-) {
-  String dateText = '';
-  if (summary.lastUsageDate != null) {
-    final d = summary.lastUsageDate!;
-    dateText = '${d.year.toString().padLeft(4, '0')}-'
-        '${d.month.toString().padLeft(2, '0')}-'
-        '${d.day.toString().padLeft(2, '0')}';
-  }
-
-  return DataRow(
-    cells: [
-      DataCell(
-        Text(
-          summary.materialsCount.toString(),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          summary.totalQuantity.toStringAsFixed(1),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          summary.totalCost.toStringAsFixed(2),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          dateText,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-    ],
-  );
-}
-
-DataRow _buildMaterialUsageRow(
-    BuildContext context, _MaterialUsageEntry entry) {
-  String dateText = '';
-  if (entry.date != null) {
-    final d = entry.date!;
-    dateText = '${d.year.toString().padLeft(4, '0')}-'
-        '${d.month.toString().padLeft(2, '0')}-'
-        '${d.day.toString().padLeft(2, '0')}';
-  }
-
-  return DataRow(
-    cells: [
-      DataCell(
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 160),
-          child: Text(
-            entry.materialName,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.quantity.toStringAsFixed(1),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.unit,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.unitPrice == null ? '-' : entry.unitPrice!.toStringAsFixed(2),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.totalCost == null ? '-' : entry.totalCost!.toStringAsFixed(2),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.status,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          entry.reportId,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-      DataCell(
-        Text(
-          dateText,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ),
-    ],
-  );
 }

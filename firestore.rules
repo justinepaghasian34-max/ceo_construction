@@ -3,28 +3,39 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Users collection - users can read/write their own document; admins/CEO head can read all
     match /users/{userId} {
-      allow read: if request.auth != null && (
+      // Own profile readable before OTP (needed for login / OTP screens).
+      allow read: if isSignedIn() && (
         request.auth.uid == userId ||
-        isAdmin() ||
-        isCeoHead() ||
-        isMaterials() ||
-        isPayroll()
+        (isOtpVerified() && (isAdmin() || isCeoHead() || isMaterials() || isPayroll()))
       );
 
-      allow create: if request.auth != null &&
+      // Self-register: Resident Engineer only. Payroll/Materials/Admin are not self-serve.
+      allow create: if isSignedIn() &&
         request.auth.uid == userId &&
         request.resource.data.email.lower() == request.auth.token.email.lower() &&
         request.resource.data.otpVerified == false &&
         request.resource.data.isActive == true &&
         request.resource.data.assignedProjects is list &&
         request.resource.data.assignedProjects.size() == 0 &&
-        (
-          request.resource.data.role in ['admin', 'site_manager', 'payroll', 'materials']
-        );
+        request.resource.data.role == 'site_manager';
 
-      allow update: if request.auth != null && (
+      allow update: if isSignedIn() && (
         (
           request.auth.uid == userId &&
+          !isOtpVerified() &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.isActive == resource.data.isActive &&
+          request.resource.data.otpVerified == resource.data.otpVerified &&
+          request.resource.data.email == resource.data.email &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'fcmToken',
+            'fcmUpdatedAt',
+            'updatedAt'
+          ])
+        ) ||
+        (
+          request.auth.uid == userId &&
+          isOtpVerified() &&
           request.resource.data.role == resource.data.role &&
           request.resource.data.isActive == resource.data.isActive &&
           request.resource.data.otpVerified == resource.data.otpVerified &&
@@ -35,18 +46,26 @@ service cloud.firestore {
             'phoneNumber',
             'department',
             'profileImageUrl',
-            'updatedAt'
+            'updatedAt',
+            'fcmToken',
+            'fcmUpdatedAt'
           ])
         ) ||
         (
+          isOtpVerified() &&
           (isAdmin() || isCeoHead()) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'assignedProjects',
             'otpVerified',
             'otpVerifiedAt',
             'updatedAt',
-            'isActive'
-          ])
+            'isActive',
+            'role'
+          ]) &&
+          (
+            !('role' in request.resource.data.diff(resource.data).affectedKeys()) ||
+            request.resource.data.role in ['site_manager', 'payroll', 'materials', 'admin', 'ceo_head']
+          )
         )
       );
 
@@ -60,12 +79,16 @@ service cloud.firestore {
     match /auth_rate_limits/{limitId} {
       allow read, write: if false;
     }
+
+    match /auth_challenges/{id} {
+      allow read, write: if false;
+    }
     
     // Projects collection - role-based access
     match /projects/{projectId} {
       // Admin can read all, CEO Head can read all, Site Managers can read
       // projects they are assigned to via hasProjectAccess(projectId).
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isMaterials() ||
@@ -82,8 +105,8 @@ service cloud.firestore {
       );
 
       // Admin can create/update/delete projects. CEO Head can create projects.
-      allow create: if request.auth != null && (isAdmin() || isCeoHead());
-      allow update: if request.auth != null && (
+      allow create: if isOtpVerified() && (isAdmin() || isCeoHead());
+      allow update: if isOtpVerified() && (
         isAdmin() ||
         (
           isSiteManager() &&
@@ -95,21 +118,21 @@ service cloud.firestore {
           ])
         )
       );
-      allow delete: if request.auth != null && isAdmin();
+      allow delete: if isOtpVerified() && isAdmin();
 
       match /material_inventory/{itemId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           isMaterials() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
 
-        allow create, delete: if request.auth != null && (isAdmin() || isMaterials());
+        allow create, delete: if isOtpVerified() && (isAdmin() || isMaterials());
 
         // Admin can update freely. Site managers can only decrement stock for
         // assigned projects (best-effort inventory deduction after usage sync).
-        allow update: if request.auth != null && (
+        allow update: if isOtpVerified() && (
           isAdmin() ||
           isMaterials() ||
           (
@@ -128,36 +151,36 @@ service cloud.firestore {
       }
 
       match /material_allocations/{allocationId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           isMaterials() ||
           (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
         );
 
-        allow write: if request.auth != null && (isAdmin() || isMaterials());
+        allow write: if isOtpVerified() && (isAdmin() || isMaterials());
       }
       
       // Daily reports sub-collection
       match /daily_reports/{reportId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() || 
           isCeoHead() ||
           isMaterials() ||
           isPayroll() ||
           hasProjectAccess(projectId)
         );
-        allow create: if request.auth != null && (
+        allow create: if isOtpVerified() && (
           isSiteManager() && hasProjectAccess(projectId)
         );
-        allow update: if request.auth != null && (
+        allow update: if isOtpVerified() && (
           isAdmin() || 
           (isSiteManager() && hasProjectAccess(projectId) && resource.data.reporterId == request.auth.uid)
         );
         
         // Material usage sub-collection
         match /material_usage/{usageId} {
-          allow read, write: if request.auth != null && (
+          allow read, write: if isOtpVerified() && (
             isAdmin() ||
             isMaterials() ||
             (isSiteManager() && hasProjectAccess(projectId))
@@ -167,58 +190,58 @@ service cloud.firestore {
       
       // Attendance sub-collection
       match /attendance/{attendanceId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() || 
           isCeoHead() ||
           isPayroll() ||
           hasProjectAccess(projectId)
         );
-        allow write: if request.auth != null && (
+        allow write: if isOtpVerified() && (
           isSiteManager() && hasProjectAccess(projectId)
         );
       }
 
       // GovTrack AI reports sub-collection
       match /govtrack_reports/{reportId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           hasProjectAccess(projectId)
         );
-        allow create: if request.auth != null && (
+        allow create: if isOtpVerified() && (
           isAdmin() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
-        allow update, delete: if request.auth != null && isAdmin();
+        allow update, delete: if isOtpVerified() && isAdmin();
       }
       
       // Payroll sub-collection
       match /payroll/{payrollId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           isPayroll() ||
           (isSiteManager() && hasProjectAccess(projectId))
         );
-        allow create: if request.auth != null && (isAdmin() || isPayroll());
-        allow update: if request.auth != null && (isAdmin() || isPayroll());
+        allow create: if isOtpVerified() && (isAdmin() || isPayroll());
+        allow update: if isOtpVerified() && (isAdmin() || isPayroll());
         
         // Payroll items sub-collection
         match /items/{itemId} {
-          allow read, write: if request.auth != null && (isAdmin() || isPayroll());
+          allow read, write: if isOtpVerified() && (isAdmin() || isPayroll());
         }
       }
       
       // Deliveries sub-collection
       match /deliveries/{deliveryId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() || 
           isCeoHead() ||
           isMaterials() ||
           hasProjectAccess(projectId) ||
           isProjectSiteManager(projectId)
         );
-        allow write: if request.auth != null && (
+        allow write: if isOtpVerified() && (
           isAdmin() ||
           isMaterials() ||
           (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
@@ -226,16 +249,16 @@ service cloud.firestore {
       }
 
       match /material_requests/{requestId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           isMaterials() ||
           (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
         );
-        allow create: if request.auth != null && (
+        allow create: if isOtpVerified() && (
           isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId))
         );
-        allow update: if request.auth != null && (
+        allow update: if isOtpVerified() && (
           isAdmin() ||
           isMaterials() ||
           (
@@ -253,43 +276,43 @@ service cloud.firestore {
       
       // History sub-collection
       match /history/{historyId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() || 
           isCeoHead() || 
           hasProjectAccess(projectId)
         );
-        allow create: if request.auth != null;
+        allow create: if isOtpVerified() && (isAdmin() || isCeoHead() || isSiteManager());
       }
 
       // Project documents for GovTrack AI (schedules, BOQ, blueprints, SSMP, etc.)
       match /documents/{documentId} {
-        allow read: if request.auth != null && (
+        allow read: if isOtpVerified() && (
           isAdmin() ||
           isCeoHead() ||
           (isSiteManager() && (hasProjectAccess(projectId) || isProjectSiteManager(projectId)))
         );
-        allow create, update, delete: if request.auth != null && isAdmin();
+        allow create, update, delete: if isOtpVerified() && isAdmin();
       }
     }
     
     // Live site weather snapshots used by the admin map
     match /site_weather_snapshots/{snapshotId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager() ||
         isMaterials()
       );
-      allow create, update: if request.auth != null && (
+      allow create, update: if isOtpVerified() && (
         isAdmin() ||
         isSiteManager()
       );
-      allow delete: if request.auth != null && isAdmin();
+      allow delete: if isOtpVerified() && isAdmin();
     }
 
     // Notifications collection
     match /notifications/{notificationId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         resource.data.userId == request.auth.uid ||
@@ -300,34 +323,37 @@ service cloud.firestore {
             isProjectSiteManager(resource.data.projectId)))
       );
 
-      allow create: if request.auth != null && (
+      allow create: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isSiteManager() ||
-        request.resource.data.userId == request.auth.uid ||
-        request.resource.data.audienceRole == 'admin' ||
-        request.resource.data.targetRole == 'admin'
-      );
+        isMaterials()
+      ) &&
+        request.resource.data.keys().hasAll(['userId', 'title', 'message', 'type']) &&
+        request.resource.data.title is string &&
+        request.resource.data.message is string &&
+        request.resource.data.title.size() <= 200 &&
+        request.resource.data.message.size() <= 2000;
 
-      allow update: if request.auth != null && (
+      allow update: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         (resource.data.userId == request.auth.uid &&
           request.resource.data.userId == request.auth.uid)
       );
 
-      allow delete: if request.auth != null && (isAdmin() || isCeoHead());
+      allow delete: if isOtpVerified() && (isAdmin() || isCeoHead());
     }
     
     // AI Analysis collection (GovTrack chat + progress reports)
     match /ai_analysis/{analysisId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         resource.data.submittedByUid == request.auth.uid ||
         isAdmin() ||
         isCeoHead() ||
         (isSiteManager() && canWorkProject(resource.data.projectId))
       );
-      allow create: if request.auth != null &&
+      allow create: if isOtpVerified() &&
         request.resource.data.submittedByUid == request.auth.uid &&
         (
           isAdmin() ||
@@ -347,76 +373,76 @@ service cloud.firestore {
     
     // Audit logs - ADMIN ONLY (Cloud Functions write entries)
     match /audit_logs/{logId} {
-      allow read: if request.auth != null && (isAdmin() || isCeoHead());
+      allow read: if isOtpVerified() && (isAdmin() || isCeoHead());
       allow write: if false;
     }
     
     // Disbursements collection
     match /disbursements/{disbursementId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() || 
         isCeoHead()
       );
-      allow write: if request.auth != null && isAdmin();
+      allow write: if isOtpVerified() && isAdmin();
     }
 
     // Material templates (admin-managed, reusable for projects)
     match /material_templates/{templateId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isMaterials()
       );
 
-      allow create, update, delete: if request.auth != null && (isAdmin() || isMaterials());
+      allow create, update, delete: if isOtpVerified() && (isAdmin() || isMaterials());
     }
 
     // Collection group rules for history (Project History screen)
     match /{path=**}/history/{historyId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead()
       );
     }
 
     match /{path=**}/material_requests/{requestId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isMaterials() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
-      allow create: if request.auth != null && (
+      allow create: if isOtpVerified() && (
         isAdmin() ||
         isMaterials() ||
         (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
       );
 
-      allow update: if request.auth != null && (isAdmin() || isMaterials());
+      allow update: if isOtpVerified() && (isAdmin() || isMaterials());
     }
 
     // Collection group rules for material usage (Admin Material Monitoring screen)
     match /{path=**}/material_usage/{usageId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isMaterials() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
-      allow create, update: if request.auth != null && (
+      allow create, update: if isOtpVerified() && (
         isAdmin() ||
         isMaterials() ||
         (isSiteManager() && hasProjectAccess(request.resource.data.projectId))
       );
 
-      allow delete: if request.auth != null && isAdmin();
+      allow delete: if isOtpVerified() && isAdmin();
     }
 
     // Collection group rules for deliveries (Material Monitoring screen)
     match /{path=**}/deliveries/{deliveryId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isMaterials() ||
@@ -426,7 +452,7 @@ service cloud.firestore {
 
     // Collection group rules for attendance (Admin Payroll monitoring)
     match /{path=**}/attendance/{attendanceId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isPayroll() ||
@@ -436,29 +462,42 @@ service cloud.firestore {
 
     // Collection group rules for payroll (Admin Payroll monitoring)
     match /{path=**}/payroll/{payrollId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead() ||
         isPayroll() ||
         (isSiteManager() && hasProjectAccess(resource.data.projectId))
       );
 
-      allow create, update, delete: if request.auth != null && (isAdmin() || isPayroll());
+      allow create, update, delete: if isOtpVerified() && (isAdmin() || isPayroll());
     }
 
     // Collection group rules for payroll items (if queried)
     match /{path=**}/items/{itemId} {
-      allow read: if request.auth != null && (isAdmin() || isCeoHead() || isPayroll());
-      allow write: if request.auth != null && (isAdmin() || isPayroll());
+      allow read: if isOtpVerified() && (isAdmin() || isCeoHead() || isPayroll());
+      allow write: if isOtpVerified() && (isAdmin() || isPayroll());
     }
     
     // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOtpVerified() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.otpVerified == true;
+    }
+
     function isAdmin() {
       return getUserRole() in ['admin', 'Admin', 'ADMIN'];
     }
     
     function isSiteManager() {
-      return getUserRole() in ['site_manager', 'Site_Manager', 'Site manager', 'site manager', 'SITE_MANAGER'];
+      return getUserRole() in [
+        'site_manager', 'Site_Manager', 'Site manager', 'site manager', 'SITE_MANAGER',
+        'resident_engineer', 'Resident_Engineer', 'RESIDENT_ENGINEER'
+      ];
     }
     
     function isCeoHead() {
@@ -473,13 +512,15 @@ service cloud.firestore {
       return getUserRole() in ['payroll', 'Payroll', 'PAYROLL', 'payroll_monitoring'];
     }
     
+    // Zero-Trust: prefer cryptographically signed custom claim; Firestore is fallback only.
     function getUserRole() {
+      let claimRole = request.auth.token.role is string ? request.auth.token.role : '';
       let docRole = exists(/databases/$(database)/documents/users/$(request.auth.uid))
           ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
           : '';
-      return docRole is string && docRole != ''
-          ? docRole
-          : (request.auth.token.role is string ? request.auth.token.role : '');
+      return claimRole != ''
+          ? claimRole
+          : (docRole is string ? docRole : '');
     }
     
     function hasProjectAccess(projectId) {
@@ -513,11 +554,11 @@ service cloud.firestore {
 
     // Budgets collection - CEO Head and Admin only
     match /budgets/{budgetId} {
-      allow read: if request.auth != null && (
+      allow read: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead()
       );
-      allow create, update, delete: if request.auth != null && (
+      allow create, update, delete: if isOtpVerified() && (
         isAdmin() ||
         isCeoHead()
       );

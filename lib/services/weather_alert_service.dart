@@ -1,5 +1,7 @@
 import 'package:intl/intl.dart';
 
+import 'auth_service.dart';
+import 'firebase_service.dart';
 import 'geo_tag_service.dart';
 import 'local_notification_service.dart';
 import 'weather_service.dart';
@@ -15,8 +17,23 @@ class WeatherAlertService {
     final now = DateTime.now();
 
     final geoTag = await GeoTagService.instance.captureGeoTag();
-    final lat = (geoTag?['lat'] as num?)?.toDouble();
-    final lon = (geoTag?['lng'] as num?)?.toDouble();
+    var lat = (geoTag?['lat'] as num?)?.toDouble();
+    var lon = (geoTag?['lng'] as num?)?.toDouble();
+    if (lat == null || lon == null) {
+      try {
+        final projectId = AuthService.instance.currentUser?.assignedProjects.isNotEmpty == true
+            ? AuthService.instance.currentUser!.assignedProjects.first
+            : null;
+        if (projectId != null) {
+          final snap = await FirebaseService.instance.projectsCollection
+              .doc(projectId)
+              .get();
+          final data = (snap.data() as Map?)?.cast<String, dynamic>() ?? {};
+          lat = (data['latitude'] as num?)?.toDouble();
+          lon = (data['longitude'] as num?)?.toDouble();
+        }
+      } catch (_) {}
+    }
     if (lat == null || lon == null) {
       return null;
     }

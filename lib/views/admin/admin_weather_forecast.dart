@@ -1327,7 +1327,7 @@ class _AdminWeatherForecastScreenState
 
   Future<_WeatherScreenData>? _future;
   int _selectedHourlyTab = 0;
-  WeatherMapLayer _selectedMapLayer = WeatherMapLayer.temperature;
+  WeatherMapLayer _selectedMapLayer = WeatherMapLayer.satellite;
   int _selectedMonthIndex = DateTime.now().month - 1;
   DateTime? _selectedCalendarDate;
   final Map<String, Future<List<WeatherDailyForecast>>> _monthlyCache = {};
@@ -1407,12 +1407,26 @@ class _AdminWeatherForecastScreenState
 
             if (snapshot.hasError) {
               return Center(
-                child: Text(
-                  'Failed to load weather forecast',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: AppTheme.errorRed),
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Failed to load weather forecast',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: AppTheme.errorRed),
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: _reload,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
                 ),
               );
             }
@@ -3193,14 +3207,31 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
   String? _selectedProjectId;
   String? _selectedProjectName;
   LatLng? _pendingProjectLatLng;
+  String? _overlayUrl;
 
   @override
   void initState() {
     super.initState();
+    _loadOverlay();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ll = _mapController.camera.center;
       _scheduleReverseGeocode(ll.latitude, ll.longitude);
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _WeatherMapsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedLayer != widget.selectedLayer) {
+      _loadOverlay();
+    }
+  }
+
+  Future<void> _loadOverlay() async {
+    final url = await WeatherService.instance
+        .weatherOverlayTileUrl(widget.selectedLayer);
+    if (!mounted) return;
+    setState(() => _overlayUrl = url);
   }
 
   @override
@@ -3282,9 +3313,6 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
         ? LatLng(widget.lat!, widget.lon!)
         : fallbackCenter;
 
-    final overlayUrl =
-        WeatherService.instance.getWeatherTileUrlTemplate(widget.selectedLayer);
-
     final currentUser = AuthService.instance.currentUser;
     final canGeoTag = currentUser?.isAdmin == true;
 
@@ -3298,38 +3326,65 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
           Row(
             children: [
               Expanded(
-                child: Text(
-                  'Weather maps',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: const Color(0xFF0F172A),
-                      ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Weather maps',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF0F172A),
+                          ),
+                    ),
+                    Text(
+                      'Live satellite & radar overlay',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: const Color(0xFF64748B),
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ],
                 ),
               ),
-              _MapLayerButton(
-                label: 'Temp',
-                selected: widget.selectedLayer == WeatherMapLayer.temperature,
-                onTap: () => widget.onSelectLayer(WeatherMapLayer.temperature),
-              ),
-              const SizedBox(width: 8),
-              _MapLayerButton(
-                label: 'Precip',
-                selected:
-                    widget.selectedLayer == WeatherMapLayer.precipitation,
-                onTap: () =>
-                    widget.onSelectLayer(WeatherMapLayer.precipitation),
-              ),
-              const SizedBox(width: 8),
-              _MapLayerButton(
-                label: 'Wind',
-                selected: widget.selectedLayer == WeatherMapLayer.wind,
-                onTap: () => widget.onSelectLayer(WeatherMapLayer.wind),
-              ),
-              const SizedBox(width: 8),
-              _MapLayerButton(
-                label: 'Clouds',
-                selected: widget.selectedLayer == WeatherMapLayer.clouds,
-                onTap: () => widget.onSelectLayer(WeatherMapLayer.clouds),
+              Flexible(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _MapLayerButton(
+                        label: 'Satellite',
+                        selected:
+                            widget.selectedLayer == WeatherMapLayer.satellite,
+                        onTap: () =>
+                            widget.onSelectLayer(WeatherMapLayer.satellite),
+                      ),
+                      const SizedBox(width: 8),
+                      _MapLayerButton(
+                        label: 'Radar',
+                        selected: widget.selectedLayer ==
+                            WeatherMapLayer.precipitation,
+                        onTap: () => widget
+                            .onSelectLayer(WeatherMapLayer.precipitation),
+                      ),
+                      const SizedBox(width: 8),
+                      _MapLayerButton(
+                        label: 'Clouds',
+                        selected:
+                            widget.selectedLayer == WeatherMapLayer.clouds,
+                        onTap: () =>
+                            widget.onSelectLayer(WeatherMapLayer.clouds),
+                      ),
+                      const SizedBox(width: 8),
+                      _MapLayerButton(
+                        label: 'Temp',
+                        selected: widget.selectedLayer ==
+                            WeatherMapLayer.temperature,
+                        onTap: () => widget
+                            .onSelectLayer(WeatherMapLayer.temperature),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               if (canGeoTag) ...[
                 const SizedBox(width: 10),
@@ -3581,13 +3636,14 @@ class _WeatherMapsPanelState extends State<_WeatherMapsPanel> {
                         userAgentPackageName: 'coecons',
                         tileProvider: CancellableNetworkTileProvider(),
                       ),
-                      TileLayer(
-                        urlTemplate: overlayUrl,
-                        tileProvider: CancellableNetworkTileProvider(),
-                        tileBuilder: (context, widget, tile) {
-                          return Opacity(opacity: 0.65, child: widget);
-                        },
-                      ),
+                      if (_overlayUrl != null && _overlayUrl!.isNotEmpty)
+                        TileLayer(
+                          urlTemplate: _overlayUrl!,
+                          tileProvider: CancellableNetworkTileProvider(),
+                          tileBuilder: (context, widget, tile) {
+                            return Opacity(opacity: 0.65, child: widget);
+                          },
+                        ),
                       StreamBuilder<QuerySnapshot>(
                         stream: FirebaseService.instance.projectsCollection
                             .limit(400)

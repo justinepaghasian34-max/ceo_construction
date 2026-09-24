@@ -9,15 +9,29 @@ import '../../widgets/common/app_card.dart';
 import 'widgets/admin_bottom_nav.dart';
 import 'widgets/admin_glass_layout.dart';
 import 'widgets/budget_management_panel.dart';
+import 'widgets/progress_billing_panel.dart';
 
-class AdminFinancialMonitoring extends StatelessWidget {
+class AdminFinancialMonitoring extends StatefulWidget {
   const AdminFinancialMonitoring({super.key});
+
+  @override
+  State<AdminFinancialMonitoring> createState() =>
+      _AdminFinancialMonitoringState();
+}
+
+class _AdminFinancialMonitoringState extends State<AdminFinancialMonitoring> {
+  int _reloadToken = 0;
 
   @override
   Widget build(BuildContext context) {
     return AdminGlassScaffold(
       title: 'Budget & Financial Monitoring',
       actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Reload',
+          onPressed: () => setState(() => _reloadToken++),
+        ),
         IconButton(
           icon: const Icon(Icons.notifications_none),
           onPressed: () => context.push(RouteNames.notifications),
@@ -31,6 +45,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
         current: AdminNavItem.budgetFinancial,
       ),
       child: FutureBuilder<_FinancialOverviewData>(
+        key: ValueKey(_reloadToken),
         future: _loadFinancialOverview(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -152,20 +167,18 @@ class AdminFinancialMonitoring extends StatelessWidget {
                           value: _formatCurrency(data.totalExpenses),
                         );
 
-                        final utilizationText = data.totalBudget <= 0
-                            ? '—'
-                            : '${(data.totalExpenses / data.totalBudget * 100).clamp(0, 999).toStringAsFixed(1)}%';
-
                         final overBudgetLabel = data.overBudgetProjects == 1
                             ? 'project'
                             : 'projects';
 
-                        final utilizationCard = buildStatCard(
-                          icon: Icons.pie_chart,
+                        final remainingCard = buildStatCard(
+                          icon: Icons.account_balance_wallet_outlined,
                           iconColor: AppTheme.softGreen,
                           label:
-                              'Overall utilization  ${data.overBudgetProjects} $overBudgetLabel over budget',
-                          value: utilizationText,
+                              'Remaining after materials & payroll  ${data.overBudgetProjects} $overBudgetLabel over budget',
+                          value: _formatCurrency(
+                            data.totalBudget - data.totalExpenses,
+                          ),
                         );
 
                         if (isCardsNarrow) {
@@ -176,7 +189,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
                               const SizedBox(height: 12),
                               totalExpensesCard,
                               const SizedBox(height: 12),
-                              utilizationCard,
+                              remainingCard,
                             ],
                           );
                         }
@@ -191,7 +204,7 @@ class AdminFinancialMonitoring extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            utilizationCard,
+                            remainingCard,
                           ],
                         );
                       },
@@ -232,6 +245,8 @@ class AdminFinancialMonitoring extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 24),
+                    const ProgressBillingPanel(),
+                    const SizedBox(height: 24),
                     const BudgetManagementPanel(),
                   ],
                 );
@@ -259,10 +274,13 @@ class AdminFinancialMonitoring extends StatelessWidget {
           columns: const [
             DataColumn(label: Text('Project')),
             DataColumn(label: Text('Status')),
-            DataColumn(label: Text('Budget')),
-            DataColumn(label: Text('Expenses')),
-            DataColumn(label: Text('Profit')),
-            DataColumn(label: Text('Utilization')),
+            DataColumn(label: Text('Approved budget')),
+            DataColumn(label: Text('1st billing')),
+            DataColumn(label: Text('2nd billing')),
+            DataColumn(label: Text('3rd billing')),
+            DataColumn(label: Text('Materials')),
+            DataColumn(label: Text('Payroll')),
+            DataColumn(label: Text('Remaining')),
           ],
           rows: [
             for (final item in summaries)
@@ -377,7 +395,9 @@ class AdminFinancialMonitoring extends StatelessWidget {
       if (type == 'material_request') {
         category = 'materials';
       } else if (type == 'payroll') {
-        category = 'payroll';
+        // Paid payroll is counted from payroll records below so remaining
+        // is not double-counted.
+        continue;
       } else {
         category = 'other';
       }
@@ -425,6 +445,11 @@ class AdminFinancialMonitoring extends StatelessWidget {
         amount = double.tryParse(cleaned) ?? 0.0;
       } else {
         amount = 0.0;
+      }
+
+      final payrollStatus = (data['status'] ?? '').toString().toLowerCase();
+      if (payrollStatus != 'paid') {
+        continue;
       }
 
       if (amount <= 0) {
@@ -493,6 +518,14 @@ class AdminFinancialMonitoring extends StatelessWidget {
         overBudgetProjects++;
       }
 
+      final billings = data['progressBillings'];
+      double billingAmount(String key, String fallbackKey) {
+        if (billings is Map && billings[key] is Map) {
+          return _asMoney((billings[key] as Map)['amount']);
+        }
+        return _asMoney(data[fallbackKey]);
+      }
+
       summaries.add(
         _ProjectFinancialSummary(
           projectId: projectId,
@@ -504,6 +537,9 @@ class AdminFinancialMonitoring extends StatelessWidget {
           materialsExpenses: materialsExpenses,
           payrollExpenses: payrollExpenses,
           otherExpenses: otherExpenses,
+          firstBilling: billingAmount('first', 'firstBillingAmount'),
+          secondBilling: billingAmount('second', 'secondBillingAmount'),
+          thirdBilling: billingAmount('third', 'thirdBillingAmount'),
           expenseDetails:
               expenseDetailsByProject[projectId] ?? const <_ExpenseDetail>[],
         ),
@@ -557,6 +593,9 @@ class _ProjectFinancialSummary {
   final double materialsExpenses;
   final double payrollExpenses;
   final double otherExpenses;
+  final double firstBilling;
+  final double secondBilling;
+  final double thirdBilling;
   final List<_ExpenseDetail> expenseDetails;
 
   const _ProjectFinancialSummary({
@@ -569,6 +608,9 @@ class _ProjectFinancialSummary {
     required this.materialsExpenses,
     required this.payrollExpenses,
     required this.otherExpenses,
+    required this.firstBilling,
+    required this.secondBilling,
+    required this.thirdBilling,
     required this.expenseDetails,
   });
 
@@ -602,21 +644,6 @@ DataRow _buildProjectFinancialRow(
   } else {
     formattedStatus = item.status[0].toUpperCase() + item.status.substring(1);
   }
-  final utilizationPercent = item.budget <= 0
-      ? '—'
-      : '${(item.utilization * 100).toStringAsFixed(0)}%';
-
-  Color utilizationColor;
-  if (item.budget <= 0 && item.expenses <= 0) {
-    utilizationColor = AppTheme.mediumGray;
-  } else if (item.utilization < 0.7) {
-    utilizationColor = AppTheme.primaryBlue;
-  } else if (item.utilization <= 1.0) {
-    utilizationColor = AppTheme.accentYellow;
-  } else {
-    utilizationColor = AppTheme.errorRed;
-  }
-
   return DataRow(
     cells: [
       DataCell(
@@ -645,7 +672,25 @@ DataRow _buildProjectFinancialRow(
       ),
       DataCell(
         Text(
-          _formatCurrency(item.expenses),
+          _formatCurrency(item.firstBilling),
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+      DataCell(
+        Text(
+          _formatCurrency(item.secondBilling),
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+      DataCell(
+        Text(
+          _formatCurrency(item.thirdBilling),
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ),
+      DataCell(
+        Text(
+          _formatCurrency(item.materialsExpenses),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: AppTheme.primaryBlue,
                 decoration: TextDecoration.underline,
@@ -655,16 +700,23 @@ DataRow _buildProjectFinancialRow(
       ),
       DataCell(
         Text(
-          _formatCurrency(item.profit),
-          style: Theme.of(context).textTheme.bodySmall,
+          _formatCurrency(item.payrollExpenses),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppTheme.primaryBlue,
+                decoration: TextDecoration.underline,
+              ),
         ),
+        onTap: () => _showExpenseBreakdown(context, item),
       ),
       DataCell(
         Text(
-          utilizationPercent,
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: utilizationColor),
+          _formatCurrency(item.remaining),
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: item.remaining < 0
+                    ? AppTheme.errorRed
+                    : AppTheme.deepBlue,
+              ),
         ),
       ),
     ],
@@ -838,6 +890,17 @@ void _showExpenseBreakdown(
       );
     },
   );
+}
+
+double _asMoney(dynamic value) {
+  if (value is num) return value.toDouble();
+  if (value is String) {
+    return double.tryParse(
+          value.replaceAll(',', '').replaceAll('₱', '').trim(),
+        ) ??
+        0;
+  }
+  return 0;
 }
 
 String _formatCurrency(double value) {

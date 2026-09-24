@@ -17,11 +17,53 @@ class MaterialDeliveryScreen extends StatefulWidget {
 }
 
 class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
-  String? get _projectId {
+  String? _projectId;
+  bool _loadingProject = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProject();
+  }
+
+  Future<void> _loadProject() async {
+    await AuthService.instance.refreshUserData();
     final user = AuthService.instance.currentUser;
-    if (user == null) return null;
-    if (user.assignedProjects.isEmpty) return null;
-    return user.assignedProjects.first;
+    final firebaseUser = AuthService.instance.currentFirebaseUser;
+
+    String? id =
+        user?.assignedProjects.isNotEmpty == true ? user!.assignedProjects.first : null;
+
+    if ((id == null || id.isEmpty) && firebaseUser != null) {
+      try {
+        final byManager = await FirebaseService.instance.projectsCollection
+            .where('siteManagerId', isEqualTo: firebaseUser.uid)
+            .limit(1)
+            .get();
+        if (byManager.docs.isNotEmpty) {
+          id = byManager.docs.first.id;
+        }
+      } catch (_) {}
+    }
+
+    if ((id == null || id.isEmpty) && firebaseUser?.email != null) {
+      try {
+        final email = firebaseUser!.email!.trim();
+        final byEmail = await FirebaseService.instance.projectsCollection
+            .where('projectEngineerEmail', isEqualTo: email)
+            .limit(1)
+            .get();
+        if (byEmail.docs.isNotEmpty) {
+          id = byEmail.docs.first.id;
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _projectId = id;
+      _loadingProject = false;
+    });
   }
 
   Future<void> _markDeliveryCompleted(
@@ -106,6 +148,20 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_loadingProject) {
+      return Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+          title: const Text('Material Delivery'),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
     final projectId = _projectId;
 
     if (projectId == null || projectId.isEmpty) {
@@ -138,7 +194,6 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
     final requestStream = FirebaseService.instance.projectsCollection
         .doc(projectId)
         .collection('material_requests')
-        .where('status', isEqualTo: AppConstants.materialRequestApproved)
         .limit(250)
         .snapshots();
 
@@ -162,11 +217,15 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(
-              child: Text(
-                'Failed to load deliveries',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.errorRed,
-                    ),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Failed to load deliveries.\n${snapshot.error}',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.errorRed,
+                      ),
+                ),
               ),
             );
           }
@@ -176,23 +235,22 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
           }
 
           final docs = snapshot.data!.docs;
-          if (docs.isEmpty) {
-            return Center(
-              child: Text(
-                'No approved material releases yet',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.mediumGray,
-                    ),
-              ),
-            );
-          }
-
           final rows = docs
               .map((d) => <String, dynamic>{
                     'id': d.id,
                     ...(d.data() as Map?)?.cast<String, dynamic>() ??
                         <String, dynamic>{},
                   })
+              .where((request) {
+                final status =
+                    (request['status'] ?? '').toString().toLowerCase();
+                final deliveryStatus =
+                    (request['deliveryStatus'] ?? '').toString().toLowerCase();
+                return status == AppConstants.materialRequestApproved ||
+                    deliveryStatus == 'released' ||
+                    deliveryStatus == 'in_transit' ||
+                    deliveryStatus == 'completed';
+              })
               .toList();
 
           rows.sort((a, b) {
@@ -213,6 +271,21 @@ class _MaterialDeliveryScreenState extends State<MaterialDeliveryScreen> {
             if (bDt == null) return -1;
             return bDt.compareTo(aDt);
           });
+
+          if (rows.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'No approved material releases yet.\nSubmit a request first, then wait for Material Monitoring to approve it.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppTheme.mediumGray,
+                      ),
+                ),
+              ),
+            );
+          }
 
           return ListView.separated(
             padding: const EdgeInsets.all(16),

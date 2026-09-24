@@ -8,7 +8,6 @@ import 'package:go_router/go_router.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/auth_service.dart';
-import '../../services/hive_service.dart';
 
 class SiteManagerOtpScreen extends StatefulWidget {
   const SiteManagerOtpScreen({super.key});
@@ -233,10 +232,7 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
     final u = FirebaseAuth.instance.currentUser;
     if (u == null) return;
 
-    await HiveService.instance.settingsBox.put(
-      'otp_verified_${u.uid}',
-      <String, dynamic>{'verified': true},
-    );
+    await AuthService.instance.markOtpSessionVerified();
 
     try {
       await u.reload();
@@ -244,6 +240,8 @@ class _SiteManagerOtpScreenState extends State<SiteManagerOtpScreen> with Ticker
     } catch (_) {}
 
     await AuthService.instance.refreshUserData();
+    await AuthService.instance.hydrateOtpSession();
+    await AuthService.instance.markOtpSessionVerified();
 
     if (!mounted) return;
     final role = AuthService.instance.userRole;

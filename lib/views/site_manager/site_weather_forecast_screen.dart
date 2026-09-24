@@ -8,6 +8,7 @@ import '../../core/theme/app_theme.dart';
 import '../../providers/site_weather_provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/weather_service.dart';
+import 'widgets/project_site_location_card.dart';
 import 'widgets/site_manager_card.dart';
 import 'widgets/site_manager_bottom_nav.dart';
 
@@ -25,9 +26,11 @@ class SiteWeatherForecastScreen extends ConsumerStatefulWidget {
 class _SiteWeatherForecastScreenState
     extends ConsumerState<SiteWeatherForecastScreen> {
   final MapController _mapController = MapController();
-  WeatherMapLayer _layer = WeatherMapLayer.precipitation;
+  WeatherMapLayer _layer = WeatherMapLayer.satellite;
   List<WeatherDailyForecast>? _forecast;
+  List<WeatherHourlyForecast>? _hourly;
   bool _forecastLoading = false;
+  bool _forecastLoaded = false;
 
   @override
   void dispose() {
@@ -36,34 +39,24 @@ class _SiteWeatherForecastScreenState
   }
 
   Future<void> _loadForecast(double lat, double lon) async {
-    if (_forecastLoading) return;
+    if (_forecastLoading || _forecastLoaded) return;
     setState(() => _forecastLoading = true);
     try {
-      final f = await WeatherService.instance
+      final daily = await WeatherService.instance
+          .get7DayForecastByCoordinates(lat: lat, lon: lon);
+      final hourly = await WeatherService.instance
           .getHourlyForecastByCoordinatesAndDate(
         lat: lat,
         lon: lon,
         date: DateTime.now(),
       );
-      // Convert hourly to daily summaries (group by date).
-      final Map<DateTime, List<WeatherHourlyForecast>> byDay = {};
-      for (final h in f) {
-        final d = DateTime(h.dateTime.year, h.dateTime.month, h.dateTime.day);
-        byDay.putIfAbsent(d, () => []).add(h);
+      if (mounted) {
+        setState(() {
+          _forecast = daily;
+          _hourly = hourly;
+          _forecastLoaded = true;
+        });
       }
-      final daily = byDay.entries.take(7).map((e) {
-        final temps = e.value.map((h) => h.tempC).toList();
-        final minT = temps.reduce((a, b) => a < b ? a : b);
-        final maxT = temps.reduce((a, b) => a > b ? a : b);
-        final cond = e.value.first.condition;
-        return WeatherDailyForecast(
-          date: e.key,
-          minTempC: minT,
-          maxTempC: maxT,
-          condition: cond,
-        );
-      }).toList();
-      if (mounted) setState(() => _forecast = daily);
     } catch (_) {
       // forecast unavailable — silently ignore
     } finally {
@@ -96,6 +89,7 @@ class _SiteWeatherForecastScreenState
               mapController: _mapController,
               layer: _layer,
               forecast: _forecast,
+              hourly: _hourly,
               forecastLoading: _forecastLoading,
               onLayerChanged: (l) => setState(() => _layer = l),
               onWeatherLoaded: _loadForecast,
@@ -112,6 +106,7 @@ class _WeatherBody extends ConsumerWidget {
     required this.mapController,
     required this.layer,
     required this.forecast,
+    required this.hourly,
     required this.forecastLoading,
     required this.onLayerChanged,
     required this.onWeatherLoaded,
@@ -121,6 +116,7 @@ class _WeatherBody extends ConsumerWidget {
   final MapController mapController;
   final WeatherMapLayer layer;
   final List<WeatherDailyForecast>? forecast;
+  final List<WeatherHourlyForecast>? hourly;
   final bool forecastLoading;
   final ValueChanged<WeatherMapLayer> onLayerChanged;
   final Future<void> Function(double lat, double lon) onWeatherLoaded;
@@ -168,6 +164,11 @@ class _WeatherBody extends ConsumerWidget {
             bottom: 24 + MediaQuery.of(context).padding.bottom,
           ),
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: ProjectSiteLocationCard(projectId: projectId),
+            ),
+            const SizedBox(height: 16),
             // ── Hero current conditions ──────────────────────────────────
             _CurrentConditionsHero(
               siteWeather: siteWeather,
@@ -190,6 +191,12 @@ class _WeatherBody extends ConsumerWidget {
                 child: _RainAlertBanner(projectName: siteWeather.projectName),
               ),
             if (isRaining) const SizedBox(height: 16),
+
+            if (hourly != null && hourly!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: _HourlyStrip(hourly: hourly!),
+              ),
 
             // ── Interactive map ──────────────────────────────────────────
             Padding(
@@ -484,7 +491,80 @@ class _RainAlertBanner extends StatelessWidget {
 
 // ── Map card ─────────────────────────────────────────────────────────────────
 
-class _MapCard extends StatelessWidget {
+class _HourlyStrip extends StatelessWidget {
+  const _HourlyStrip({required this.hourly});
+  final List<WeatherHourlyForecast> hourly;
+
+  @override
+  Widget build(BuildContext context) {
+    return SiteManagerCard(
+      margin: EdgeInsets.zero,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Hourly',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 96,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: hourly.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final h = hourly[i];
+                final hour = h.dateTime.hour;
+                final hour12 = (hour % 12) == 0 ? 12 : (hour % 12);
+                final label = '$hour12 ${hour < 12 ? 'AM' : 'PM'}';
+                return Container(
+                  width: 64,
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '${h.tempC.toStringAsFixed(0)}°',
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w900),
+                      ),
+                      if (h.pop != null)
+                        Text(
+                          '${(h.pop! * 100).round()}%',
+                          maxLines: 1,
+                          style: const TextStyle(
+                              fontSize: 10, color: Color(0xFF2563EB)),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapCard extends StatefulWidget {
   const _MapCard({
     required this.lat,
     required this.lon,
@@ -508,10 +588,32 @@ class _MapCard extends StatelessWidget {
   final IconData weatherIcon;
 
   @override
-  Widget build(BuildContext context) {
-    final tileUrl =
-        WeatherService.instance.getWeatherTileUrlTemplate(layer);
+  State<_MapCard> createState() => _MapCardState();
+}
 
+class _MapCardState extends State<_MapCard> {
+  String? _overlayUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOverlay();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MapCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.layer != widget.layer) _loadOverlay();
+  }
+
+  Future<void> _loadOverlay() async {
+    final url =
+        await WeatherService.instance.weatherOverlayTileUrl(widget.layer);
+    if (mounted) setState(() => _overlayUrl = url);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return SiteManagerCard(
       margin: EdgeInsets.zero,
       padding: EdgeInsets.zero,
@@ -522,33 +624,46 @@ class _MapCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
             child: Row(
               children: [
-                const Icon(Icons.map_outlined,
+                const Icon(Icons.satellite_alt_outlined,
                     size: 16, color: AppTheme.residentBlue),
                 const SizedBox(width: 8),
-                Text(
-                  'Project Site Map',
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                Expanded(
+                  child: Text(
+                    'Satellite & radar',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
                 ),
-                const Spacer(),
-                // Layer toggle
-                _LayerChip(
-                  label: 'Rain',
-                  active: layer == WeatherMapLayer.precipitation,
-                  onTap: () => onLayerChanged(WeatherMapLayer.precipitation),
-                ),
-                const SizedBox(width: 6),
-                _LayerChip(
-                  label: 'Clouds',
-                  active: layer == WeatherMapLayer.clouds,
-                  onTap: () => onLayerChanged(WeatherMapLayer.clouds),
-                ),
-                const SizedBox(width: 6),
-                _LayerChip(
-                  label: 'Temp',
-                  active: layer == WeatherMapLayer.temperature,
-                  onTap: () => onLayerChanged(WeatherMapLayer.temperature),
+                Flexible(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _LayerChip(
+                          label: 'Sat',
+                          active: widget.layer == WeatherMapLayer.satellite,
+                          onTap: () => widget
+                              .onLayerChanged(WeatherMapLayer.satellite),
+                        ),
+                        const SizedBox(width: 6),
+                        _LayerChip(
+                          label: 'Rain',
+                          active:
+                              widget.layer == WeatherMapLayer.precipitation,
+                          onTap: () => widget
+                              .onLayerChanged(WeatherMapLayer.precipitation),
+                        ),
+                        const SizedBox(width: 6),
+                        _LayerChip(
+                          label: 'Clouds',
+                          active: widget.layer == WeatherMapLayer.clouds,
+                          onTap: () =>
+                              widget.onLayerChanged(WeatherMapLayer.clouds),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -560,9 +675,9 @@ class _MapCard extends StatelessWidget {
             child: SizedBox(
               height: 260,
               child: FlutterMap(
-                mapController: mapController,
+                mapController: widget.mapController,
                 options: MapOptions(
-                  initialCenter: LatLng(lat, lon),
+                  initialCenter: LatLng(widget.lat, widget.lon),
                   initialZoom: 13,
                 ),
                 children: [
@@ -573,16 +688,17 @@ class _MapCard extends StatelessWidget {
                     userAgentPackageName:
                         'com.ceoconstruction.monitoring',
                   ),
-                  TileLayer(
-                    urlTemplate: tileUrl,
-                    tileProvider: CancellableNetworkTileProvider(),
-                    userAgentPackageName:
-                        'com.ceoconstruction.monitoring',
-                  ),
+                  if (_overlayUrl != null && _overlayUrl!.isNotEmpty)
+                    TileLayer(
+                      urlTemplate: _overlayUrl!,
+                      tileProvider: CancellableNetworkTileProvider(),
+                      userAgentPackageName:
+                          'com.ceoconstruction.monitoring',
+                    ),
                   MarkerLayer(
                     markers: [
                       Marker(
-                        point: LatLng(lat, lon),
+                        point: LatLng(widget.lat, widget.lon),
                         width: 56,
                         height: 70,
                         child: Column(
@@ -593,23 +709,23 @@ class _MapCard extends StatelessWidget {
                               height: 40,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: accentColor,
+                                color: widget.accentColor,
                                 boxShadow: [
                                   BoxShadow(
-                                    color: accentColor.withValues(alpha: 0.4),
+                                    color: widget.accentColor
+                                        .withValues(alpha: 0.4),
                                     blurRadius: 8,
                                     spreadRadius: 2,
                                   ),
                                 ],
                               ),
-                              child: Icon(weatherIcon,
+                              child: Icon(widget.weatherIcon,
                                   color: Colors.white, size: 20),
                             ),
-                            // Pin tail
                             Container(
                               width: 2,
                               height: 14,
-                              color: accentColor,
+                              color: widget.accentColor,
                             ),
                           ],
                         ),
@@ -620,7 +736,6 @@ class _MapCard extends StatelessWidget {
               ),
             ),
           ),
-          // Address label under map
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
             child: Row(
@@ -630,7 +745,9 @@ class _MapCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    location.isNotEmpty ? location : projectName,
+                    widget.location.isNotEmpty
+                        ? widget.location
+                        : widget.projectName,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -767,9 +884,11 @@ class _ForecastRow extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 36,
+            width: 52,
             child: Text(
               isToday ? 'Today' : dayLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     fontWeight: FontWeight.w700,
                     color: isToday ? AppTheme.residentBlue : AppTheme.darkGray,
@@ -788,8 +907,7 @@ class _ForecastRow extends StatelessWidget {
             ),
           ),
           Text(
-            '${day.minTempC.toStringAsFixed(0)}° / '
-            '${day.maxTempC.toStringAsFixed(0)}°C',
+            '${day.minTempC.toStringAsFixed(0)}°/${day.maxTempC.toStringAsFixed(0)}°',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   fontWeight: FontWeight.w700,
                   color: AppTheme.darkGray,

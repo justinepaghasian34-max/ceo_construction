@@ -6,6 +6,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants/app_constants.dart';
+import '../core/security/secure_log.dart';
+import '../core/security/secure_storage_service.dart';
 import '../models/user_model.dart';
 import '../utils/password_validator.dart';
 import 'archive_service.dart';
@@ -21,6 +23,10 @@ class AuthService {
 
   final FirebaseService _firebaseService = FirebaseService.instance;
   final HiveService _hiveService = HiveService.instance;
+  final SecureStorageService _secureStorage = SecureStorageService.instance;
+
+  /// In-memory OTP gate for the current process. Never trust plain Hive alone.
+  bool _otpSessionOk = false;
 
   // Current user stream
   Stream<User?> get authStateChanges => _firebaseService.authStateChanges;
@@ -31,14 +37,60 @@ class AuthService {
   // Get current user model
   UserModel? get currentUser => _hiveService.getCurrentUser();
 
-  bool get isOtpVerified {
-    final uid = currentFirebaseUser?.uid;
-    if (uid == null) return false;
-    final stored = _hiveService.settingsBox.get('otp_verified_$uid');
-    return stored is Map && stored['verified'] == true;
-  }
+  bool get isOtpVerified =>
+      currentFirebaseUser != null && _otpSessionOk;
 
   bool get isEmailVerified => currentFirebaseUser?.emailVerified == true;
+
+  /// Short-lived anti-abuse challenge from checkLoginAllowed.
+  String? _loginChallenge;
+
+  /// Sync OTP session from Firestore (source of truth) + secure storage.
+  Future<void> hydrateOtpSession() async {
+    final uid = currentFirebaseUser?.uid;
+    if (uid == null) {
+      _otpSessionOk = false;
+      return;
+    }
+    try {
+      final snap = await _firebaseService.usersCollection.doc(uid).get();
+      final raw = snap.data();
+      final map = raw is Map
+          ? Map<String, dynamic>.from(raw)
+          : <String, dynamic>{};
+      final serverOk = map['otpVerified'] == true;
+      _otpSessionOk = serverOk;
+      await _secureStorage.setOtpSessionVerified(uid, serverOk);
+      // Remove legacy plaintext Hive OTP flag if present.
+      try {
+        await _hiveService.settingsBox.delete('otp_verified_$uid');
+      } catch (_) {}
+    } catch (e) {
+      SecureLog.d('hydrateOtpSession fallback: $e', tag: 'Auth');
+      _otpSessionOk = await _secureStorage.isOtpSessionVerified(uid);
+    }
+  }
+
+  Future<void> markOtpSessionVerified() async {
+    final uid = currentFirebaseUser?.uid;
+    if (uid == null) return;
+    _otpSessionOk = true;
+    await _secureStorage.setOtpSessionVerified(uid, true);
+    try {
+      await _hiveService.settingsBox.delete('otp_verified_$uid');
+    } catch (_) {}
+  }
+
+  Future<void> clearOtpSession() async {
+    final uid = currentFirebaseUser?.uid;
+    _otpSessionOk = false;
+    if (uid != null) {
+      await _secureStorage.clearOtpSession(uid);
+      try {
+        await _hiveService.settingsBox.delete('otp_verified_$uid');
+      } catch (_) {}
+    }
+  }
 
   // Sign in with email and password
   Future<AuthResult> signInWithEmailAndPassword(
@@ -145,40 +197,27 @@ class AuthService {
 
       await _hiveService.saveUser(userModel);
 
-      final otpVerified = userData['otpVerified'] == true;
-      try {
-        await _hiveService.settingsBox.put(
-          'otp_verified_${firebaseUser.uid}',
-          <String, dynamic>{'verified': otpVerified},
-        );
-      } catch (_) {}
-
       await SessionTimeoutService.instance.beginSession(firebaseUser.uid);
       await _recordAuthSuccess(emailLower);
       try {
         await firebaseUser.getIdToken(true);
       } catch (_) {}
+
+      // Every login: invalidate prior OTP so Firestore/Storage stay locked until
+      // a fresh email code is entered (instructor / pen-test hardening).
+      await _beginAuthenticatedSession();
+      await clearOtpSession();
+
       await AuditLogService.instance.logLogin();
 
-      final isAdminAccount =
-          emailLower == AppConstants.adminEmail.toLowerCase();
-      final needsEmailCode = !isAdminAccount && otpVerified != true;
-      if (needsEmailCode) {
-        unawaited(sendVerificationCode());
-        return AuthResult(
-          success: true,
-          requiresEmailVerification: true,
-          requiresOtp: true,
-          user: userModel,
-          message:
-              'Enter the 6-digit verification code sent to your email.',
-        );
-      }
-
+      unawaited(sendVerificationCode());
       return AuthResult(
         success: true,
-        message: 'Sign in successful',
+        requiresEmailVerification: true,
+        requiresOtp: true,
         user: userModel,
+        message:
+            'Two-factor step: enter the 6-digit code sent to your email.',
       );
     } on FirebaseAuthException catch (e) {
       await _recordAuthFailure(emailLower);
@@ -202,18 +241,12 @@ class AuthService {
     required String role,
   }) async {
     try {
-      const allowedRoles = <String>{
-        AppConstants.roleAdmin,
-        AppConstants.roleSiteManager,
-        AppConstants.rolePayroll,
-        AppConstants.roleMaterials,
-      };
-
-      if (!allowedRoles.contains(role)) {
+      // Server rules also enforce this — payroll/materials are admin-assigned only.
+      if (role != AppConstants.roleSiteManager) {
         return AuthResult(
           success: false,
           message:
-              'This role cannot self-register. Please contact the administrator.',
+              'Only Resident Engineers can self-register. Contact the administrator for other roles.',
         );
       }
 
@@ -389,8 +422,9 @@ class AuthService {
       await _firebaseService.signOut();
       await _hiveService.clearUser();
       await SessionTimeoutService.instance.clearSession();
-
+      _otpSessionOk = false;
       if (uid != null) {
+        await _secureStorage.clearOtpSession(uid);
         try {
           await _hiveService.settingsBox.delete('otp_verified_$uid');
         } catch (_) {}
@@ -546,18 +580,7 @@ class AuthService {
       });
 
       await _hiveService.saveUser(userModel);
-
-      // Persist OTP verification state for Site Manager OTP gate.
-      try {
-        final otpVerified = userData['otpVerified'] == true;
-        await _hiveService.settingsBox.put(
-          'otp_verified_${firebaseUser.uid}',
-          <String, dynamic>{'verified': otpVerified},
-        );
-      } catch (_) {
-        // ignore
-      }
-
+      await hydrateOtpSession();
       return true;
     } catch (e) {
       return false;
@@ -695,7 +718,13 @@ class AuthService {
     try {
       final callable =
           FirebaseFunctions.instance.httpsCallable('checkLoginAllowed');
-      await callable.call(<String, dynamic>{'email': email});
+      final result = await callable.call(<String, dynamic>{'email': email});
+      final data = result.data;
+      if (data is Map && data['challenge'] is String) {
+        _loginChallenge = data['challenge'] as String;
+      } else {
+        _loginChallenge = null;
+      }
       return null;
     } on FirebaseFunctionsException catch (e) {
       if (e.code == 'resource-exhausted') {
@@ -704,17 +733,39 @@ class AuthService {
           message: 'Too many failed sign-in attempts. Try again later.',
         );
       }
-      return null;
+      // Fail closed: do not allow password attempt if lockout service is unreachable.
+      return AuthResult(
+        success: false,
+        message: 'Unable to verify sign-in safety. Please try again.',
+      );
     } catch (_) {
-      return null;
+      return AuthResult(
+        success: false,
+        message: 'Unable to verify sign-in safety. Please try again.',
+      );
+    }
+  }
+
+  Future<void> _beginAuthenticatedSession() async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('beginAuthenticatedSession')
+          .call(<String, dynamic>{});
+    } catch (_) {
+      // If this fails, still force client OTP; rules will block data until verified.
     }
   }
 
   Future<void> _recordAuthFailure(String email) async {
     try {
+      final challenge = _loginChallenge;
+      if (challenge == null || challenge.isEmpty) return;
       await FirebaseFunctions.instance
           .httpsCallable('recordAuthFailure')
-          .call(<String, dynamic>{'email': email});
+          .call(<String, dynamic>{
+        'email': email,
+        'challenge': challenge,
+      });
     } catch (_) {}
   }
 
